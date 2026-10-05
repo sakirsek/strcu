@@ -135,6 +135,10 @@ impl Drop for Tunnel {
 }
 
 impl Tunnel {
+    pub fn pid(&self) -> u32 {
+        self.child.id()
+    }
+
     /// Why cloudflared stopped, once it has.
     pub fn exited(&mut self) -> Option<Msg> {
         let status = self.child.try_wait().ok()??;

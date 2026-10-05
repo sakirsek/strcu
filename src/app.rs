@@ -3,6 +3,7 @@
 
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
@@ -32,11 +33,14 @@ pub enum Remote {
 }
 
 /// Where the panel can be opened.
+#[derive(Clone)]
 pub struct Urls {
     /// On this computer
     pub local: Option<String>,
     /// From the home network
     pub home: Vec<String>,
+    /// Home network access is on, but Windows counts every connected network as public
+    pub public_network: bool,
     /// Through the tunnel
     pub remote: Option<String>,
 }
@@ -101,17 +105,17 @@ impl App {
 
     pub fn urls(&self) -> Urls {
         let remote = config::load().access.map(|a| format!("https://{}", a.hostname));
-        let Some(l) = &self.listener else { return Urls { local: None, home: Vec::new(), remote } };
+        let Some(l) = &self.listener else { return Urls { local: None, home: Vec::new(), public_network: false, remote } };
         let (ip, port) = (l.addr.ip(), l.addr.port());
-        let home = if ip.is_unspecified() {
-            sys::net::lan_ipv4().iter().map(|ip| format!("http://{ip}:{port}")).collect()
-        } else if ip.is_loopback() {
-            Vec::new()
-        } else {
-            vec![format!("http://{}", l.addr)]
-        };
+        let addrs = if ip.is_loopback() { Vec::new() } else { sys::net::home_addrs() };
+        let home = addrs
+            .iter()
+            .filter(|a| a.private && (ip.is_unspecified() || ip == a.ip))
+            .map(|a| format!("http://{}:{port}", a.ip))
+            .collect::<Vec<_>>();
+        let public_network = !addrs.is_empty() && home.is_empty();
         let local = (ip.is_unspecified() || ip.is_loopback()).then(|| format!("http://localhost:{port}"));
-        Urls { local, home, remote }
+        Urls { local, home, public_network, remote }
     }
 
     pub fn remote(&self) -> watch::Receiver<Remote> {
@@ -125,6 +129,7 @@ impl App {
             t.abort();
             let _ = t.await;
         }
+        self.panel.tunnel_pid().store(0, Ordering::Relaxed);
         let cfg = config::load();
         self.panel.set_access(cfg.access.clone());
         let parts = [cfg.access.is_some(), tunnel::saved_tunnel_id().is_some(), tunnel::installed_version().is_some()];
@@ -137,7 +142,8 @@ impl App {
         let start = state == Remote::Starting;
         self.remote.send_replace(state);
         if start {
-            self.tunnel_task = Some(tokio::spawn(keep_tunnel(self.remote.clone(), self.panel.log())));
+            let task = keep_tunnel(self.remote.clone(), self.panel.log(), self.panel.tunnel_pid());
+            self.tunnel_task = Some(tokio::spawn(task));
         }
     }
 
@@ -154,13 +160,14 @@ impl App {
 
 /// Keeps cloudflared running and reports its state. It reconnects by itself; if it stops, it is started again
 /// after a pause. The log gets an entry when the connection comes or goes, and once per run of failures.
-async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>) {
+async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>, pid: Arc<AtomicU32>) {
     let http = reqwest::Client::new();
     let (mut was_up, mut failure_logged) = (false, false);
     loop {
         state.send_replace(Remote::Starting);
         let why = match tunnel::start().await {
             Ok(mut t) => {
+                pid.store(t.pid(), Ordering::Relaxed);
                 let mut up = t.ready;
                 loop {
                     if up != was_up {
@@ -178,6 +185,7 @@ async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>) {
             }
             Err(e) => i18n::from_error(&e),
         };
+        pid.store(0, Ordering::Relaxed);
         if !failure_logged {
             log.add(Msg::new("ev.tunnel_failed").with("reason", why.clone()), false);
             failure_logged = true;

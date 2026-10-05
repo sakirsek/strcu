@@ -8,8 +8,7 @@ home and talking them through "open that program, click there".
   and the elements on screen come as a list. No AI, no GPU, no extra install.
 - A single exe. The web panel is protected by a password, with passkeys (fingerprint / Face ID) as an option.
 
-> Work in progress: home network access, QR pairing, guided Cloudflare setup and one-line install are on the
-> way to v1.0.
+> Work in progress: QR pairing, guided Cloudflare setup and one-line install are on the way to v1.0.
 
 ## Build and run
 
@@ -82,6 +81,26 @@ language is chosen in the setup (Windows' display language comes first) and chan
 `lang/<code>.json`, shared by the panel and the terminal; a language is added by adding a file (the `_name` key
 holds its own name, `{name}` placeholders are filled in, `{"one": ..., "other": ...}` gives plural forms). The
 tests check that every file has the same keys and placeholders as `lang/en.json`.
+
+## Who can get in
+
+Every request is placed by where its connection really comes from (the socket's addresses and, for one from
+this computer, the program that opened it), not only by its headers.
+
+- **This computer:** a browser in the same Windows session gets in without signing in. A connection opened by
+  another Windows user signed in to the same computer is refused. Only `localhost` as the address: a site
+  that points its own name at 127.0.0.1 is treated as remote (DNS rebinding).
+- **Home network** (when turned on): private addresses (192.168.x, 10.x, 172.16-31.x) on a network Windows
+  counts as *Private*; on a *Public* network (café, hotel) it switches itself off. The address typed must be
+  the computer's IP or its name. Sign-in with the panel password. The connection is plain HTTP, so anyone on
+  the same Wi-Fi could read it; browsers offer no passkeys there.
+- **Remote:** through the Cloudflare tunnel, below. Connections opened by cloudflared always count as remote.
+- **Anything else** is refused, with the reason shown in the visitor's language and written to the log (once a
+  minute per address).
+
+Five wrong passwords lock that source out for five minutes; each address has its own count, so a guesser on
+the home network cannot lock out remote sign-in. Sign-ins and failed attempts are logged with where they came
+from ("Signed in · home network 192.168.1.50").
 
 ## Remote access: Cloudflare Tunnel + Access
 

@@ -1533,10 +1533,14 @@ async function closeWindow(btn, w) {
 // ---------- more ----------
 
 function renderSession() {
-  const email = S.me && S.me.email;
-  $('#sessWho').textContent = email || t('more.local_who');
+  const me = S.me || {}, email = me.email;
   const left = S.status && S.status.session_left;
-  let line = email ? 'Cloudflare Access' : t('more.local');
+  let who = t('more.local_who'), line = t('more.local');
+  if (me.via === 'home') { who = t('more.home_who'); line = t('more.home', { ip: me.ip }); }
+  else if (email) { who = email; line = 'Cloudflare Access'; }
+  $('#sessWho').textContent = who;
+  // Nothing to sign out of on this computer
+  $('#logoutBtn').hidden = left == null && me.signin === false;
   if (left != null) {
     const hh = Math.floor(left / 3600), mm = Math.floor(left % 3600 / 60);
     line += ' · ' + (hh ? t('more.left_hm', { h: hh, m: mm }) : t('more.left_m', { m: mm }));

@@ -3,13 +3,16 @@
 //! `Panel` holds what outlives a listener (sessions, log, passkeys); `listen` serves it on an address and can
 //! be stopped and started again when the port or the network setting changes.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::io::Write;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
+use axum::Extension;
+use axum::extract::connect_info::{ConnectInfo, Connected};
 use axum::extract::{Query, Request, State};
 use axum::http::{HeaderMap, HeaderValue, StatusCode, header};
 use axum::middleware::{self, Next};
@@ -23,13 +26,15 @@ use crate::access::{AccessConfig, Verifier};
 use crate::auth::{self, Auth, Check};
 use crate::i18n::{self, Msg};
 use crate::passkey::{self, Kind, Site};
-use crate::sys::{Rect, apps, icons, input, power, screen, uia, window};
+use crate::sys::{Rect, apps, icons, input, net, power, screen, uia, window};
 use crate::worker::Worker;
 
 /// Icon cache (shell path -> PNG; None if unavailable)
 type IconCache = Arc<Mutex<std::collections::HashMap<String, Option<Arc<Vec<u8>>>>>>;
 /// Start menu apps and when they were read
 type AppCache = Arc<tokio::sync::Mutex<Option<(Instant, Arc<Vec<apps::App>>)>>>;
+/// This computer's addresses on private networks and when they were read
+type PrivateCache = Arc<tokio::sync::Mutex<Option<(Instant, Arc<Vec<Ipv4Addr>>)>>>;
 
 #[derive(Clone)]
 struct AppState {
@@ -45,6 +50,12 @@ struct AppState {
     apps: AppCache,
     /// Passkeys (fingerprint / face sign-in) and pending challenges
     passkeys: Arc<passkey::Store>,
+    /// Process id of the running cloudflared (0: none): its connections always count as remote
+    tunnel_pid: Arc<AtomicU32>,
+    /// This computer's addresses on networks Windows counts as private
+    private: PrivateCache,
+    /// When a turned-away address was last logged
+    denied: Arc<Mutex<HashMap<String, Instant>>>,
 }
 
 impl AppState {
@@ -97,8 +108,16 @@ impl Panel {
             icons: Arc::default(),
             apps: Arc::default(),
             passkeys: Arc::new(passkey::Store::load()),
+            tunnel_pid: Arc::default(),
+            private: Arc::default(),
+            denied: Arc::default(),
         };
         Ok(Panel { state })
+    }
+
+    /// Where the tunnel watcher records cloudflared's process id.
+    pub fn tunnel_pid(&self) -> Arc<AtomicU32> {
+        self.state.tunnel_pid.clone()
     }
 
     pub fn log(&self) -> Arc<ActionLog> {
@@ -130,7 +149,7 @@ impl Panel {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let app = self.router();
         let task = tokio::spawn(async move {
-            let _ = axum::serve(tcp, app)
+            let _ = axum::serve(tcp, app.into_make_service_with_connect_info::<Conn>())
                 .with_graceful_shutdown(async {
                     let _ = stopped.await;
                 })
@@ -298,53 +317,213 @@ where
 
 // ---------- access ----------
 
+/// Both ends of a connection, and for one from this computer the program that opened it. Worked out once, when
+/// the connection is accepted.
+#[derive(Clone, Copy, Debug)]
+struct Conn {
+    peer: SocketAddr,
+    /// This computer's address the connection reached
+    local: SocketAddr,
+    client: Option<Client>,
+}
+
+/// The program on this computer that opened a connection.
+#[derive(Clone, Copy, Debug)]
+struct Client {
+    pid: u32,
+    /// Runs in StrCu's Windows session (the same user at this screen)
+    same_session: bool,
+}
+
+impl Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>> for Conn {
+    fn connect_info(s: axum::serve::IncomingStream<'_, tokio::net::TcpListener>) -> Self {
+        let peer = *s.remote_addr();
+        let local = s.io().local_addr().unwrap_or(peer);
+        let pid = if peer.ip().is_loopback() { net::client_pid(peer, local) } else { None };
+        Conn { peer, local, client: pid.map(|pid| Client { pid, same_session: net::same_session(pid) }) }
+    }
+}
+
+/// Where a request comes from; that decides what it needs to get in.
+#[derive(Clone, Debug, PartialEq)]
+enum Via {
+    /// A program in this Windows session on this computer: no sign-in needed
+    Local,
+    /// The home network: sign-in needed
+    Home(IpAddr),
+    /// Through the tunnel: Cloudflare Access, then sign-in
+    Remote,
+}
+
+impl Via {
+    /// Where an event came from, for the log.
+    fn source(&self, h: &HeaderMap) -> Msg {
+        match self {
+            Via::Local => Msg::new("src.local"),
+            Via::Home(ip) => Msg::new("src.home").with("ip", ip.to_string()),
+            Via::Remote => Msg::new("src.remote").with("ip", cf_ip(h)),
+        }
+    }
+
+    /// Wrong passwords are counted per source, so someone on the home network cannot lock out remote sign-in.
+    fn key(&self, h: &HeaderMap) -> String {
+        match self {
+            Via::Local => "local".into(),
+            Via::Home(ip) => ip.to_string(),
+            Via::Remote => format!("remote {}", cf_ip(h)),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Via::Local => "local",
+            Via::Home(_) => "home",
+            Via::Remote => "remote",
+        }
+    }
+}
+
+/// The visitor's address as Cloudflare reports it; trusted only once Access has verified the request.
+fn cf_ip(h: &HeaderMap) -> String {
+    h.get("cf-connecting-ip").and_then(|v| v.to_str().ok()).unwrap_or("?").to_string()
+}
+
+/// The Host header without the port, in lower case.
+fn host_name(h: &HeaderMap) -> Option<String> {
+    let v = h.get(header::HOST)?.to_str().ok()?;
+    let name = match v.rsplit_once(':') {
+        Some((name, port)) if port.chars().all(|c| c.is_ascii_digit()) && !name.ends_with(':') => name,
+        _ => v,
+    };
+    Some(name.to_ascii_lowercase())
+}
+
 /// Did the request come through cloudflared? Cloudflare adds Cf-Ray to every request and Host is the
 /// public address. Anything uncertain counts as tunnel.
 fn via_tunnel(h: &HeaderMap) -> bool {
-    let local_host = h.get(header::HOST).and_then(|v| v.to_str().ok()).is_some_and(|v| {
-        let host = match v.rsplit_once(':') {
-            Some((name, port)) if port.chars().all(|c| c.is_ascii_digit()) => name,
-            _ => v,
-        };
-        matches!(host, "127.0.0.1" | "localhost" | "[::1]")
-    });
+    let local_host = host_name(h).is_some_and(|n| matches!(n.as_str(), "127.0.0.1" | "localhost" | "[::1]"));
     !local_host || h.contains_key("cf-ray") || h.contains_key("cf-connecting-ip")
+}
+
+/// From the home network the address must be one of this computer's: an IP address or the computer's name
+/// (`pc`). Any other name means a site pointed its own name at this computer (DNS rebinding).
+fn home_host(h: &HeaderMap, pc: &str) -> bool {
+    let Some(name) = host_name(h) else { return false };
+    if name.trim_start_matches('[').trim_end_matches(']').parse::<IpAddr>().is_ok() {
+        return true;
+    }
+    let first = name.split('.').next().unwrap_or_default();
+    let suffix = &name[first.len()..];
+    !pc.is_empty() && first.eq_ignore_ascii_case(pc) && matches!(suffix, "" | ".local" | ".lan" | ".home" | ".home.arpa" | ".internal")
+}
+
+/// Where a request comes from, or why it is turned away. `tunnel_pid` is cloudflared's process id, `private`
+/// this computer's addresses on networks Windows counts as private, `pc` the computer's name.
+fn classify(c: &Conn, h: &HeaderMap, tunnel_pid: u32, private: &[Ipv4Addr], pc: &str) -> std::result::Result<Via, Msg> {
+    if c.peer.ip().is_loopback() {
+        if c.client.is_some_and(|cl| cl.pid == tunnel_pid) || via_tunnel(h) {
+            return Ok(Via::Remote);
+        }
+        return match c.client {
+            Some(cl) if cl.same_session => Ok(Via::Local),
+            _ => Err(Msg::new("err.other_session")),
+        };
+    }
+    let ip = c.peer.ip();
+    let reached = match c.local.ip() {
+        IpAddr::V4(v4) => Some(v4),
+        IpAddr::V6(v6) => v6.to_ipv4_mapped(),
+    };
+    let Some(reached) = reached.filter(|_| net::is_home_ip(ip)) else { return Err(Msg::new("err.not_home")) };
+    if !private.contains(&reached) {
+        return Err(Msg::new("err.public_network"));
+    }
+    if !home_host(h, pc) {
+        return Err(Msg::new("err.unknown_host"));
+    }
+    Ok(Via::Home(ip))
+}
+
+impl AppState {
+    /// This computer's addresses on private networks; read again after 15 seconds.
+    async fn private_ips(&self) -> Arc<Vec<Ipv4Addr>> {
+        let mut c = self.private.lock().await;
+        if let Some((at, ips)) = c.as_ref()
+            && at.elapsed() < Duration::from_secs(15)
+        {
+            return ips.clone();
+        }
+        let ips = Arc::new(tokio::task::spawn_blocking(net::private_ipv4).await.unwrap_or_default());
+        *c = Some((Instant::now(), ips.clone()));
+        ips
+    }
+
+    async fn classify(&self, c: &Conn, h: &HeaderMap) -> std::result::Result<Via, Msg> {
+        let private = if c.peer.ip().is_loopback() { Arc::default() } else { self.private_ips().await };
+        let pc = std::env::var("COMPUTERNAME").unwrap_or_default();
+        classify(c, h, self.tunnel_pid.load(Ordering::Relaxed), &private, &pc)
+    }
+
+    /// Turns a request away, saying why in the visitor's language. Logged once a minute per address, so a
+    /// scanner cannot flood the log.
+    fn deny(&self, ip: String, reason: Msg, h: &HeaderMap) -> Response {
+        let mut seen = self.denied.lock().unwrap();
+        seen.retain(|_, t| t.elapsed() < Duration::from_secs(60));
+        if !seen.contains_key(&ip) {
+            seen.insert(ip.clone(), Instant::now());
+            self.log.add(Msg::new("ev.access_denied").with("ip", ip).with("reason", reason.clone()), false);
+        }
+        let text = format!("StrCu: {}", page_lang(h).render(&reason));
+        (StatusCode::FORBIDDEN, [(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response()
+    }
 }
 
 /// Email verified by Access; attached to the request so the panel can show who signed in.
 #[derive(Clone)]
 struct AccessUser(String);
 
-/// Every request through the tunnel must carry a valid Cloudflare Access token. Requests from this computer pass.
-async fn require_access(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
-    if !via_tunnel(req.headers()) {
-        return next.run(req).await;
-    }
-    let reason = match (st.access(), req.headers().get("cf-access-jwt-assertion").and_then(|v| v.to_str().ok())) {
-        (None, _) => Msg::new("err.access_not_set"),
-        (Some(_), None) => Msg::new("err.access_no_token"),
-        (Some(v), Some(token)) => match v.verify(token).await {
-            Ok(email) => {
-                req.extensions_mut().insert(AccessUser(email));
-                return next.run(req).await;
-            }
-            Err(e) => i18n::from_error(&e),
-        },
+/// Decides where every request comes from (`Via`, attached to the request). Through the tunnel a valid
+/// Cloudflare Access token is required; what nowhere allows is turned away.
+async fn require_access(State(st): State<AppState>, ConnectInfo(c): ConnectInfo<Conn>, mut req: Request, next: Next) -> Response {
+    let via = match st.classify(&c, req.headers()).await {
+        Ok(v) => v,
+        Err(reason) => return st.deny(c.peer.ip().to_string(), reason, req.headers()),
     };
-    let ip = req.headers().get("cf-connecting-ip").and_then(|v| v.to_str().ok()).unwrap_or("?").to_string();
-    st.log.add(Msg::new("ev.access_denied").with("ip", ip).with("reason", reason), false);
-    (StatusCode::FORBIDDEN, "access denied").into_response()
+    if via == Via::Remote {
+        let reason = match (st.access(), req.headers().get("cf-access-jwt-assertion").and_then(|v| v.to_str().ok())) {
+            (None, _) => Msg::new("err.access_not_set"),
+            (Some(_), None) => Msg::new("err.access_no_token"),
+            (Some(v), Some(token)) => match v.verify(token).await {
+                Ok(email) => {
+                    req.extensions_mut().insert(AccessUser(email));
+                    req.extensions_mut().insert(via);
+                    return next.run(req).await;
+                }
+                Err(e) => i18n::from_error(&e),
+            },
+        };
+        return st.deny(cf_ip(req.headers()), reason, req.headers());
+    }
+    req.extensions_mut().insert(via);
+    next.run(req).await
 }
 
 // ---------- session ----------
 
+/// Tests in debug builds can ask for sign-in from this computer too, to go through the sign-in screens.
+fn local_needs_signin() -> bool {
+    cfg!(debug_assertions) && std::env::var_os("STRCU_DEV_LOCAL_SIGNIN").is_some()
+}
+
 async fn require_session(State(st): State<AppState>, req: Request, next: Next) -> Response {
-    let ok = req
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(auth::token_from_cookie)
-        .is_some_and(|t| st.auth.check(t));
+    let local = req.extensions().get::<Via>() == Some(&Via::Local) && !local_needs_signin();
+    let ok = local
+        || req
+            .headers()
+            .get(header::COOKIE)
+            .and_then(|v| v.to_str().ok())
+            .and_then(auth::token_from_cookie)
+            .is_some_and(|t| st.auth.check(t));
     if !ok {
         return ApiError(StatusCode::UNAUTHORIZED, Msg::new("err.signin_required")).into_response();
     }
@@ -368,13 +547,20 @@ fn session_cookie(st: &AppState, headers: &HeaderMap) -> [(header::HeaderName, S
     [(header::SET_COOKIE, format!("{}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200{secure}", auth::COOKIE))]
 }
 
-/// Response for a wrong password or too many attempts; None if the password is right. `event` is logged for
-/// a wrong password.
-async fn password_denied(st: &AppState, pw: &str, event: &'static str, status: StatusCode) -> Option<Response> {
-    match st.auth.check_password(pw) {
+/// Response for a wrong password or too many attempts from this source; None if the password is right.
+/// `event` is logged for a wrong password.
+async fn password_denied(
+    st: &AppState,
+    via: &Via,
+    h: &HeaderMap,
+    pw: &str,
+    event: &'static str,
+    status: StatusCode,
+) -> Option<Response> {
+    match st.auth.check_password(pw, &via.key(h)) {
         Check::Ok => None,
         Check::Wrong => {
-            st.log.add(Msg::new(event), false);
+            st.log.add(Msg::new(event).with("from", via.source(h)), false);
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
             Some(ApiError(status, Msg::new("err.wrong_password")).into_response())
         }
@@ -384,26 +570,31 @@ async fn password_denied(st: &AppState, pw: &str, event: &'static str, status: S
     }
 }
 
-async fn login(State(st): State<AppState>, headers: HeaderMap, Json(r): Json<LoginReq>) -> Response {
-    if let Some(denied) = password_denied(&st, &r.password, "ev.signin_wrong_pw", StatusCode::UNAUTHORIZED).await {
+async fn login(State(st): State<AppState>, Extension(via): Extension<Via>, headers: HeaderMap, Json(r): Json<LoginReq>) -> Response {
+    let wrong = "ev.signin_wrong_pw";
+    if let Some(denied) = password_denied(&st, &via, &headers, &r.password, wrong, StatusCode::UNAUTHORIZED).await {
         return denied;
     }
-    st.log.add(Msg::new("ev.signed_in"), true);
+    st.log.add(Msg::new("ev.signed_in").with("from", via.source(&headers)), true);
     (session_cookie(&st, &headers), Json(json!({ "ok": true }))).into_response()
 }
 
 // ---------- fingerprint / face sign-in ----------
 
-/// The site a key is bound to: the Access hostname through the tunnel, only `localhost` from this computer
-/// (an IP address does not count as a domain for this). Passkeys are unavailable otherwise.
-fn passkey_site(st: &AppState, h: &HeaderMap) -> Option<Site> {
-    if via_tunnel(h) {
-        let host = st.access()?.cfg.hostname.clone();
-        return Some(Site { origin: format!("https://{host}"), rp_id: host });
+/// The site a key is bound to: the Access hostname through the tunnel, only `localhost` from this computer.
+/// On the home network the panel is plain HTTP on an IP address, where browsers offer no passkeys.
+fn passkey_site(st: &AppState, via: &Via, h: &HeaderMap) -> Option<Site> {
+    match via {
+        Via::Remote => {
+            let host = st.access()?.cfg.hostname.clone();
+            Some(Site { origin: format!("https://{host}"), rp_id: host })
+        }
+        Via::Local => {
+            let host = h.get(header::HOST)?.to_str().ok()?;
+            (host_name(h)? == "localhost").then(|| Site { rp_id: "localhost".into(), origin: format!("http://{host}") })
+        }
+        Via::Home(_) => None,
     }
-    let host = h.get(header::HOST)?.to_str().ok()?;
-    let name = host.rsplit_once(':').map_or(host, |(n, _)| n);
-    (name == "localhost").then(|| Site { rp_id: "localhost".into(), origin: format!("http://{host}") })
 }
 
 fn no_site() -> ApiError {
@@ -411,8 +602,8 @@ fn no_site() -> ApiError {
 }
 
 /// Sign-in screen: the challenge for the phone to sign and the keys registered for this site. No session needed.
-async fn passkey_login_start(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
-    let site = passkey_site(&st, &headers).ok_or_else(no_site)?;
+async fn passkey_login_start(State(st): State<AppState>, Extension(via): Extension<Via>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let site = passkey_site(&st, &via, &headers).ok_or_else(no_site)?;
     let allow = st.passkeys.ids(&site);
     if allow.is_empty() {
         return Err(ApiError(StatusCode::NOT_FOUND, Msg::new("err.pk_none")));
@@ -421,24 +612,29 @@ async fn passkey_login_start(State(st): State<AppState>, headers: HeaderMap) -> 
     Ok(Json(json!({ "challenge": challenge, "rp_id": site.rp_id, "allow": allow, "timeout": passkey::TIMEOUT.as_millis() as u64 })))
 }
 
-async fn passkey_login(State(st): State<AppState>, headers: HeaderMap, Json(a): Json<passkey::Assertion>) -> Response {
-    let Some(site) = passkey_site(&st, &headers) else { return no_site().into_response() };
+async fn passkey_login(
+    State(st): State<AppState>,
+    Extension(via): Extension<Via>,
+    headers: HeaderMap,
+    Json(a): Json<passkey::Assertion>,
+) -> Response {
+    let Some(site) = passkey_site(&st, &via, &headers) else { return no_site().into_response() };
     match st.passkeys.finish_login(&a, &site, &local_time()) {
         Ok(name) => {
-            st.log.add(Msg::new("ev.signed_in_pk").with("name", name), true);
+            st.log.add(Msg::new("ev.signed_in_pk").with("name", name).with("from", via.source(&headers)), true);
             (session_cookie(&st, &headers), Json(json!({ "ok": true }))).into_response()
         }
         Err(e) => {
             let why = i18n::from_error(&e);
-            st.log.add(Msg::new("ev.pk_rejected").with("reason", why.clone()), false);
+            st.log.add(Msg::new("ev.pk_rejected").with("reason", why.clone()).with("from", via.source(&headers)), false);
             ApiError(StatusCode::UNAUTHORIZED, why).into_response()
         }
     }
 }
 
 /// More tab: registered phones and whether a new one can be added from this address.
-async fn passkeys_list(State(st): State<AppState>, headers: HeaderMap) -> Json<Value> {
-    let site = passkey_site(&st, &headers);
+async fn passkeys_list(State(st): State<AppState>, Extension(via): Extension<Via>, headers: HeaderMap) -> Json<Value> {
+    let site = passkey_site(&st, &via, &headers);
     let here = site.as_ref().map(|s| s.rp_id.clone());
     let list: Vec<Value> = st
         .passkeys
@@ -454,9 +650,13 @@ async fn passkeys_list(State(st): State<AppState>, headers: HeaderMap) -> Json<V
 
 /// Registration challenge. The panel asks for it in advance so the phone's prompt can open on a tap; the
 /// password arrives with the signed response.
-async fn passkey_register_start(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+async fn passkey_register_start(
+    State(st): State<AppState>,
+    Extension(via): Extension<Via>,
+    headers: HeaderMap,
+) -> ApiResult<Json<Value>> {
     use base64::Engine;
-    let site = passkey_site(&st, &headers).ok_or_else(no_site)?;
+    let site = passkey_site(&st, &via, &headers).ok_or_else(no_site)?;
     let challenge = st.passkeys.begin(Kind::Register, &site);
     let user_id = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(passkey::USER_ID);
     Ok(Json(json!({
@@ -475,10 +675,16 @@ struct PasskeyRegisterReq {
     reg: passkey::Registration,
 }
 
-async fn passkey_register(State(st): State<AppState>, headers: HeaderMap, Json(r): Json<PasskeyRegisterReq>) -> Response {
-    let Some(site) = passkey_site(&st, &headers) else { return no_site().into_response() };
+async fn passkey_register(
+    State(st): State<AppState>,
+    Extension(via): Extension<Via>,
+    headers: HeaderMap,
+    Json(r): Json<PasskeyRegisterReq>,
+) -> Response {
+    let Some(site) = passkey_site(&st, &via, &headers) else { return no_site().into_response() };
     // Not 401: the panel treats 401 as "session ended"
-    if let Some(denied) = password_denied(&st, &r.password, "ev.pk_add_wrong_pw", StatusCode::FORBIDDEN).await {
+    let wrong = "ev.pk_add_wrong_pw";
+    if let Some(denied) = password_denied(&st, &via, &headers, &r.password, wrong, StatusCode::FORBIDDEN).await {
         return denied;
     }
     match st.passkeys.finish_register(&r.reg, &site, &local_time()) {
@@ -513,12 +719,18 @@ async fn logout(State(st): State<AppState>, headers: HeaderMap) -> Response {
     ([(header::SET_COOKIE, clear)], Json(json!({ "ok": true }))).into_response()
 }
 
-/// For the sign-in screen: the email (partly hidden) when coming through Access, and whether a passkey is
-/// registered for this address. No session needed.
+/// For the sign-in screen: where the request comes from, the email (partly hidden) when coming through
+/// Access, and whether a passkey is registered for this address. No session needed.
 async fn me(State(st): State<AppState>, req: Request) -> Json<Value> {
+    let via = req.extensions().get::<Via>().cloned().unwrap_or(Via::Remote);
     let email = req.extensions().get::<AccessUser>().map(|u| mask_email(&u.0));
-    let passkey = passkey_site(&st, req.headers()).is_some_and(|s| !st.passkeys.ids(&s).is_empty());
-    Json(json!({ "email": email, "passkey": passkey }))
+    let passkey = passkey_site(&st, &via, req.headers()).is_some_and(|s| !st.passkeys.ids(&s).is_empty());
+    let ip = match &via {
+        Via::Home(ip) => Some(ip.to_string()),
+        _ => None,
+    };
+    let signin = via != Via::Local || local_needs_signin();
+    Json(json!({ "via": via.name(), "ip": ip, "signin": signin, "email": email, "passkey": passkey }))
 }
 
 fn mask_email(e: &str) -> String {
@@ -536,16 +748,22 @@ const LANG_COOKIE: &str = "strcu_lang";
 const LANG_ATTR: &str = r#"<html lang="en">"#;
 const LANG_SLOT: &str = r#"<script id="i18n" type="application/json">{}</script>"#;
 
+/// The language chosen on this phone, if any.
+fn chosen_lang(h: &HeaderMap) -> Option<&'static i18n::Lang> {
+    h.get(header::COOKIE).and_then(|v| v.to_str().ok()).and_then(|c| auth::cookie(c, LANG_COOKIE)).and_then(i18n::get)
+}
+
+/// The language a page or message for this request is in: the phone's choice, else its own language.
+fn page_lang(h: &HeaderMap) -> &'static i18n::Lang {
+    chosen_lang(h)
+        .or_else(|| h.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()).and_then(i18n::from_accept_language))
+        .unwrap_or_else(i18n::en)
+}
+
 /// The page, with the texts of its language embedded: no extra request and no flash of untranslated text.
 async fn index(headers: HeaderMap) -> Response {
-    let chosen = headers
-        .get(header::COOKIE)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|c| auth::cookie(c, LANG_COOKIE))
-        .and_then(i18n::get);
-    let lang = chosen
-        .or_else(|| headers.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()).and_then(i18n::from_accept_language))
-        .unwrap_or_else(i18n::en);
+    let chosen = chosen_lang(&headers);
+    let lang = page_lang(&headers);
     let langs: Vec<Value> = i18n::all().iter().map(|l| json!({ "code": l.code, "name": l.name })).collect();
     let boot = format!(
         r#"{{"lang":{},"auto":{},"langs":{},"dict":{}}}"#,
@@ -945,7 +1163,64 @@ async fn log(State(st): State<AppState>) -> Json<Vec<LogEntry>> {
 
 #[cfg(test)]
 mod tests {
-    use super::short;
+    use super::*;
+
+    fn headers(pairs: &[(&'static str, &str)]) -> HeaderMap {
+        let mut h = HeaderMap::new();
+        for (k, v) in pairs {
+            h.insert(*k, HeaderValue::from_str(v).unwrap());
+        }
+        h
+    }
+
+    fn conn(peer: &str, local: &str, client: Option<(u32, bool)>) -> Conn {
+        Conn {
+            peer: peer.parse().unwrap(),
+            local: local.parse().unwrap(),
+            client: client.map(|(pid, same_session)| Client { pid, same_session }),
+        }
+    }
+
+    #[test]
+    fn where_requests_come_from() {
+        let private: Vec<Ipv4Addr> = vec!["192.168.1.24".parse().unwrap()];
+        let at = |c: &Conn, h: &[(&'static str, &str)]| classify(c, &headers(h), 4242, &private, "DESKTOP-1");
+        let local_host = [("host", "localhost:8765")];
+
+        // This computer: the same Windows session gets in, another user's session does not
+        let mine = conn("127.0.0.1:50000", "127.0.0.1:8765", Some((100, true)));
+        assert_eq!(at(&mine, &local_host), Ok(Via::Local));
+        let theirs = conn("127.0.0.1:50001", "127.0.0.1:8765", Some((200, false)));
+        assert_eq!(at(&theirs, &local_host).unwrap_err().code, "err.other_session");
+        let unknown = conn("127.0.0.1:50002", "127.0.0.1:8765", None);
+        assert_eq!(at(&unknown, &local_host).unwrap_err().code, "err.other_session");
+
+        // cloudflared always counts as remote, with or without Cloudflare's headers
+        let tunnel = conn("127.0.0.1:50003", "127.0.0.1:8765", Some((4242, true)));
+        assert_eq!(at(&tunnel, &local_host), Ok(Via::Remote));
+        assert_eq!(at(&mine, &[("host", "localhost:8765"), ("cf-ray", "x")]), Ok(Via::Remote));
+        // A site that points its own name at 127.0.0.1 is treated as remote, so it needs Access
+        assert_eq!(at(&mine, &[("host", "evil.example:8765")]), Ok(Via::Remote));
+
+        // Home network: a private address, on a private network, typed as an IP or the computer's name
+        let phone = conn("192.168.1.50:41000", "192.168.1.24:8765", None);
+        let home = Ok(Via::Home("192.168.1.50".parse().unwrap()));
+        assert_eq!(at(&phone, &[("host", "192.168.1.24:8765")]), home);
+        assert_eq!(at(&phone, &[("host", "desktop-1.local:8765")]), home);
+        assert_eq!(at(&phone, &[("host", "DESKTOP-1:8765")]), home);
+        assert_eq!(at(&phone, &[("host", "evil.example:8765")]).unwrap_err().code, "err.unknown_host");
+        assert_eq!(at(&phone, &[("host", "desktop-1.evil.example")]).unwrap_err().code, "err.unknown_host");
+        // Cloudflare's headers from the home network change nothing
+        assert_eq!(at(&phone, &[("host", "192.168.1.24:8765"), ("cf-connecting-ip", "1.2.3.4")]), home);
+        // A network Windows counts as public (café): turned away
+        let cafe = conn("10.0.0.9:41000", "10.0.0.5:8765", None);
+        assert_eq!(at(&cafe, &[("host", "10.0.0.5:8765")]).unwrap_err().code, "err.public_network");
+        // Not a home network address: turned away
+        let outside = conn("203.0.113.7:41000", "192.168.1.24:8765", None);
+        assert_eq!(at(&outside, &[("host", "192.168.1.24:8765")]).unwrap_err().code, "err.not_home");
+        let tailscale = conn("100.101.102.103:41000", "192.168.1.24:8765", None);
+        assert_eq!(at(&tailscale, &[("host", "192.168.1.24:8765")]).unwrap_err().code, "err.not_home");
+    }
 
     #[test]
     fn shortening() {

@@ -67,6 +67,7 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
         // Home network
         match (v.lan, v.urls.home.as_slice()) {
             (false, _) => row(&mut f, 0, vec![span(Tone::Dim, t.t("dash.home_off"))]),
+            (true, []) if v.urls.public_network => row(&mut f, 0, vec![span(Tone::Warn, t.t("dash.home_public"))]),
             (true, []) => row(&mut f, 0, vec![span(Tone::Warn, t.t("dash.home_none"))]),
             (true, urls) => {
                 for (i, u) in urls.iter().enumerate() {

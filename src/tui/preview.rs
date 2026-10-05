@@ -43,13 +43,15 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
     let today = &now[..10];
     let host = "strcu.example.com";
 
+    let remote = Msg::new("src.remote").with("ip", "203.0.113.24");
+    let home = Msg::new("src.home").with("ip", "192.168.1.50");
     let events = vec![
-        entry(today, "14:02:41", Msg::new("ev.signed_in_pk").with("name", "Android · Chrome"), true),
+        entry(today, "14:02:41", Msg::new("ev.signed_in_pk").with("name", "Android · Chrome").with("from", remote), true),
         entry(today, "13:59:10", Msg::new("ev.tunnel_up"), true),
-        entry(today, "13:58:03", Msg::new("ev.signin_wrong_pw"), false),
+        entry(today, "13:58:03", Msg::new("ev.signin_wrong_pw").with("from", Msg::new("src.home").with("ip", "192.168.1.73")), false),
         entry(today, "13:40:22", Msg::new("ev.pk_added").with("name", "Android · Chrome"), true),
         entry(today, "12:15:09", Msg::new("ev.locked"), true),
-        entry(today, "12:10:47", Msg::new("ev.signed_in"), true),
+        entry(today, "12:10:47", Msg::new("ev.signed_in").with("from", home), true),
     ];
     let label = |action: &'static str, name: &str| Msg::new("ev.labeled").with("action", Msg::new(action)).with("label", name);
     let mut log = vec![
@@ -64,9 +66,11 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
     let urls = Urls {
         local: Some("http://localhost:8765".into()),
         home: vec!["http://192.168.1.24:8765".into()],
+        public_network: false,
         remote: Some(format!("https://{host}")),
     };
-    let fresh = Urls { local: Some("http://localhost:8765".into()), home: Vec::new(), remote: None };
+    let fresh = Urls { local: Some("http://localhost:8765".into()), home: Vec::new(), public_network: false, remote: None };
+    let cafe = Urls { home: Vec::new(), public_network: true, ..urls.clone() };
     let dash_view = |urls: &Urls, lan: bool, remote: &Remote, events: &[LogEntry], confirm_quit: bool| {
         let v = dash::View { urls, lan, remote, listen_error: None, events, today, confirm_quit };
         dash::view(t, &v, (COLS, ROWS))
@@ -91,6 +95,7 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("07-dashboard", dash_view(&urls, true, &Remote::Up, &events, false)),
         ("08-dashboard-first-start", dash_view(&fresh, false, &Remote::Off, &[], false)),
         ("09-dashboard-problem", dash_view(&urls, true, &failed, &events[2..], true)),
+        ("09b-dashboard-public-network", dash_view(&cafe, true, &Remote::Up, &events, false)),
         ("10-log", dash::log_view(t, &log, 0, (COLS, ROWS))),
         ("11-settings", settings::menu_view(t, &values, "", Some(&Notice::Ok(Msg::new("set.saved"))))),
         (
