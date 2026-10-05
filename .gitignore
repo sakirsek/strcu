@@ -1,0 +1,5 @@
+/target
+
+# Screenshots from `strcu dev shot` are personal and stay out of the repo
+*.png
+*.jpg

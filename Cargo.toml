@@ -1,0 +1,58 @@
+[package]
+name = "strcu"
+version = "0.1.0"
+edition = "2024"
+description = "Use your computer from your phone"
+license = "MIT"
+repository = "https://github.com/sakirsek/strcu"
+publish = false
+
+[dependencies]
+anyhow = "1"
+argon2 = "0.5"
+axum = "0.8"
+base64 = "0.22"
+clap = { version = "4.6", features = ["derive"] }
+futures-util = "0.3"
+getrandom = "0.3"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
+# Passkey (fingerprint / face sign-in) signatures (ES256); jsonwebtoken already builds the same version
+p256 = "0.13"
+# Windows' own TLS (SChannel) for HTTPS; no extra build dependency
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "native-tls"] }
+rpassword = "7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.11"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal"] }
+# uiautomation also uses windows 0.62; staying on the same version builds a single copy.
+uiautomation = "0.25"
+
+[dependencies.windows]
+version = "0.62"
+features = [
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Console",
+    "Win32_System_JobObjects",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Shutdown",
+    "Win32_System_SystemInformation",
+    "Win32_System_Threading",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+lto = "thin"
+strip = true
