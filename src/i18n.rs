@@ -9,7 +9,7 @@
 //! arguments) that the panel and the terminal each render in their own language.
 
 use std::fmt;
-use std::sync::{LazyLock, OnceLock};
+use std::sync::{LazyLock, RwLock};
 
 use serde::ser::{Serialize, SerializeMap, Serializer};
 use serde_json::{Map, Value};
@@ -73,15 +73,24 @@ pub fn from_accept_language(header: &str) -> Option<&'static Lang> {
 
 /// Terminal language: the one chosen in the settings, else Windows' display language, else English.
 pub fn term() -> &'static Lang {
-    static TERM: OnceLock<&'static Lang> = OnceLock::new();
-    TERM.get_or_init(|| {
-        crate::config::load()
-            .language
-            .as_deref()
-            .and_then(get)
-            .or_else(|| pick([crate::sys::discover::ui_language().as_str()]))
-            .unwrap_or_else(en)
-    })
+    if let Some(l) = *TERM.read().unwrap() {
+        return l;
+    }
+    let l = crate::config::load().language.as_deref().and_then(get).unwrap_or_else(system);
+    set_term(l);
+    l
+}
+
+static TERM: RwLock<Option<&'static Lang>> = RwLock::new(None);
+
+/// Switches the terminal language (after a choice in the setup or the settings).
+pub fn set_term(l: &'static Lang) {
+    *TERM.write().unwrap() = Some(l);
+}
+
+/// Windows' display language if there is a file for it, else English.
+pub fn system() -> &'static Lang {
+    pick([crate::sys::discover::ui_language().as_str()]).unwrap_or_else(en)
 }
 
 impl Lang {
@@ -221,7 +230,7 @@ macro_rules! num_arg {
         }
     )*};
 }
-num_arg!(i32, i64, u32, u64, usize);
+num_arg!(u16, i32, i64, u32, u64, usize);
 
 impl Serialize for Msg {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {

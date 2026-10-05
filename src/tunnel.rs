@@ -49,7 +49,7 @@ pub fn installed_version() -> Option<String> {
 }
 
 /// Downloads the pinned version from GitHub and verifies its SHA-256.
-pub async fn install() -> Result<()> {
+pub async fn install(report: download::Report<'_>) -> Result<()> {
     if installed_version().as_deref() == Some(CLOUDFLARED_TAG) {
         return Ok(());
     }
@@ -72,7 +72,7 @@ pub async fn install() -> Result<()> {
         sha256: asset["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(str::to_lowercase),
     };
     let _ = std::fs::remove_file(exe());
-    download::fetch(&remote, &exe(), name).await?;
+    download::fetch(&remote, &exe(), name, report).await?;
     std::fs::write(dir().join("strcu-version.txt"), CLOUDFLARED_TAG)?;
     Ok(())
 }
@@ -85,13 +85,17 @@ fn tunnel_id(token: &str) -> Option<String> {
     v["t"].as_str().map(str::to_string)
 }
 
-/// Finds the token in the given text and saves it. The whole command the dashboard shows can be pasted too
-/// (`cloudflared.exe service install <token>`). Returns the tunnel id; the token itself is never printed.
+/// Finds the token in the given text. The whole command the dashboard shows can be pasted too
+/// (`cloudflared.exe service install <token>`). Returns the token and the tunnel id.
+pub fn find_token(text: &str) -> Result<(String, String)> {
+    text.split_whitespace()
+        .find_map(|w| tunnel_id(w).map(|id| (w.to_string(), id)))
+        .context(Msg::new("err.no_token_in_text"))
+}
+
+/// Finds the token in the given text and saves it. Returns the tunnel id; the token itself is never printed.
 pub fn save_token(text: &str) -> Result<String> {
-    let (token, id) = text
-        .split_whitespace()
-        .find_map(|w| tunnel_id(w).map(|id| (w, id)))
-        .context(Msg::new("err.no_token_in_text"))?;
+    let (token, id) = find_token(text)?;
     std::fs::create_dir_all(config::data_dir())?;
     std::fs::write(token_path(), token).context(Msg::new("err.token_write"))?;
     Ok(id)
@@ -101,6 +105,14 @@ fn token() -> Option<String> {
     let t = std::fs::read_to_string(token_path()).ok()?;
     let t = t.trim();
     tunnel_id(t).map(|_| t.to_string())
+}
+
+/// Deletes the saved token (remote access removed). cloudflared itself stays for a later setup.
+pub fn forget_token() -> Result<()> {
+    match std::fs::remove_file(token_path()) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+        _ => Ok(()),
+    }
 }
 
 /// Tunnel id of the saved token.
@@ -115,8 +127,24 @@ pub struct Tunnel {
 
 impl Drop for Tunnel {
     fn drop(&mut self) {
-        let _ = self.child.kill();
+        // Waiting frees the metrics port before a new cloudflared starts
+        if self.child.kill().is_ok() {
+            let _ = self.child.wait();
+        }
     }
+}
+
+impl Tunnel {
+    /// Why cloudflared stopped, once it has.
+    pub fn exited(&mut self) -> Option<Msg> {
+        let status = self.child.try_wait().ok()??;
+        Some(Msg::new("err.cloudflared_exited").with("status", status.to_string()).with("log", log_path().display().to_string()))
+    }
+}
+
+/// Does cloudflared have at least one connection to Cloudflare?
+pub async fn connected(http: &reqwest::Client) -> bool {
+    ready(http).await
 }
 
 async fn ready(http: &reqwest::Client) -> bool {
@@ -148,8 +176,8 @@ pub async fn start() -> Result<Tunnel> {
     let http = reqwest::Client::new();
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        if let Ok(Some(status)) = tunnel.child.try_wait() {
-            bail!(Msg::new("err.cloudflared_exited").with("status", status.to_string()).with("log", log_path().display().to_string()));
+        if let Some(why) = tunnel.exited() {
+            bail!(why);
         }
         if ready(&http).await {
             tunnel.ready = true;

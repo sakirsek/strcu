@@ -63,6 +63,17 @@ fn own_console() -> [isize; 2] {
     }
 }
 
+/// Minimizes the window StrCu runs in (started with Windows): the terminal window if there is one.
+pub fn minimize_console() {
+    let [con, owner] = own_console();
+    let target = if owner != 0 { owner } else { con };
+    if target != 0 {
+        unsafe {
+            let _ = ShowWindow(hwnd(target), SW_MINIMIZE);
+        }
+    }
+}
+
 pub(crate) fn hwnd(h: isize) -> HWND {
     HWND(h as *mut c_void)
 }

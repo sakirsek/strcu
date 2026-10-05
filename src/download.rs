@@ -14,6 +14,16 @@ use sha2::{Digest, Sha256};
 
 use crate::i18n::{self, Msg};
 
+/// What a running download reports.
+pub enum Progress {
+    /// A step worth its own line: resuming, retrying, done
+    Note(Msg),
+    /// Bytes so far, total size, bytes per second
+    Bytes { have: u64, total: u64, speed: f64 },
+}
+
+pub type Report<'a> = &'a (dyn Fn(Progress) + Send + Sync);
+
 pub struct Remote {
     pub url: String,
     pub size: u64,
@@ -31,17 +41,17 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-fn human(bytes: u64) -> String {
+pub fn human(bytes: u64) -> String {
     if bytes >= 1 << 30 {
         format!("{:.2} GB", bytes as f64 / (1u64 << 30) as f64)
     } else {
-        format!("{:.0} MB", bytes as f64 / (1u64 << 20) as f64)
+        format!("{:.1} MB", bytes as f64 / (1u64 << 20) as f64)
     }
 }
 
-pub async fn fetch(remote: &Remote, dest: &Path, label: &str) -> Result<()> {
+pub async fn fetch(remote: &Remote, dest: &Path, label: &str, report: Report<'_>) -> Result<()> {
     if dest.metadata().is_ok_and(|m| m.len() == remote.size) {
-        say(Msg::new("dl.present").with("label", label).with("size", human(remote.size)));
+        report(Progress::Note(Msg::new("dl.present").with("label", label).with("size", human(remote.size))));
         return Ok(());
     }
     if let Some(dir) = dest.parent() {
@@ -65,25 +75,24 @@ pub async fn fetch(remote: &Remote, dest: &Path, label: &str) -> Result<()> {
             }
             hasher.update(&buf[..n]);
         }
-        say(Msg::new("dl.resume").with("label", label).with("size", human(have)));
+        report(Progress::Note(Msg::new("dl.resume").with("label", label).with("size", human(have))));
     }
 
     let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(20)).build()?;
     let mut attempt = 0;
     while have < remote.size {
         attempt += 1;
-        match stream(&http, remote, &part, &mut have, &mut hasher, label).await {
+        match stream(&http, remote, &part, &mut have, &mut hasher, report).await {
             Ok(()) => {}
             Err(e) if attempt < 8 => {
-                eprintln!();
                 let why = i18n::from_error(&e);
-                say(Msg::new("dl.retry").with("label", label).with("error", why).with("size", human(have)));
+                let note = Msg::new("dl.retry").with("label", label).with("error", why).with("size", human(have));
+                report(Progress::Note(note));
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
             Err(e) => return Err(e),
         }
     }
-    eprintln!();
 
     if have != remote.size {
         bail!(Msg::new("err.dl_size").with("label", label).with("have", have).with("want", remote.size));
@@ -96,12 +105,8 @@ pub async fn fetch(remote: &Remote, dest: &Path, label: &str) -> Result<()> {
         }
     }
     std::fs::rename(&part, dest)?;
-    say(Msg::new(if remote.sha256.is_some() { "dl.verified" } else { "dl.done" }).with("label", label));
+    report(Progress::Note(Msg::new(if remote.sha256.is_some() { "dl.verified" } else { "dl.done" }).with("label", label)));
     Ok(())
-}
-
-fn say(m: Msg) {
-    eprintln!("  {}", i18n::term().render(&m));
 }
 
 async fn stream(
@@ -110,7 +115,7 @@ async fn stream(
     part: &Path,
     have: &mut u64,
     hasher: &mut Sha256,
-    label: &str,
+    report: Report<'_>,
 ) -> Result<()> {
     let mut req = http.get(&remote.url);
     if *have > 0 {
@@ -134,12 +139,7 @@ async fn stream(
         *have += chunk.len() as u64;
         if last.elapsed() > Duration::from_millis(500) {
             let speed = (*have - start) as f64 / t0.elapsed().as_secs_f64().max(0.001);
-            eprint!(
-                "\r  {label}: {} / {} ({:.1} MB/s)   ",
-                human(*have),
-                human(remote.size),
-                speed / (1u64 << 20) as f64
-            );
+            report(Progress::Bytes { have: *have, total: remote.size, speed });
             last = Instant::now();
         }
     }

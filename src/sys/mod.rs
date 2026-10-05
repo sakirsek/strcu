@@ -1,9 +1,12 @@
 //! Operating system layer (Windows). Everything works in physical pixel coordinates.
 
 pub mod apps;
+pub mod autostart;
 pub mod discover;
 pub mod icons;
 pub mod input;
+pub mod instance;
+pub mod net;
 pub mod power;
 pub mod proc;
 pub mod screen;

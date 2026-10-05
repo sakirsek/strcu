@@ -21,7 +21,8 @@ const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const MAX_FAILS: u32 = 5;
 const LOCKOUT: Duration = Duration::from_secs(5 * 60);
 
-pub fn set_password(pw: &str) -> Result<()> {
+/// Checks the length and returns the argon2 hash.
+pub fn hash_password(pw: &str) -> Result<String> {
     if pw.chars().count() < MIN_PASSWORD {
         bail!(Msg::new("err.password_short").with("min", MIN_PASSWORD));
     }
@@ -29,13 +30,18 @@ pub fn set_password(pw: &str) -> Result<()> {
     getrandom::fill(&mut raw).map_err(|e| anyhow::anyhow!("could not generate a random salt: {e}"))?;
     let salt = SaltString::encode_b64(&raw).map_err(|e| anyhow::anyhow!("{e}"))?;
     let hash = Argon2::default().hash_password(pw.as_bytes(), &salt).map_err(|e| anyhow::anyhow!("{e}"))?;
-    let mut cfg = config::load();
-    cfg.password_hash = Some(hash.to_string());
-    config::save(&cfg)
+    Ok(hash.to_string())
+}
+
+/// Saves a new panel password; returns its hash.
+pub fn set_password(pw: &str) -> Result<String> {
+    let hash = hash_password(pw)?;
+    config::update(|c| c.password_hash = Some(hash.clone()))?;
+    Ok(hash)
 }
 
 pub struct Auth {
-    hash: String,
+    hash: Mutex<String>,
     sessions: Mutex<HashMap<String, Instant>>,
     fails: Mutex<(u32, Instant)>,
 }
@@ -50,7 +56,14 @@ pub enum Check {
 impl Auth {
     pub fn from_config() -> Result<Self> {
         let hash = config::load().password_hash.context(Msg::new("err.no_password"))?;
-        Ok(Auth { hash, sessions: Mutex::new(HashMap::new()), fails: Mutex::new((0, Instant::now())) })
+        Ok(Auth { hash: Mutex::new(hash), sessions: Mutex::new(HashMap::new()), fails: Mutex::new((0, Instant::now())) })
+    }
+
+    /// The password was changed on the computer: the new one applies at once and every session ends.
+    pub fn replace_password(&self, hash: String) {
+        *self.hash.lock().unwrap() = hash;
+        self.sessions.lock().unwrap().clear();
+        *self.fails.lock().unwrap() = (0, Instant::now());
     }
 
     /// Checks the password; wrong attempts count towards the brute-force brake (both at sign-in and when
@@ -64,7 +77,8 @@ impl Auth {
             }
             *f = (0, Instant::now());
         }
-        let ok = PasswordHash::new(&self.hash)
+        let hash = self.hash.lock().unwrap().clone();
+        let ok = PasswordHash::new(&hash)
             .map(|h| Argon2::default().verify_password(pw.as_bytes(), &h).is_ok())
             .unwrap_or(false);
         if !ok {

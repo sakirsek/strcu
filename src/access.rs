@@ -8,7 +8,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,38 @@ impl Verifier {
         }
         Ok(email)
     }
+}
+
+/// A hostname as typed or pasted: "https://Strcu.Example.com/" -> "strcu.example.com".
+pub fn clean_host(s: &str) -> Result<String> {
+    let h = s.trim().trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_lowercase();
+    let ok = h.contains('.')
+        && !h.starts_with(['.', '-'])
+        && !h.ends_with(['.', '-'])
+        && h.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '.');
+    ensure!(ok, Msg::new("err.hostname"));
+    Ok(h)
+}
+
+/// The Access team domain; a bare team name gets `.cloudflareaccess.com`.
+pub fn clean_team(s: &str) -> Result<String> {
+    let t = s.trim();
+    if !t.is_empty() && !t.contains('.') && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '-') {
+        return Ok(format!("{}.cloudflareaccess.com", t.to_lowercase()));
+    }
+    clean_host(t)
+}
+
+pub fn clean_aud(s: &str) -> Result<String> {
+    let aud = s.trim().to_lowercase();
+    ensure!(aud.len() >= 32 && aud.chars().all(|c| c.is_ascii_hexdigit()), Msg::new("err.aud"));
+    Ok(aud)
+}
+
+pub fn clean_email(s: &str) -> Result<String> {
+    let e = s.trim();
+    ensure!(e.split_once('@').is_some_and(|(u, d)| !u.is_empty() && d.contains('.')), Msg::new("err.email"));
+    Ok(e.to_string())
 }
 
 /// A token that cannot be checked; `what` is technical and not translated.

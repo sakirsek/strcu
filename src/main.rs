@@ -1,4 +1,5 @@
 mod access;
+mod app;
 mod auth;
 mod config;
 mod download;
@@ -6,9 +7,11 @@ mod i18n;
 mod passkey;
 mod server;
 mod sys;
+mod tui;
 mod tunnel;
 mod worker;
 
+use std::io::IsTerminal;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
@@ -19,16 +22,21 @@ use sys::{apps, input, power, screen, uia, window};
 #[derive(Parser)]
 #[command(name = "strcu", version, about = "Use your computer from your phone")]
 struct Cli {
+    /// Without a command StrCu opens in the terminal: the setup on the first start, then the main screen.
     #[command(subcommand)]
-    cmd: Cmd,
+    cmd: Option<Cmd>,
+    /// Minimize the window (used when starting with Windows)
+    #[arg(long, hide = true)]
+    minimized: bool,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Start the web panel (only reachable from this computer by default). Also runs when started without arguments.
+    /// Run the panel without the terminal screens, printing status lines (for scripts and services)
     Serve {
-        #[arg(long, default_value = "127.0.0.1:8765")]
-        bind: std::net::SocketAddr,
+        /// Address to listen on; by default the one from the settings (port, home network)
+        #[arg(long)]
+        bind: Option<std::net::SocketAddr>,
         /// Do not open the tunnel; only this computer can connect
         #[arg(long)]
         no_tunnel: bool,
@@ -183,18 +191,27 @@ enum DevCmd {
         #[arg(long)]
         display: bool,
     },
+    /// Write every terminal screen with made-up data as HTML pages (for screenshots)
+    Preview {
+        #[arg(short, long, default_value = "preview")]
+        out: PathBuf,
+        /// Language code
+        #[arg(long, default_value = "en")]
+        lang: String,
+    },
 }
 
 #[tokio::main]
 async fn main() {
     sys::init();
-    // Started with a double-click: run the panel. On error keep the window open so the message can be read.
-    let double_click = std::env::args_os().len() == 1;
-    let cli = if double_click { Cli::parse_from(["strcu", "serve"]) } else { Cli::parse() };
+    let cli = Cli::parse();
+    // Started without a command (double-click, start with Windows): on error keep the window open so the
+    // message can be read.
+    let own_window = cli.cmd.is_none();
     if let Err(e) = run(cli).await {
         let lang = i18n::term();
         eprintln!("{}", lang.render(&Msg::new("term.error").with("msg", i18n::from_error(&e))));
-        if double_click {
+        if own_window {
             eprintln!("{}", lang.t("term.press_enter"));
             let _ = std::io::stdin().read_line(&mut String::new());
         }
@@ -202,12 +219,29 @@ async fn main() {
     }
 }
 
+/// StrCu without a command: the terminal screens, or status lines when the output is not a terminal.
+async fn start(minimized: bool) -> Result<()> {
+    let Some(_instance) = sys::instance::claim() else {
+        tui::already_running();
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        return Ok(());
+    };
+    window::set_console_title(window::CONSOLE_TITLE);
+    if minimized {
+        window::minimize_console();
+    }
+    power::keep_awake(true, false);
+    if std::io::stdout().is_terminal() { tui::run().await } else { app::serve_plain(None, true).await }
+}
+
 async fn run(cli: Cli) -> Result<()> {
-    match cli.cmd {
+    let Some(cmd) = cli.cmd else { return start(cli.minimized).await };
+    match cmd {
         Cmd::Serve { bind, no_tunnel } => {
+            let Some(_instance) = sys::instance::claim() else { bail!(Msg::new("err.already_running")) };
             power::keep_awake(true, false);
             window::set_console_title(window::CONSOLE_TITLE);
-            server::serve(bind, !no_tunnel).await?;
+            app::serve_plain(bind, !no_tunnel).await?;
         }
         Cmd::Passwd { stdin } => {
             let pw = if stdin {
@@ -341,6 +375,11 @@ async fn dev_cmd(cmd: DevCmd) -> Result<()> {
             tokio::signal::ctrl_c().await?;
             power::keep_awake(false, false);
         }
+        DevCmd::Preview { out, lang } => {
+            for p in tui::preview(&out, &lang)? {
+                println!("{}", p.display());
+            }
+        }
     }
     Ok(())
 }
@@ -406,7 +445,16 @@ async fn tunnel_cmd(cmd: TunnelCmd) -> Result<()> {
         TunnelCmd::Install => {
             let lang = i18n::term();
             println!("{}", lang.render(&Msg::new("term.installing").with("version", tunnel::CLOUDFLARED_TAG)));
-            tunnel::install().await?;
+            let report = |p: download::Progress| match p {
+                download::Progress::Note(m) => eprintln!("\r  {:<60}", lang.render(&m)),
+                download::Progress::Bytes { have, total, speed } => eprint!(
+                    "\r  {} / {} ({:.1} MB/s)   ",
+                    download::human(have),
+                    download::human(total),
+                    speed / (1u64 << 20) as f64
+                ),
+            };
+            tunnel::install(&report).await?;
             let version = tunnel::installed_version().unwrap_or_default();
             println!("{}", lang.render(&Msg::new("term.installed").with("version", version)));
         }
@@ -422,18 +470,13 @@ async fn tunnel_cmd(cmd: TunnelCmd) -> Result<()> {
             println!("{}", i18n::term().render(&Msg::new("term.token_saved").with("id", id)));
         }
         TunnelCmd::Setup { hostname, team, aud, email } => {
-            let clean = |s: String| s.trim().trim_start_matches("https://").trim_end_matches('/').to_lowercase();
-            let (hostname, team) = (clean(hostname), clean(team));
-            let aud = aud.trim().to_lowercase();
-            if !aud.chars().all(|c| c.is_ascii_hexdigit()) || aud.len() < 32 {
-                bail!(Msg::new("err.aud"));
-            }
-            if !email.contains('@') {
-                bail!(Msg::new("err.email"));
-            }
-            let mut cfg = config::load();
-            cfg.access = Some(access::AccessConfig { hostname, team_domain: team, aud, email: email.trim().to_string() });
-            config::save(&cfg)?;
+            let a = access::AccessConfig {
+                hostname: access::clean_host(&hostname)?,
+                team_domain: access::clean_team(&team)?,
+                aud: access::clean_aud(&aud)?,
+                email: access::clean_email(&email)?,
+            };
+            config::update(|c| c.access = Some(a))?;
             println!("{}", i18n::term().render(&Msg::new("term.access_set").with("summary", tunnel_summary())));
         }
         TunnelCmd::Status => println!("{}", tunnel_summary()),

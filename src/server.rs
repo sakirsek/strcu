@@ -1,11 +1,12 @@
 //! Web panel: see the screen from the phone, tap to click, type, send shortcuts.
 //!
-//! Listens only on 127.0.0.1 by default; reachable from outside through the cloudflared tunnel.
+//! `Panel` holds what outlives a listener (sessions, log, passkeys); `listen` serves it on an address and can
+//! be stopped and started again when the port or the network setting changes.
 
 use std::collections::VecDeque;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -18,12 +19,11 @@ use axum::{Json, Router};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
-use crate::access::Verifier;
+use crate::access::{AccessConfig, Verifier};
 use crate::auth::{self, Auth, Check};
 use crate::i18n::{self, Msg};
 use crate::passkey::{self, Kind, Site};
 use crate::sys::{Rect, apps, icons, input, power, screen, uia, window};
-use crate::tunnel;
 use crate::worker::Worker;
 
 /// Icon cache (shell path -> PNG; None if unavailable)
@@ -36,7 +36,8 @@ struct AppState {
     worker: Worker,
     auth: Arc<Auth>,
     log: Arc<ActionLog>,
-    access: Option<Arc<Verifier>>,
+    /// Changes when remote access is set up or removed while running
+    access: Arc<RwLock<Option<Arc<Verifier>>>>,
     /// When the scheduled shutdown happens (for the panel countdown)
     shutdown_at: Arc<Mutex<Option<Instant>>>,
     icons: IconCache,
@@ -46,86 +47,137 @@ struct AppState {
     passkeys: Arc<passkey::Store>,
 }
 
+impl AppState {
+    fn access(&self) -> Option<Arc<Verifier>> {
+        self.access.read().unwrap().clone()
+    }
+}
+
 /// Time to cancel after a shutdown is confirmed.
 const SHUTDOWN_SECS: u32 = 15;
 
-pub async fn serve(bind: SocketAddr, open_tunnel: bool) -> Result<()> {
-    let cfg = crate::config::load();
-    let state = AppState {
-        worker: Worker::spawn(),
-        auth: Arc::new(Auth::from_config()?),
-        log: Arc::new(ActionLog::default()),
-        access: cfg.access.clone().map(|a| Arc::new(Verifier::new(a))),
-        shutdown_at: Arc::new(Mutex::new(None)),
-        icons: Arc::default(),
-        apps: Arc::default(),
-        passkeys: Arc::new(passkey::Store::load()),
-    };
-    let api = Router::new()
-        .route("/api/status", get(status))
-        .route("/api/shot", get(shot))
-        .route("/api/click", post(click))
-        .route("/api/type", post(type_text))
-        .route("/api/key", post(key))
-        .route("/api/scroll", post(scroll))
-        .route("/api/elements", get(elements))
-        .route("/api/target", get(target))
-        .route("/api/windows", get(windows))
-        .route("/api/focus", post(focus))
-        .route("/api/close", post(close_window))
-        .route("/api/apps", get(apps_list))
-        .route("/api/icon", get(window_icon))
-        .route("/api/appicon", get(app_icon))
-        .route("/api/launch", post(launch))
-        .route("/api/lock", post(lock))
-        .route("/api/shutdown", post(shutdown))
-        .route("/api/shutdown/cancel", post(cancel_shutdown))
-        .route("/api/log", get(log))
-        .route("/api/logout", post(logout))
-        .route("/api/passkeys", get(passkeys_list))
-        .route("/api/passkey/register/start", post(passkey_register_start))
-        .route("/api/passkey/register", post(passkey_register))
-        .route("/api/passkey/delete", post(passkey_delete))
-        .route_layer(middleware::from_fn_with_state(state.clone(), require_session));
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/fonts/{file}", get(font))
-        .route("/api/me", get(me))
-        .route("/api/login", post(login))
-        .route("/api/passkey/login/start", post(passkey_login_start))
-        .route("/api/passkey/login", post(passkey_login))
-        .merge(api)
-        .layer(middleware::from_fn_with_state(state.clone(), require_access))
-        .with_state(state);
-    let listener = tokio::net::TcpListener::bind(bind).await?;
-    let lang = i18n::term();
-    println!("{}", lang.render(&Msg::new("term.panel").with("url", format!("http://{bind}"))));
+/// The panel's state, shared by every listener.
+pub struct Panel {
+    state: AppState,
+}
 
-    // The tunnel opens after the panel starts listening, and only if Access verification is set up
-    let _tunnel = match (open_tunnel, &cfg.access, tunnel::saved_tunnel_id()) {
-        (false, ..) => None,
-        (true, _, None) => None,
-        (true, None, Some(_)) => {
-            println!("{}", lang.t("term.tunnel_no_access"));
-            None
+/// A running listener. Dropping it stops it at once; `stop` lets open requests finish first.
+pub struct Listener {
+    pub addr: SocketAddr,
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl Listener {
+    pub async fn stop(mut self) {
+        self.stop.take();
+        if tokio::time::timeout(Duration::from_secs(2), &mut self.task).await.is_err() {
+            self.task.abort();
+            let _ = (&mut self.task).await;
         }
-        (true, Some(a), Some(_)) => {
-            let t = tunnel::start().await?;
-            if t.ready {
-                println!("{}", lang.render(&Msg::new("term.tunnel_up").with("host", &a.hostname).with("email", &a.email)));
-            } else {
-                println!("{}", lang.t("term.tunnel_waiting"));
+    }
+}
+
+impl Drop for Listener {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
+impl Panel {
+    /// Needs the panel password to be set.
+    pub fn new() -> Result<Panel> {
+        let cfg = crate::config::load();
+        let state = AppState {
+            worker: Worker::spawn(),
+            auth: Arc::new(Auth::from_config()?),
+            log: Arc::new(ActionLog::new()),
+            access: Arc::new(RwLock::new(cfg.access.map(|a| Arc::new(Verifier::new(a))))),
+            shutdown_at: Arc::new(Mutex::new(None)),
+            icons: Arc::default(),
+            apps: Arc::default(),
+            passkeys: Arc::new(passkey::Store::load()),
+        };
+        Ok(Panel { state })
+    }
+
+    pub fn log(&self) -> Arc<ActionLog> {
+        self.state.log.clone()
+    }
+
+    pub fn auth(&self) -> &Auth {
+        &self.state.auth
+    }
+
+    pub fn passkeys(&self) -> &passkey::Store {
+        &self.state.passkeys
+    }
+
+    /// Remote access was set up or removed: requests through the tunnel are verified with the new settings.
+    pub fn set_access(&self, cfg: Option<AccessConfig>) {
+        *self.state.access.write().unwrap() = cfg.map(|a| Arc::new(Verifier::new(a)));
+    }
+
+    pub async fn listen(&self, addr: SocketAddr) -> Result<Listener> {
+        let tcp = match tokio::net::TcpListener::bind(addr).await {
+            Ok(t) => t,
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+                return Err(Msg::new("err.port_busy").with("port", addr.port()).into());
             }
-            Some(t)
-        }
-    };
-    println!("{}", lang.t("term.stop_hint"));
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
-        })
-        .await?;
-    Ok(())
+            Err(e) => return Err(anyhow::Error::new(e).context(Msg::new("err.listen").with("addr", addr.to_string()))),
+        };
+        let addr = tcp.local_addr()?;
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let app = self.router();
+        let task = tokio::spawn(async move {
+            let _ = axum::serve(tcp, app)
+                .with_graceful_shutdown(async {
+                    let _ = stopped.await;
+                })
+                .await;
+        });
+        Ok(Listener { addr, stop: Some(stop), task })
+    }
+
+    fn router(&self) -> Router {
+        let state = self.state.clone();
+        let api = Router::new()
+            .route("/api/status", get(status))
+            .route("/api/shot", get(shot))
+            .route("/api/click", post(click))
+            .route("/api/type", post(type_text))
+            .route("/api/key", post(key))
+            .route("/api/scroll", post(scroll))
+            .route("/api/elements", get(elements))
+            .route("/api/target", get(target))
+            .route("/api/windows", get(windows))
+            .route("/api/focus", post(focus))
+            .route("/api/close", post(close_window))
+            .route("/api/apps", get(apps_list))
+            .route("/api/icon", get(window_icon))
+            .route("/api/appicon", get(app_icon))
+            .route("/api/launch", post(launch))
+            .route("/api/lock", post(lock))
+            .route("/api/shutdown", post(shutdown))
+            .route("/api/shutdown/cancel", post(cancel_shutdown))
+            .route("/api/log", get(log))
+            .route("/api/logout", post(logout))
+            .route("/api/passkeys", get(passkeys_list))
+            .route("/api/passkey/register/start", post(passkey_register_start))
+            .route("/api/passkey/register", post(passkey_register))
+            .route("/api/passkey/delete", post(passkey_delete))
+            .route_layer(middleware::from_fn_with_state(state.clone(), require_session));
+        Router::new()
+            .route("/", get(index))
+            .route("/fonts/{file}", get(font))
+            .route("/api/me", get(me))
+            .route("/api/login", post(login))
+            .route("/api/passkey/login/start", post(passkey_login_start))
+            .route("/api/passkey/login", post(passkey_login))
+            .merge(api)
+            .layer(middleware::from_fn_with_state(state.clone(), require_access))
+            .with_state(state)
+    }
 }
 
 // ---------- errors and log ----------
@@ -148,19 +200,52 @@ impl IntoResponse for ApiError {
 type ApiResult<T> = std::result::Result<T, ApiError>;
 
 #[derive(Serialize, Clone)]
-struct LogEntry {
-    time: String,
-    msg: Msg,
-    ok: bool,
+pub struct LogEntry {
+    pub time: String,
+    pub msg: Msg,
+    pub ok: bool,
 }
 
-#[derive(Default)]
-struct ActionLog {
+impl LogEntry {
+    /// Shown on the computer's main screen: sign-ins, failed attempts, changes to who can get in, locking
+    /// and shutting down, the tunnel coming and going. Clicks and typing are only in the full log.
+    pub fn important(&self) -> bool {
+        const CODES: &[&str] = &[
+            "ev.access_denied",
+            "ev.signin_wrong_pw",
+            "ev.signed_in",
+            "ev.signed_in_pk",
+            "ev.pk_rejected",
+            "ev.pk_add_wrong_pw",
+            "ev.pk_added",
+            "ev.pk_add_failed",
+            "ev.pk_removed",
+            "ev.password_changed",
+            "ev.locked",
+            "ev.shutdown",
+            "ev.shutdown_cancelled",
+            "ev.tunnel_up",
+            "ev.tunnel_down",
+            "ev.tunnel_failed",
+        ];
+        CODES.contains(&self.msg.code)
+    }
+}
+
+/// What was done, newest first. Kept in memory for the screens and appended to `actions.log`.
+pub struct ActionLog {
     recent: Mutex<VecDeque<LogEntry>>,
+    changed: tokio::sync::watch::Sender<u64>,
 }
 
 impl ActionLog {
-    fn add(&self, msg: Msg, ok: bool) {
+    const KEEP: usize = 300;
+
+    fn new() -> Self {
+        ActionLog { recent: Mutex::default(), changed: tokio::sync::watch::Sender::new(0) }
+    }
+
+    pub fn add(&self, msg: Msg, ok: bool) {
         let e = LogEntry { time: local_time(), msg, ok };
         if let Ok(mut f) =
             std::fs::OpenOptions::new().create(true).append(true).open(crate::config::data_dir().join("actions.log"))
@@ -169,7 +254,18 @@ impl ActionLog {
         }
         let mut r = self.recent.lock().unwrap();
         r.push_front(e);
-        r.truncate(50);
+        r.truncate(Self::KEEP);
+        drop(r);
+        self.changed.send_modify(|n| *n += 1);
+    }
+
+    pub fn entries(&self) -> Vec<LogEntry> {
+        self.recent.lock().unwrap().iter().cloned().collect()
+    }
+
+    /// Changes whenever an entry is added.
+    pub fn watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.changed.subscribe()
     }
 }
 
@@ -184,7 +280,7 @@ fn short(s: &str) -> String {
     t
 }
 
-fn local_time() -> String {
+pub fn local_time() -> String {
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
 }
@@ -224,7 +320,7 @@ async fn require_access(State(st): State<AppState>, mut req: Request, next: Next
     if !via_tunnel(req.headers()) {
         return next.run(req).await;
     }
-    let reason = match (&st.access, req.headers().get("cf-access-jwt-assertion").and_then(|v| v.to_str().ok())) {
+    let reason = match (st.access(), req.headers().get("cf-access-jwt-assertion").and_then(|v| v.to_str().ok())) {
         (None, _) => Msg::new("err.access_not_set"),
         (Some(_), None) => Msg::new("err.access_no_token"),
         (Some(v), Some(token)) => match v.verify(token).await {
@@ -302,8 +398,8 @@ async fn login(State(st): State<AppState>, headers: HeaderMap, Json(r): Json<Log
 /// (an IP address does not count as a domain for this). Passkeys are unavailable otherwise.
 fn passkey_site(st: &AppState, h: &HeaderMap) -> Option<Site> {
     if via_tunnel(h) {
-        let host = &st.access.as_ref()?.cfg.hostname;
-        return Some(Site { rp_id: host.clone(), origin: format!("https://{host}") });
+        let host = st.access()?.cfg.hostname.clone();
+        return Some(Site { origin: format!("https://{host}"), rp_id: host });
     }
     let host = h.get(header::HOST)?.to_str().ok()?;
     let name = host.rsplit_once(':').map_or(host, |(n, _)| n);
@@ -353,7 +449,7 @@ async fn passkeys_list(State(st): State<AppState>, headers: HeaderMap) -> Json<V
                     "site": k.rp_id, "here": here.as_deref() == Some(k.rp_id.as_str()) })
         })
         .collect();
-    Json(json!({ "site": here, "host": st.access.as_ref().map(|a| a.cfg.hostname.clone()), "list": list }))
+    Json(json!({ "site": here, "host": st.access().map(|a| a.cfg.hostname.clone()), "list": list }))
 }
 
 /// Registration challenge. The panel asks for it in advance so the phone's prompt can open on a tap; the
@@ -844,7 +940,7 @@ async fn cancel_shutdown(State(st): State<AppState>) -> ApiResult<Json<Value>> {
 }
 
 async fn log(State(st): State<AppState>) -> Json<Vec<LogEntry>> {
-    Json(st.log.recent.lock().unwrap().iter().cloned().collect())
+    Json(st.log.recent.lock().unwrap().iter().take(50).cloned().collect())
 }
 
 #[cfg(test)]

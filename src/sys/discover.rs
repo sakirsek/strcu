@@ -174,7 +174,7 @@ fn keyboard_layout() -> String {
     format!("{klid} ({name}), foreground window HKL={fg_hkl:08X}")
 }
 
-fn reg_string(root: HKEY, path: &str, value: &str) -> Option<String> {
+pub(crate) fn reg_string(root: HKEY, path: &str, value: &str) -> Option<String> {
     let (p, v) = (HSTRING::from(path), HSTRING::from(value));
     let mut size = 0u32;
     unsafe {

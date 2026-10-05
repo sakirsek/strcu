@@ -8,20 +8,32 @@ home and talking them through "open that program, click there".
   and the elements on screen come as a list. No AI, no GPU, no extra install.
 - A single exe. The web panel is protected by a password, with passkeys (fingerprint / Face ID) as an option.
 
-> Work in progress: setup wizard, home network access, QR pairing, guided Cloudflare setup and one-line install
-> are on the way to v1.0.
+> Work in progress: home network access, QR pairing, guided Cloudflare setup and one-line install are on the
+> way to v1.0.
 
-## Build and run (command line for now)
+## Build and run
 
 ```
 cargo build --release
-strcu passwd                      # panel password (at least 10 characters, argon2)
-strcu serve                       # web panel: http://127.0.0.1:8765 (+ tunnel if set up)
-strcu doctor                      # inspect the system, write %LOCALAPPDATA%\strcu\profile.json
+target
+elease\strcu.exe
 ```
 
-Started without arguments (double-click), `strcu.exe` runs `strcu serve`: the panel and the tunnel open, and
-closing the window stops both. If startup fails the window stays open until Enter is pressed.
+`strcu.exe` opens in the terminal. The first start is a short setup: language, panel password (at least 10
+characters, argon2), home network, remote access (optional) and starting with Windows (minimized). After that
+the main screen shows where the phone can open the panel, the recent important events (sign-ins, failed
+attempts, fingerprints added or removed, locking, the tunnel coming and going) and three keys: settings, the
+full log and quit. Settings change the language, the password (phones are signed out), the home network,
+remote access, starting with Windows, registered fingerprints and the port (8765 by default).
+
+Only one StrCu runs at a time; starting it again brings the running one's window to the front. Closing the
+window stops the panel and the tunnel.
+
+```
+strcu serve [--bind 127.0.0.1:8765] [--no-tunnel]   # no screens, status lines only (scripts, services)
+strcu passwd                      # panel password from the command line
+strcu doctor                      # inspect the system, write %LOCALAPPDATA%\strcu\profile.json
+```
 
 Developer tools drive the operating system layer directly:
 
@@ -38,6 +50,7 @@ strcu dev apps                    # apps in the Start menu
 strcu dev launch "Calculator"     # launch an app (full or partial name)
 strcu dev lockstate | lock | awake [--display]
 strcu dev shutdown [--secs 15] | shutdown --cancel
+strcu dev preview --lang tr       # every terminal screen with made-up data, as HTML pages
 ```
 
 Coordinates are physical pixels everywhere.
@@ -64,8 +77,8 @@ Five tabs: Screen, Keyboard, Elements, Windows, More.
 
 ## Languages
 
-English and Turkish. The panel follows the phone's language and can be switched under More; the terminal follows
-Windows' display language (or `"language"` in `config.json`), falling back to English. Every text lives in
+English and Turkish. The panel follows the phone's language and can be switched under More; the terminal's
+language is chosen in the setup (Windows' display language comes first) and changed in Settings. Every text lives in
 `lang/<code>.json`, shared by the panel and the terminal; a language is added by adding a file (the `_name` key
 holds its own name, `{name}` placeholders are filled in, `{"one": ..., "other": ...}` gives plural forms). The
 tests check that every file has the same keys and placeholders as `lang/en.json`.
@@ -73,8 +86,12 @@ tests check that every file has the same keys and placeholders as `lang/en.json`
 ## Remote access: Cloudflare Tunnel + Access
 
 A remotely managed tunnel in the Cloudflare dashboard (e.g. `strcu.example.com -> http://localhost:8765`),
-protected by an Access application. No Windows service or administrator rights are needed: `strcu serve`
-runs cloudflared as its own child process, and the tunnel closes with the panel (or if strcu crashes).
+protected by an Access application. No Windows service or administrator rights are needed: StrCu runs
+cloudflared as its own child process, watches its connection, starts it again if it stops, and closes it with
+the panel (or if StrCu crashes).
+
+Remote access is set up from the terminal (Settings → Remote access): it downloads cloudflared, then asks for
+the tunnel token and the Access settings. The same steps exist as commands:
 
 ```
 strcu tunnel install              # cloudflared 2026.9.3, verified with SHA-256
@@ -103,6 +120,8 @@ the origin, the site hash, user verification, the ES256 signature and the signat
 - `src/sys/` operating system layer (screen, input, windows, UI Automation, power, apps, icons, discovery,
   child processes)
 - `src/server.rs` + `src/web/` the panel; `src/worker.rs` runs operating system work in order on one thread
+- `src/app.rs` what runs while StrCu is open (listener, tunnel watcher); `src/tui/` the terminal screens, plain
+  functions from state to frames that the terminal draws and `strcu dev preview` turns into HTML
 - `src/auth.rs` sign-in, `src/passkey.rs` passkeys, `src/access.rs` Cloudflare Access verification
 - `src/i18n.rs` + `lang/` languages; the server sends message keys, the panel and the terminal render them
 - `src/tunnel.rs` cloudflared management, `src/download.rs` downloads verified with SHA-256

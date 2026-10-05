@@ -9,7 +9,7 @@ use crate::access::AccessConfig;
 use crate::i18n::Msg;
 use crate::passkey::Passkey;
 
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 pub struct Config {
     pub password_hash: Option<String>,
     /// Cloudflare Access verification for requests coming through the tunnel (`strcu tunnel setup`)
@@ -20,6 +20,35 @@ pub struct Config {
     /// Terminal language code ("tr"); unset means the Windows display language
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
+    /// Serve on the home network too, not only on this computer
+    #[serde(default)]
+    pub lan: bool,
+    /// Port of the panel
+    #[serde(default = "default_port")]
+    pub port: u16,
+    /// The first-start setup was completed
+    #[serde(default)]
+    pub setup_done: bool,
+}
+
+pub const DEFAULT_PORT: u16 = 8765;
+
+fn default_port() -> u16 {
+    DEFAULT_PORT
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            password_hash: None,
+            access: None,
+            passkeys: Vec::new(),
+            language: None,
+            lan: false,
+            port: DEFAULT_PORT,
+            setup_done: false,
+        }
+    }
 }
 
 pub fn data_dir() -> PathBuf {
