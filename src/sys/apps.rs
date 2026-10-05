@@ -14,6 +14,8 @@ use windows::Win32::UI::Shell::{
     SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
 };
 
+use crate::i18n::Msg;
+
 #[derive(Debug, Clone, Serialize)]
 pub struct App {
     pub name: String,
@@ -87,12 +89,12 @@ fn display_name(item: &IShellItem, kind: SIGDN) -> Option<String> {
 /// Launches an app from the list. Ids not in the list are refused, so no arbitrary path reaches explorer.
 /// The app is not a child process of strcu and stays open when strcu exits.
 pub fn launch(id: &str) -> Result<App> {
-    let app = list()?.into_iter().find(|a| a.id == id).context("there is no app with this id")?;
+    let app = list()?.into_iter().find(|a| a.id == id).context(Msg::new("err.no_app"))?;
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     Command::new(format!(r"{windir}\explorer.exe"))
         .arg(format!(r"shell:AppsFolder\{}", app.id))
         .spawn()
-        .context("could not launch the app")?;
+        .context(Msg::new("err.launch_failed"))?;
     Ok(app)
 }
 

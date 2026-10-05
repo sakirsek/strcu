@@ -1,11 +1,12 @@
 <!doctype html>
-<html lang="tr">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="robots" content="noindex">
 <meta name="theme-color" content="#0E1012">
-<title>str-cu</title>
+<title>StrCu</title>
+<script id="i18n" type="application/json">{}</script>
 <style>
   @font-face { font-family: 'IBM Plex Sans'; font-weight: 400; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-ext-400-normal.woff2) format('woff2'); unicode-range: U+0100-02BA, U+02BD-02C5, U+02C7-02CC, U+02CE-02D7, U+02DD-02FF, U+0304, U+0308, U+0329, U+1D00-1DBF, U+1E00-1E9F, U+1EF2-1EFF, U+2020, U+20A0-20AB, U+20AD-20C0, U+2113, U+2C60-2C7F, U+A720-A7FF; }
   @font-face { font-family: 'IBM Plex Sans'; font-weight: 400; font-display: swap; src: url(/fonts/ibm-plex-sans-latin-400-normal.woff2) format('woff2'); unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
@@ -29,7 +30,7 @@
   * { box-sizing: border-box; }
   html, body { height: 100%; }
   body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; -webkit-tap-highlight-color: transparent; }
-  button, input, textarea { font: inherit; color: inherit; }
+  button, input, textarea, select { font: inherit; color: inherit; }
   button { cursor: pointer; }
   button:disabled { opacity: .6; cursor: default; }
   :focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
@@ -112,7 +113,7 @@
   .key.risky { border-color: var(--bad-line); color: var(--bad-soft); }
   .key.armed { border-color: var(--bad); background: var(--bad); color: #2A0703; font-family: inherit; font-size: 13px; font-weight: 600; }
   .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
-  /* Keep long labels like "Masaüstü" from overflowing on very narrow phones */
+  /* Keep long key labels from overflowing on very narrow phones */
   @media (max-width: 340px) { .grid4 .key { font-size: 12px; } }
   .grid6 { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; }
   .grid6 .key { min-height: 44px; border-radius: 10px; font-size: 13px; }
@@ -140,7 +141,7 @@
   @keyframes spin { to { transform: rotate(360deg); } }
 
   /* ---- screen ---- */
-  #p-ekran { gap: 10px; }
+  #p-screen { gap: 10px; }
   /* Square corners: rounded ones would cut off the screen's corner pixels (e.g. the close button) */
   .view { position: relative; flex: none; overflow: hidden; background: #000; box-shadow: 0 0 0 1px var(--line); }
   .view:not(.loaded) { aspect-ratio: 16 / 9; }
@@ -179,7 +180,7 @@
   .tool[aria-checked="true"] .knob { background: var(--acc); box-shadow: none; }
   .tool[aria-checked="true"] .knob::after { transform: translateX(12px); background: var(--acc-ink); }
   /* Target strip: fixed height, so the buttons below do not move when aiming */
-  /* On very narrow phones (320 px) keep "Tüm ekran" and the foreground window name from being cut */
+  /* On very narrow phones (320 px) keep the view buttons and the foreground window name from being cut */
   @media (max-width: 340px) {
     .top { gap: 6px; }
     .live button { min-width: 32px; padding: 0 4px; }
@@ -303,6 +304,9 @@
   .pkadd > .btn { min-height: 44px; }
   .pkform { display: flex; flex-direction: column; gap: 8px; }
   .pkform .field { min-height: 48px; }
+  .selwrap { position: relative; flex: none; display: flex; }
+  .selwrap select { min-height: 44px; max-width: 44vw; padding: 0 34px 0 12px; border: 1px solid var(--line2); border-radius: 12px; background: var(--panel2); color: var(--fg); font-size: 14px; font-weight: 600; -webkit-appearance: none; appearance: none; text-overflow: ellipsis; }
+  .selwrap .ic { position: absolute; right: 10px; top: 50%; width: 16px; height: 16px; margin-top: -8px; stroke-width: 2; color: var(--muted); pointer-events: none; }
   .offcard { display: flex; flex-direction: column; gap: 10px; border-color: var(--bad-line); }
   .offcard h2 { margin: 0; font-size: 17px; font-weight: 600; }
   .offwins { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; font-size: 14px; color: var(--fg2); }
@@ -329,31 +333,31 @@
 <div id="login" class="login" hidden>
   <div class="brand">
     <span class="logo"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="1.2"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></span>
-    <div><h1>str-cu</h1><p>Ev bilgisayarı · uzaktan kumanda</p></div>
+    <div><h1>StrCu</h1><p data-i18n="app.tagline"></p></div>
   </div>
   <div id="meCard" class="card idcard" hidden>
     <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
-    <div><span>Cloudflare Access doğrulandı</span><span id="meEmail"></span></div>
+    <div><span data-i18n="login.access_ok"></span><span id="meEmail"></span></div>
   </div>
   <div id="pkLogin" class="pklogin" hidden>
-    <button type="button" id="pkBtn" class="btn primary big"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4M14 13.12c0 2.38 0 6.38-1 8.88M17.29 21.02c.12-.6.43-2.3.5-3.02M2 12a10 10 0 0 1 18-6M2 16h.01M21.8 16c.2-2 .131-5.354 0-6M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2M8.65 22c.21-.66.45-1.32.57-2M9 6.8a6 6 0 0 1 9 5.2v2"/></svg><span id="pkLbl">Parmak iziyle giriş</span></button>
-    <p class="orline"><span>ya da parolayla</span></p>
+    <button type="button" id="pkBtn" class="btn primary big"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4M14 13.12c0 2.38 0 6.38-1 8.88M17.29 21.02c.12-.6.43-2.3.5-3.02M2 12a10 10 0 0 1 18-6M2 16h.01M21.8 16c.2-2 .131-5.354 0-6M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2M8.65 22c.21-.66.45-1.32.57-2M9 6.8a6 6 0 0 1 9 5.2v2"/></svg><span id="pkLbl"></span></button>
+    <p class="orline"><span data-i18n="login.or_password"></span></p>
   </div>
   <form id="loginForm">
-    <label for="pw">Panel parolası</label>
+    <label for="pw" data-i18n="login.password"></label>
     <div class="pwrow">
       <input id="pw" class="field" type="password" autocomplete="current-password" required>
-      <button type="button" id="pwEye" class="eye" aria-label="Parolayı göster" aria-pressed="false"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg></button>
+      <button type="button" id="pwEye" class="eye" aria-pressed="false"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/><path class="slash" d="M4 4l16 16"/></svg></button>
     </div>
-    <button id="loginSubmit" class="btn primary big" type="submit">Giriş</button>
+    <button id="loginSubmit" class="btn primary big" type="submit" data-i18n="login.submit"></button>
     <p id="loginErr" class="err" role="alert"></p>
   </form>
-  <p class="foot">5 hatalı denemeden sonra 5 dakika beklenir. Panel oturumu 12 saat sürer.</p>
+  <p id="loginFoot" class="foot"></p>
 </div>
 
 <div id="app" hidden>
   <header class="top">
-    <button type="button" id="fgBtn" class="fgbtn" aria-label="Öndeki pencere. Pencere değiştir">
+    <button type="button" id="fgBtn" class="fgbtn">
       <span class="fgic" aria-hidden="true">
         <img id="fgIcon" alt="" hidden>
         <svg id="fgGen" class="ic s fgwin" viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 9h18"/></svg>
@@ -362,283 +366,292 @@
       <span id="fgName" class="fgname">…</span>
       <svg class="ic chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>
     </button>
-    <div class="live" role="group" aria-label="Canlı görüntü">
-      <button type="button" data-live="hd" aria-label="Canlı, tam kalite">HD</button>
-      <button type="button" data-live="sd" aria-label="Canlı, hafif">SD</button>
-      <button type="button" data-live="off" aria-label="Durdur"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg></button>
+    <div class="live" role="group" data-i18n-label="live.group">
+      <button type="button" data-live="hd" data-i18n-label="live.hd">HD</button>
+      <button type="button" data-live="sd" data-i18n-label="live.sd">SD</button>
+      <button type="button" data-live="off" data-i18n-label="live.off"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg></button>
     </div>
   </header>
-  <div id="offBanner" class="offbanner" role="alert" hidden><span id="offLeft"></span><button type="button" id="offCancel" class="btn">İptal et</button></div>
+  <div id="offBanner" class="offbanner" role="alert" hidden><span id="offLeft"></span><button type="button" id="offCancel" class="btn" data-i18n="off.cancel"></button></div>
 
   <main id="main">
     <!-- SCREEN -->
-    <section class="panel" id="p-ekran">
+    <section class="panel" id="p-screen">
       <div class="view" id="view">
         <div class="stage">
-          <img id="shot" class="shot-img" alt="Bilgisayarın ekranı">
-          <button type="button" id="tap" class="tap" aria-label="Ekrana dokunarak hedef seç"></button>
+          <img id="shot" class="shot-img" data-i18n-alt="screen.image">
+          <button type="button" id="tap" class="tap" data-i18n-label="screen.tap"></button>
           <span id="aim" class="aim" hidden></span>
-          <div id="bubble" class="bubble" role="group" aria-label="Hedefe ne yapılsın" hidden>
-            <span class="grp"><button type="button" class="pri" data-act="click">Tıkla</button><button type="button" data-act="double">Çift</button><button type="button" data-act="right">Sağ</button></span>
-            <span class="grp"><button type="button" data-act="up" aria-label="Yukarı kaydır"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button><button type="button" data-act="down" aria-label="Aşağı kaydır"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button></span>
-            <span class="grp"><button type="button" id="clearAim" class="x" aria-label="Nişanı kaldır"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>
+          <div id="bubble" class="bubble" role="group" data-i18n-label="screen.bubble" hidden>
+            <span class="grp"><button type="button" class="pri" data-act="click" data-i18n="act.click"></button><button type="button" data-act="double" data-i18n="act.double"></button><button type="button" data-act="right" data-i18n="act.right"></button></span>
+            <span class="grp"><button type="button" data-act="up" data-i18n-label="act.up"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button><button type="button" data-act="down" data-i18n-label="act.down"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button></span>
+            <span class="grp"><button type="button" id="clearAim" class="x" data-i18n-label="act.clear"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>
           </div>
         </div>
         <span class="livetag" aria-hidden="true"><span class="dot"></span><span class="lt"></span></span>
       </div>
 
       <div class="toolbar">
-        <div class="seg" role="group" aria-label="Görünüm">
-          <button type="button" data-view="screen">Tüm ekran</button>
-          <button type="button" data-view="window" aria-label="Öndeki pencere">Pencere</button>
+        <div class="seg" role="group" data-i18n-label="screen.view">
+          <button type="button" data-view="screen" data-i18n="screen.whole"></button>
+          <button type="button" data-view="window" data-i18n="screen.window" data-i18n-label="screen.window_label"></button>
         </div>
-        <button type="button" id="quickSw" class="tool" role="switch" aria-checked="false" aria-label="Hızlı dokunuş: dokunulan yer hemen tıklanır">Hızlı<span class="knob" aria-hidden="true"></span></button>
-        <button type="button" id="fsBtn" class="tool sq" aria-label="Tam ekran"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
+        <button type="button" id="quickSw" class="tool" role="switch" aria-checked="false" data-i18n-label="screen.quick_label"><span data-i18n="screen.quick"></span><span class="knob" aria-hidden="true"></span></button>
+        <button type="button" id="fsBtn" class="tool sq" data-i18n-label="screen.fullscreen"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
       </div>
 
-      <button type="button" id="tstrip" class="tstrip idle" aria-label="Seçilen hedef">
+      <button type="button" id="tstrip" class="tstrip idle">
         <span class="loupe" aria-hidden="true"><img id="loupe" alt=""><span class="aim"></span><svg class="ic idleic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg></span>
         <span class="tinfo"><span id="tName" class="tname"></span><span id="tKind" class="tkind"></span></span>
       </button>
 
       <div class="dock">
         <form id="qtForm" class="qtype">
-          <input id="qt" class="field" type="text" placeholder="Öndeki pencereye yaz" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" aria-label="Öndeki pencereye yazılacak metin">
-          <button type="submit" class="btn primary">Yaz</button>
+          <input id="qt" class="field" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" data-i18n-label="screen.type_label">
+          <button type="submit" class="btn primary" data-i18n="common.type"></button>
         </form>
         <div class="grid4">
-          <button type="button" class="key" data-k="enter">Enter</button>
-          <button type="button" class="key" data-k="esc">Esc</button>
-          <button type="button" class="key" data-k="alt+tab">Alt+Tab</button>
-          <button type="button" class="key" data-k="win">Win</button>
-          <button type="button" class="key" data-k="ctrl+c">Ctrl+C</button>
-          <button type="button" class="key" data-k="ctrl+v">Ctrl+V</button>
-          <button type="button" class="key" data-k="backspace" aria-label="Geri sil">⌫</button>
-          <button type="button" class="key" data-k="win+d" aria-label="Masaüstünü göster (Win+D)">Masaüstü</button>
+          <button type="button" class="key" data-k="enter"></button>
+          <button type="button" class="key" data-k="esc"></button>
+          <button type="button" class="key" data-k="alt+tab"></button>
+          <button type="button" class="key" data-k="win"></button>
+          <button type="button" class="key" data-k="ctrl+c"></button>
+          <button type="button" class="key" data-k="ctrl+v"></button>
+          <button type="button" class="key" data-k="backspace" data-i18n-label="key.backspace_label"></button>
+          <button type="button" class="key" data-k="win+d" data-i18n="screen.desktop" data-i18n-label="screen.desktop_label"></button>
         </div>
       </div>
     </section>
 
     <!-- KEYBOARD -->
-    <section class="panel" id="p-klavye" hidden>
+    <section class="panel" id="p-keyboard" hidden>
       <div class="stack">
-        <div class="reshead"><label class="label" for="text">Metin</label><span id="count" class="count">0 karakter</span></div>
-        <textarea id="text" class="field" rows="3" placeholder="Öndeki pencereye klavyeden basılmış gibi yazılır" autocomplete="off" spellcheck="false"></textarea>
+        <div class="reshead"><label class="label" for="text" data-i18n="kb.text"></label><span id="count" class="count"></span></div>
+        <textarea id="text" class="field" rows="3" data-i18n-ph="kb.text_ph" autocomplete="off" spellcheck="false"></textarea>
         <div class="typebtns">
-          <button type="button" id="typeBtn" class="btn">Yaz</button>
-          <button type="button" id="typeEnterBtn" class="btn primary">Yaz ve Enter'a bas<svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 5v7a3 3 0 0 1-3 3H5"/><path d="M9 11l-4 4 4 4"/></svg></button>
+          <button type="button" id="typeBtn" class="btn" data-i18n="common.type"></button>
+          <button type="button" id="typeEnterBtn" class="btn primary"><span data-i18n="kb.type_enter"></span><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 5v7a3 3 0 0 1-3 3H5"/><path d="M9 11l-4 4 4 4"/></svg></button>
         </div>
       </div>
 
       <div class="group" style="margin-top:4px">
-        <h2 class="eyebrow">Değiştirici tuşlar · basılı kalır</h2>
+        <h2 class="eyebrow" data-i18n="kb.mods"></h2>
         <div class="grid4">
-          <button type="button" class="key mod" data-mod="ctrl" aria-pressed="false">Ctrl</button>
-          <button type="button" class="key mod" data-mod="alt" aria-pressed="false">Alt</button>
-          <button type="button" class="key mod" data-mod="shift" aria-pressed="false">Shift</button>
-          <button type="button" class="key mod" data-mod="win" aria-pressed="false">Win</button>
+          <button type="button" class="key mod" data-mod="ctrl" aria-pressed="false"></button>
+          <button type="button" class="key mod" data-mod="alt" aria-pressed="false"></button>
+          <button type="button" class="key mod" data-mod="shift" aria-pressed="false"></button>
+          <button type="button" class="key mod" data-mod="win" aria-pressed="false"></button>
         </div>
         <form id="modForm" class="modrow">
-          <label for="modLetter" class="sr">Harf ya da rakam</label>
-          <input id="modLetter" class="field" type="text" placeholder="Harf ya da rakam" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
+          <label for="modLetter" class="sr" data-i18n="kb.letter"></label>
+          <input id="modLetter" class="field" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send">
         </form>
         <p id="modHint" class="note"></p>
       </div>
 
       <div class="group">
-        <h2 class="eyebrow">Temel</h2>
+        <h2 class="eyebrow" data-i18n="kb.basic"></h2>
         <div class="grid4">
-          <button type="button" class="key" data-k="enter">Enter</button>
-          <button type="button" class="key" data-k="esc">Esc</button>
-          <button type="button" class="key" data-k="tab">Tab</button>
-          <button type="button" class="key" data-k="backspace" aria-label="Geri sil">⌫</button>
-          <button type="button" class="key" data-k="space">Boşluk</button>
-          <button type="button" class="key" data-k="delete">Del</button>
-          <button type="button" class="key" data-k="home">Home</button>
-          <button type="button" class="key" data-k="end">End</button>
+          <button type="button" class="key" data-k="enter"></button>
+          <button type="button" class="key" data-k="esc"></button>
+          <button type="button" class="key" data-k="tab"></button>
+          <button type="button" class="key" data-k="backspace" data-i18n-label="key.backspace_label"></button>
+          <button type="button" class="key" data-k="space"></button>
+          <button type="button" class="key" data-k="delete"></button>
+          <button type="button" class="key" data-k="home"></button>
+          <button type="button" class="key" data-k="end"></button>
         </div>
       </div>
       <div class="group">
-        <h2 class="eyebrow">Düzenleme</h2>
+        <h2 class="eyebrow" data-i18n="kb.editing"></h2>
         <div class="grid4">
-          <button type="button" class="key" data-k="ctrl+a">Ctrl+A</button>
-          <button type="button" class="key" data-k="ctrl+c">Ctrl+C</button>
-          <button type="button" class="key" data-k="ctrl+v">Ctrl+V</button>
-          <button type="button" class="key" data-k="ctrl+x">Ctrl+X</button>
-          <button type="button" class="key" data-k="ctrl+z">Ctrl+Z</button>
-          <button type="button" class="key" data-k="ctrl+y">Ctrl+Y</button>
-          <button type="button" class="key" data-k="ctrl+s">Ctrl+S</button>
-          <button type="button" class="key" data-k="ctrl+f">Ctrl+F</button>
+          <button type="button" class="key" data-k="ctrl+a"></button>
+          <button type="button" class="key" data-k="ctrl+c"></button>
+          <button type="button" class="key" data-k="ctrl+v"></button>
+          <button type="button" class="key" data-k="ctrl+x"></button>
+          <button type="button" class="key" data-k="ctrl+z"></button>
+          <button type="button" class="key" data-k="ctrl+y"></button>
+          <button type="button" class="key" data-k="ctrl+s"></button>
+          <button type="button" class="key" data-k="ctrl+f"></button>
         </div>
       </div>
       <div class="group">
-        <h2 class="eyebrow">Pencere</h2>
+        <h2 class="eyebrow" data-i18n="kb.window"></h2>
         <div class="grid4">
-          <button type="button" class="key" data-k="alt+tab">Alt+Tab</button>
-          <button type="button" class="key" data-k="win">Win</button>
-          <button type="button" class="key" data-k="win+d">Win+D</button>
-          <button type="button" class="key risky" data-k="alt+f4" data-risky aria-label="Alt+F4, iki dokunuşla">Alt+F4</button>
+          <button type="button" class="key" data-k="alt+tab"></button>
+          <button type="button" class="key" data-k="win"></button>
+          <button type="button" class="key" data-k="win+d"></button>
+          <button type="button" class="key risky" data-k="alt+f4" data-risky data-i18n-label="kb.altf4_label"></button>
         </div>
       </div>
       <div class="group">
-        <h2 class="eyebrow">Yön</h2>
+        <h2 class="eyebrow" data-i18n="kb.arrows"></h2>
         <div class="arrows">
           <div class="dpad">
             <span></span>
-            <button type="button" class="key" data-k="up" aria-label="Yukarı ok">↑</button>
+            <button type="button" class="key" data-k="up" data-i18n-label="key.up_label"></button>
             <span></span>
-            <button type="button" class="key" data-k="left" aria-label="Sol ok">←</button>
-            <button type="button" class="key" data-k="down" aria-label="Aşağı ok">↓</button>
-            <button type="button" class="key" data-k="right" aria-label="Sağ ok">→</button>
+            <button type="button" class="key" data-k="left" data-i18n-label="key.left_label"></button>
+            <button type="button" class="key" data-k="down" data-i18n-label="key.down_label"></button>
+            <button type="button" class="key" data-k="right" data-i18n-label="key.right_label"></button>
           </div>
           <div class="pg">
-            <button type="button" class="key" data-k="pageup">PgUp</button>
-            <button type="button" class="key" data-k="pagedown">PgDn</button>
+            <button type="button" class="key" data-k="pageup"></button>
+            <button type="button" class="key" data-k="pagedown"></button>
           </div>
         </div>
       </div>
       <div class="group">
-        <h2 class="eyebrow">F tuşları</h2>
+        <h2 class="eyebrow" data-i18n="kb.fkeys"></h2>
         <div id="fkeys" class="grid6"></div>
       </div>
       <div class="group">
-        <h2 class="eyebrow">Son kullanılanlar</h2>
+        <h2 class="eyebrow" data-i18n="kb.recent"></h2>
         <div id="recent" class="chips"></div>
       </div>
     </section>
 
     <!-- ELEMENTS -->
-    <section class="panel" id="p-ogeler" hidden>
+    <section class="panel" id="p-elements" hidden>
       <div class="searchrow">
         <div class="search">
           <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
-          <input id="elQ" class="field" type="search" placeholder="Ada göre süz" autocomplete="off" enterkeyhint="search" aria-label="Öğeleri ada göre süz">
+          <input id="elQ" class="field" type="search" data-i18n-ph="el.filter_ph" autocomplete="off" enterkeyhint="search" data-i18n-label="el.filter_label">
         </div>
-        <button type="button" id="elRefresh" class="sq48" aria-label="Listeyi yenile"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
+        <button type="button" id="elRefresh" class="sq48" data-i18n-label="el.refresh"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.3 5.7"/><path d="M20 5v6h-6"/></svg></button>
       </div>
-      <div id="elChips" class="fchips" role="group" aria-label="Türe göre süz"></div>
+      <div id="elChips" class="fchips" role="group" data-i18n-label="el.by_kind"></div>
       <h2 id="elWinHead" class="eyebrow"></h2>
       <ul id="elList" class="rows"></ul>
-      <h2 id="elCapHead" class="eyebrow">Pencere düğmeleri</h2>
+      <h2 id="elCapHead" class="eyebrow" data-i18n="el.caption"></h2>
       <ul id="elCap" class="rows"></ul>
       <h2 id="elBarHead" class="eyebrow"></h2>
       <ul id="elBar" class="rows"></ul>
-      <p class="note">Satıra dokununca öğeye nişan alınır; Tıkla doğrudan tıklar, Yaz kutuya tıklayıp yazma alanını açar. Liste Windows'un öğe bilgisinden gelir; oyunlar ve çizim alanları gibi bazı uygulamalar öğelerini bildirmez.</p>
+      <p class="note" data-i18n="el.note"></p>
     </section>
 
     <!-- WINDOWS -->
-    <section class="panel" id="p-pencereler" hidden>
-      <div class="seg" role="group" aria-label="Liste">
-        <button type="button" id="wlOpenBtn" data-wl="open" aria-pressed="true">Açık pencereler</button>
-        <button type="button" data-wl="apps" aria-pressed="false">Uygulama aç</button>
+    <section class="panel" id="p-windows" hidden>
+      <div class="seg" role="group" data-i18n-label="win.list">
+        <button type="button" id="wlOpenBtn" data-wl="open" aria-pressed="true" data-i18n="win.open"></button>
+        <button type="button" data-wl="apps" aria-pressed="false" data-i18n="win.apps"></button>
       </div>
       <div id="wlOpen" class="stack">
         <ul id="winList" class="rows wins"></ul>
-        <p class="note">Dokunduğun pencere öne gelir. Yönetici olarak çalışan pencerelere Windows dışarıdan tıklama ve yazma izni vermez.</p>
+        <p class="note" data-i18n="win.note"></p>
       </div>
       <div id="wlApps" class="stack" hidden>
         <div class="search">
           <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>
-          <input id="appQ" class="field" type="search" placeholder="Uygulama ara" autocomplete="off" enterkeyhint="search" aria-label="Uygulama ara">
+          <input id="appQ" class="field" type="search" data-i18n-ph="apps.search" autocomplete="off" enterkeyhint="search" data-i18n-label="apps.search">
         </div>
-        <h2 id="appRecentHead" class="eyebrow" hidden>Son açılanlar</h2>
+        <h2 id="appRecentHead" class="eyebrow" data-i18n="apps.recent" hidden></h2>
         <ul id="appRecent" class="rows"></ul>
-        <h2 id="appAllHead" class="eyebrow">Tüm uygulamalar</h2>
+        <h2 id="appAllHead" class="eyebrow" data-i18n="apps.all"></h2>
         <ul id="appList" class="rows"></ul>
-        <p class="note">Başlat menüsündeki uygulamalar. Yönetici izni isteyen bir uygulama açılırken Windows onay sorar; bu onay uzaktan verilemez.</p>
+        <p class="note" data-i18n="apps.note"></p>
       </div>
     </section>
 
     <!-- MORE -->
-    <section class="panel" id="p-diger" hidden>
-      <h2 class="eyebrow">Oturum</h2>
-      <section class="card sesscard" aria-label="Oturum">
+    <section class="panel" id="p-more" hidden>
+      <h2 class="eyebrow" data-i18n="more.session"></h2>
+      <section class="card sesscard" data-i18n-label="more.session">
         <div class="session">
           <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
           <div><span id="sessWho"></span><span id="sessLeft"></span></div>
         </div>
-        <button type="button" id="logoutBtn" class="btn"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg>Çıkış yap</button>
+        <button type="button" id="logoutBtn" class="btn"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg><span data-i18n="more.logout"></span></button>
       </section>
 
-      <h2 class="eyebrow" style="margin-top:4px">Parmak izi ve yüz tanıma</h2>
-      <section class="card setlist" aria-label="Parmak izi ve yüz tanıma">
+      <h2 class="eyebrow" style="margin-top:4px" data-i18n="more.passkeys"></h2>
+      <section class="card setlist" data-i18n-label="more.passkeys">
         <ul id="pkList" class="pklist"></ul>
         <p id="pkNote" class="pknote" hidden></p>
         <div id="pkAddBox" class="pkadd" hidden>
-          <button type="button" id="pkAdd" class="btn"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>Bu telefonu ekle</button>
+          <button type="button" id="pkAdd" class="btn"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span data-i18n="pk.add"></span></button>
           <form id="pkForm" class="pkform" hidden>
-            <label for="pkPw" class="label">Eklemek için panel parolası</label>
+            <label for="pkPw" class="label" data-i18n="pk.password"></label>
             <input id="pkPw" class="field" type="password" autocomplete="current-password" required>
-            <div class="two"><button type="button" id="pkCancel" class="btn">Vazgeç</button><button type="submit" class="btn primary">Ekle</button></div>
+            <div class="two"><button type="button" id="pkCancel" class="btn" data-i18n="common.cancel"></button><button type="submit" class="btn primary" data-i18n="pk.add_btn"></button></div>
           </form>
         </div>
       </section>
 
-      <h2 class="eyebrow" style="margin-top:4px">Bilgisayar</h2>
-      <section class="card setlist" aria-label="Bilgisayar">
+      <h2 class="eyebrow" style="margin-top:4px" data-i18n="more.computer"></h2>
+      <section class="card setlist" data-i18n-label="more.computer">
         <div class="setrow">
           <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>
-          <div class="settext"><b>Kilitle</b><span>Panelden açılamaz; açmak için başında olmak gerekir.</span></div>
-          <button type="button" id="lockBtn" class="btn sm" aria-label="Bilgisayarı kilitle"><span class="lbl">Kilitle</span></button>
+          <div class="settext"><b data-i18n="more.lock"></b><span data-i18n="more.lock_sub"></span></div>
+          <button type="button" id="lockBtn" class="btn sm" data-i18n-label="more.lock_label"><span class="lbl" data-i18n="more.lock"></span></button>
         </div>
         <div class="setrow bad">
           <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v8"/><path d="M6.4 6.6a8 8 0 1 0 11.2 0"/></svg>
-          <div class="settext"><b>Kapat</b><span>Uygulamalar kaydetmeden kapanır; 15 sn içinde iptal edilebilir.</span></div>
-          <button type="button" id="offBtn" class="btn sm danger" aria-label="Bilgisayarı kapat">Kapat…</button>
+          <div class="settext"><b data-i18n="more.off"></b><span id="offSub"></span></div>
+          <button type="button" id="offBtn" class="btn sm danger" data-i18n="more.off_btn" data-i18n-label="more.off_label"></button>
         </div>
       </section>
-      <section id="offCard" class="card offcard" aria-label="Kapatma onayı" hidden>
-        <h2>Bilgisayar kapatılsın mı?</h2>
-        <p class="note">Açık uygulamalar kaydetmeden kapatılır. strcu da kapanır; bilgisayar uzaktan yeniden açılamaz. Onaydan sonra 15 sn içinde iptal edebilirsin.</p>
+      <section id="offCard" class="card offcard" data-i18n-label="off.confirm" hidden>
+        <h2 data-i18n="off.title"></h2>
+        <p id="offNote" class="note"></p>
         <h3 id="offWinHead" class="eyebrow"></h3>
         <ul id="offWins" class="offwins"></ul>
-        <div class="two"><button type="button" id="offNo" class="btn">Vazgeç</button><button type="button" id="offYes" class="btn danger">15 sn sonra kapat</button></div>
+        <div class="two"><button type="button" id="offNo" class="btn" data-i18n="common.cancel"></button><button type="button" id="offYes" class="btn danger"></button></div>
       </section>
 
-      <h2 class="eyebrow" style="margin-top:4px">Kayıt</h2>
+      <h2 class="eyebrow" style="margin-top:4px" data-i18n="more.language"></h2>
+      <section class="card setlist" data-i18n-label="more.language">
+        <div class="setrow">
+          <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9c-2.5-2.6-3.8-5.6-3.8-9S9.5 5.6 12 3z"/></svg>
+          <div class="settext"><b><label for="langSel" data-i18n="more.lang_title"></label></b><span id="langNote"></span></div>
+          <span class="selwrap"><select id="langSel"></select><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></span>
+        </div>
+      </section>
+
+      <h2 class="eyebrow" style="margin-top:4px" data-i18n="more.log"></h2>
       <ol id="logList" class="log"></ol>
       <button type="button" id="logMore" class="linkbtn" style="align-self:center" hidden></button>
     </section>
   </main>
 
-  <nav class="tabs" id="tabs" aria-label="Bölümler">
-    <button type="button" data-tab="ekran" aria-current="page"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg>Ekran</button>
-    <button type="button" data-tab="klavye"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14h9"/></svg>Klavye</button>
-    <button type="button" data-tab="ogeler"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg>Öğeler</button>
-    <button type="button" data-tab="pencereler"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="13" height="11" rx="1.5"/><path d="M8 8V6.5A1.5 1.5 0 0 1 9.5 5h10A1.5 1.5 0 0 1 21 6.5v8a1.5 1.5 0 0 1-1.5 1.5H16"/></svg>Pencereler</button>
-    <button type="button" data-tab="diger" aria-label="Diğer: oturum, kilit, kapatma, kayıt"><svg class="ic dots" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg>Diğer</button>
+  <nav class="tabs" id="tabs" data-i18n-label="tab.all">
+    <button type="button" data-tab="screen" aria-current="page"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg><span data-i18n="tab.screen"></span></button>
+    <button type="button" data-tab="keyboard"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14h9"/></svg><span data-i18n="tab.keyboard"></span></button>
+    <button type="button" data-tab="elements"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg><span data-i18n="tab.elements"></span></button>
+    <button type="button" data-tab="windows"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="13" height="11" rx="1.5"/><path d="M8 8V6.5A1.5 1.5 0 0 1 9.5 5h10A1.5 1.5 0 0 1 21 6.5v8a1.5 1.5 0 0 1-1.5 1.5H16"/></svg><span data-i18n="tab.windows"></span></button>
+    <button type="button" data-tab="more" data-i18n-label="tab.more_label"><svg class="ic dots" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span data-i18n="tab.more"></span></button>
   </nav>
 </div>
 
 <!-- FULL SCREEN: when the phone turns sideways or with ⛶ -->
 <div id="fs" class="fs" hidden>
-  <div id="fsStage" class="fsstage" aria-label="Bilgisayarın ekranı, tam ekran. Dokununca nişan alınır; iki parmakla yakınlaştırılır.">
+  <div id="fsStage" class="fsstage" data-i18n-label="fs.stage">
     <img id="fsImg" class="shot-img" alt="">
   </div>
   <div class="fsbar tl">
-    <button type="button" id="fsExit" class="fsbtn glass" aria-label="Tam ekrandan çık"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
+    <button type="button" id="fsExit" class="fsbtn glass" data-i18n-label="fs.exit"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
     <span class="livetag" aria-hidden="true"><span class="dot"></span><span class="lt"></span></span>
   </div>
   <div class="fsbar tr">
-    <div class="live" role="group" aria-label="Canlı görüntü">
-      <button type="button" data-live="hd" aria-label="Canlı, tam kalite">HD</button>
-      <button type="button" data-live="sd" aria-label="Canlı, hafif">SD</button>
-      <button type="button" data-live="off" aria-label="Durdur"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg></button>
+    <div class="live" role="group" data-i18n-label="live.group">
+      <button type="button" data-live="hd" data-i18n-label="live.hd">HD</button>
+      <button type="button" data-live="sd" data-i18n-label="live.sd">SD</button>
+      <button type="button" data-live="off" data-i18n-label="live.off"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg></button>
     </div>
   </div>
   <div class="fsbar bl">
     <button type="button" id="fsTarget" class="fschip glass" hidden><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/></svg><b id="fsTName"></b><span id="fsTKind"></span></button>
   </div>
   <div class="fsbar br">
-    <div class="fskeys glass" role="group" aria-label="Hızlı tuşlar">
-      <button type="button" id="fsKb" aria-label="Yazma kutusu" aria-expanded="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14h9"/></svg></button>
-      <button type="button" data-k="enter">Enter</button>
-      <button type="button" data-k="esc">Esc</button>
+    <div class="fskeys glass" role="group" data-i18n-label="fs.keys">
+      <button type="button" id="fsKb" data-i18n-label="fs.kb" aria-expanded="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14h9"/></svg></button>
+      <button type="button" data-k="enter"></button>
+      <button type="button" data-k="esc"></button>
     </div>
   </div>
   <form id="fsType" class="fstype glass" hidden>
-    <input id="fsQt" class="field" type="text" placeholder="Öndeki pencereye yaz" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" aria-label="Öndeki pencereye yazılacak metin">
-    <button type="submit" class="btn primary">Yaz</button>
+    <input id="fsQt" class="field" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" data-i18n-label="screen.type_label">
+    <button type="submit" class="btn primary" data-i18n="common.type"></button>
   </form>
 </div>
 
@@ -648,6 +661,38 @@
 'use strict';
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+
+// ---------- language ----------
+
+// The server picks the language (the one chosen under More, else the phone's) and embeds its texts here.
+const I18N = JSON.parse($('#i18n').textContent);
+const PLURAL = new Intl.PluralRules(I18N.lang);
+// Text for a key; {name} placeholders come from `args`, a plural value is chosen by args.n.
+function t(key, args) {
+  let s = I18N.dict[key];
+  if (s && typeof s === 'object') s = s[PLURAL.select(args && args.n != null ? args.n : 0)] || s.other;
+  if (typeof s !== 'string') return key;
+  return args ? s.replace(/\{(\w+)\}/g, (m, k) => k in args ? argText(k, args[k]) : m) : s;
+}
+function argText(k, v) { return v && typeof v === 'object' ? tm(v) : k === 'combo' ? prettyCombo(v) : String(v); }
+// A message from the server (log entry, error): a key and its arguments
+function tm(m) { return m && m.code ? t(m.code, m.args) : ''; }
+function kindName(k) { const key = 'kind.' + k.replace(/ /g, '_'); return key in I18N.dict ? t(key) : k; }
+function prettyCombo(c) {
+  return c.split('+').map(k => {
+    const v = I18N.dict['key.' + k];
+    return typeof v === 'string' ? v : k.length === 1 ? k.toUpperCase() : k.charAt(0).toUpperCase() + k.slice(1);
+  }).join('+');
+}
+// Fixed texts of the page; key buttons without a label show their key combination
+function applyI18n() {
+  $$('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
+  $$('[data-i18n-ph]').forEach(el => { el.placeholder = t(el.dataset.i18nPh); });
+  $$('[data-i18n-label]').forEach(el => el.setAttribute('aria-label', t(el.dataset.i18nLabel)));
+  $$('[data-i18n-alt]').forEach(el => { el.alt = t(el.dataset.i18nAlt); });
+  $$('[data-k], [data-mod]').forEach(b => { if (!b.textContent.trim() && !b.children.length) b.textContent = prettyCombo(b.dataset.k || b.dataset.mod); });
+}
+applyI18n();
 
 // Small preferences for this browser only; defaults apply if they cannot be read.
 const store = {
@@ -665,13 +710,13 @@ const S = {
   quick: store.get('quick', false),
   recent: store.get('recent', ['ctrl+shift+esc', 'win+r', 'ctrl+l']),
   aim: null, aimSeq: 0, target: null,
-  status: null, me: null, tab: 'ekran', fgHwnd: undefined,
+  status: null, me: null, tab: 'screen', fgHwnd: undefined,
   els: null, elKind: 'all',
   aimNext: null,        // crosshair to place on the next frame after a view change
   wl: store.get('wl', 'open'), apps: null, appRecent: store.get('appRecent', []),
   refreshing: false, again: false, liveReq: null, timer: null,
   mods: new Set(),      // modifier keys selected on Keyboard (one-shot)
-  typeInto: '',         // name of the box picked with "Yaz" on Elements
+  typeInto: '',         // name of the box picked with Type on Elements
   fs: false, fsAuto: false, fsReal: false,
 };
 
@@ -679,18 +724,14 @@ const LOUPE = 96;       // area shown in the target strip magnifier (physical pi
 // HD does not scale down (the server never scales up; 4096 is only a ceiling); SD scales the long side to 1280.
 // Frames taken while paused (startup, view change) are SD.
 const QUALITY = { hd: { max: 4096, q: 85 }, sd: { max: 1280, q: 70 } };
-const KIND_TR = { 'button': 'düğme', 'menu item': 'menü öğesi', 'tab': 'sekme', 'list item': 'liste öğesi', 'link': 'bağlantı', 'text field': 'metin kutusu', 'checkbox': 'onay kutusu', 'radio button': 'seçenek', 'dropdown': 'açılır liste', 'tree item': 'ağaç öğesi', 'data item': 'veri öğesi',
-  'menu': 'menü', 'list': 'liste', 'document': 'belge', 'text': 'metin', 'image': 'resim', 'toolbar': 'araç çubuğu', 'title bar': 'başlık çubuğu',
-  'scrollbar': 'kaydırma çubuğu', 'slider': 'kaydırıcı', 'window': 'pencere', 'pane': 'bölme', 'group': 'grup', 'element': 'öğe' };
 // Kind filters on the Elements tab and the order in the list
-const GROUP = { 'list item': 'liste', 'data item': 'liste', 'button': 'dugme', 'checkbox': 'dugme', 'radio button': 'dugme', 'dropdown': 'dugme', 'tree item': 'gezinti', 'tab': 'gezinti', 'link': 'gezinti', 'menu item': 'gezinti', 'text field': 'metin' };
-const GROUPS = [['all', 'Tümü'], ['liste', 'Liste'], ['dugme', 'Düğmeler'], ['gezinti', 'Gezinti'], ['metin', 'Metin kutusu']];
-const ORDER = { liste: 0, metin: 1, gezinti: 2, dugme: 3 };
+const GROUP = { 'list item': 'list', 'data item': 'list', 'button': 'button', 'checkbox': 'button', 'radio button': 'button', 'dropdown': 'button', 'tree item': 'nav', 'tab': 'nav', 'link': 'nav', 'menu item': 'nav', 'text field': 'text' };
+const GROUPS = ['all', 'list', 'button', 'nav', 'text'];
+const ORDER = { list: 0, text: 1, nav: 2, button: 3 };
 // The window's title bar buttons (Windows and browsers, Turkish and English); moved to the end of the list
 const CAPTION = new Set(['minimize', 'minimise', 'maximize', 'maximise', 'restore', 'restore down', 'close', 'simge durumuna kucult', 'ekrani kapla', 'onceki boyut', 'asagi geri getir', 'geri yukle', 'kapat', 'kucult', 'buyut', 'en aza indir', 'en buyuk duruma getir']);
-const VERB = { click: 'Tıklandı', double: 'Çift tıklandı', right: 'Sağ tıklandı', up: 'Yukarı kaydırıldı', down: 'Aşağı kaydırıldı' };
 const MODS = ['ctrl', 'alt', 'shift', 'win'];
-const KEYNAME = { ctrl: 'Ctrl', alt: 'Alt', shift: 'Shift', win: 'Win', enter: 'Enter', esc: 'Esc', tab: 'Tab', space: 'Boşluk', backspace: '⌫', delete: 'Del', home: 'Home', end: 'End', pageup: 'PgUp', pagedown: 'PgDn', up: '↑', down: '↓', left: '←', right: '→' };
+const OFF_SECS = 15;    // SHUTDOWN_SECS on the server
 const ICON = {
   cross: 'M19 12a7 7 0 1 1-14 0 7 7 0 0 1 14 0M12 2v4M12 18v4M2 12h4M18 12h4',
   max: 'M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5',
@@ -723,25 +764,27 @@ function svgIcon(d, cls, label) {
 }
 
 function toast(msg, bad) {
-  const t = $('#toast');
-  t.textContent = msg; t.classList.toggle('bad', !!bad); t.classList.add('on');
-  clearTimeout(toast.h); toast.h = setTimeout(() => t.classList.remove('on'), 2800);
+  const el = $('#toast');
+  el.textContent = msg; el.classList.toggle('bad', !!bad); el.classList.add('on');
+  clearTimeout(toast.h); toast.h = setTimeout(() => el.classList.remove('on'), 2800);
 }
-function busy(on) { $$('.livetag').forEach(t => t.classList.toggle('busy', on)); }
+function busy(on) { $$('.livetag').forEach(tag => tag.classList.toggle('busy', on)); }
+
+function authError() { const e = new Error(t('err.signin_required')); e.auth = true; return e; }
 
 async function api(path, body) {
   const opt = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
   const r = await fetch(path, opt);
   const data = (r.headers.get('content-type') || '').includes('json') ? await r.json() : null;
-  if (r.status === 401 && path !== '/api/login' && path !== '/api/passkey/login') { showLogin(); throw new Error('giriş gerekli'); }
-  if (!r.ok) throw new Error((data && data.error) || ('HTTP ' + r.status));
+  if (r.status === 401 && path !== '/api/login' && path !== '/api/passkey/login') { showLogin(); throw authError(); }
+  if (!r.ok) throw new Error(data && data.error ? tm(data.error) : 'HTTP ' + r.status);
   return data;
 }
 
 async function fetchShot(params, signal) {
   const r = await fetch('/api/shot?' + new URLSearchParams(params), { cache: 'no-store', signal });
-  if (r.status === 401) { showLogin(); throw new Error('giriş gerekli'); }
-  if (!r.ok) throw new Error('ekran görüntüsü alınamadı');
+  if (r.status === 401) { showLogin(); throw authError(); }
+  if (!r.ok) throw new Error(t('err.shot'));
   const n = k => +r.headers.get('x-screen-' + k);
   return { area: { x: n('x'), y: n('y'), w: n('w'), h: n('h') }, url: URL.createObjectURL(await r.blob()) };
 }
@@ -751,10 +794,7 @@ function after(ms) { setTimeout(() => { refresh(); status(); }, ms || 450); }
 
 // Search ignores case and Turkish letter differences (ş=s, ı=i ...)
 function fold(s) { return s.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/ı/g, 'i'); }
-function hhmm(t) { const d = new Date(t); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
-function prettyCombo(c) {
-  return c.split('+').map(k => KEYNAME[k] || (k.length === 1 ? k.toUpperCase() : k.charAt(0).toUpperCase() + k.slice(1))).join('+');
-}
+function hhmm(ms) { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
 
 // ---------- sign-in ----------
 
@@ -779,7 +819,7 @@ $('#loginForm').addEventListener('submit', async e => {
 function showPassword(on) {
   $('#pw').type = on ? 'text' : 'password';
   $('#pwEye').setAttribute('aria-pressed', String(on));
-  $('#pwEye').setAttribute('aria-label', on ? 'Parolayı gizle' : 'Parolayı göster');
+  $('#pwEye').setAttribute('aria-label', on ? t('login.hide_password') : t('login.show_password'));
 }
 $('#pwEye').onclick = () => { showPassword($('#pw').type === 'password'); $('#pw').focus(); };
 
@@ -805,7 +845,7 @@ const b64d = s => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/')),
 const PK_OK = !!(window.PublicKeyCredential && navigator.credentials && navigator.credentials.create);
 // Face ID on iPhone and iPad (Touch ID on older ones), fingerprint elsewhere
 const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-$('#pkLbl').textContent = IOS ? 'Face ID ile giriş' : 'Parmak iziyle giriş';
+$('#pkLbl').textContent = IOS ? t('login.pk_faceid') : t('login.pk_fingerprint');
 
 function pkReady() { return PK_OK && !!(S.me && S.me.passkey); }
 
@@ -825,13 +865,13 @@ setInterval(() => { if (!$('#login').hidden && !document.hidden && pkReady()) pk
 
 function pkError(e) {
   switch (e && e.name) {
-    case 'NotAllowedError': return 'İptal edildi ya da süre doldu';
-    case 'AbortError': return 'İptal edildi';
-    case 'InvalidStateError': return 'Bu telefon zaten ekli';
-    case 'NotSupportedError': return 'Bu cihaz parmak izi ya da yüz tanımayı desteklemiyor';
-    case 'SecurityError': return 'Parmak izi bu adreste kullanılamaz';
+    case 'NotAllowedError': return t('pk.err_not_allowed');
+    case 'AbortError': return t('pk.err_abort');
+    case 'InvalidStateError': return t('err.pk_exists');
+    case 'NotSupportedError': return t('pk.err_unsupported');
+    case 'SecurityError': return t('err.pk_no_site');
   }
-  return (e && e.message) || 'Parmak izi alınamadı';
+  return (e && e.message) || t('pk.err_generic');
 }
 
 $('#pkBtn').onclick = async () => {
@@ -859,13 +899,13 @@ $('#pkBtn').onclick = async () => {
 // Name shown in the list: "Android · Chrome", "iPhone · Safari"
 function deviceName() {
   const ua = navigator.userAgent;
-  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) || IOS ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : 'Cihaz';
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) || IOS ? 'iPad' : /Android/.test(ua) ? 'Android' : /Windows/.test(ua) ? 'Windows' : /Mac/.test(ua) ? 'Mac' : t('pk.device');
   const br = /EdgA?\/|EdgiOS/.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /FxiOS|Firefox\//.test(ua) ? 'Firefox'
     : /CriOS|Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : '';
   return br ? os + ' · ' + br : os;
 }
 
-function fmtDay(t) { return t ? +t.slice(8, 10) + '.' + t.slice(5, 7) + '.' + t.slice(0, 4) : ''; }
+function fmtDay(s) { return s ? new Date(s.slice(0, 10) + 'T00:00').toLocaleDateString(I18N.lang, { day: 'numeric', month: 'short', year: 'numeric' }) : ''; }
 
 async function loadPasskeys() {
   try { S.pk = await api('/api/passkeys'); renderPasskeys(); } catch (_) {}
@@ -876,28 +916,28 @@ function renderPasskeys() {
   $('#pkList').replaceChildren(...d.list.map(k => h('li', { class: 'setrow' },
     svgIcon(ICON.finger),
     h('div', { class: 'settext' }, h('b', {}, k.name), h('span', {}, [
-      'Eklendi ' + fmtDay(k.created),
-      k.last_used ? 'son giriş ' + fmtDay(k.last_used) + ' ' + k.last_used.slice(11, 16) : 'henüz kullanılmadı',
-      k.here ? null : k.site + ' adresinde',
+      t('pk.added_on', { date: fmtDay(k.created) }),
+      k.last_used ? t('pk.last_used', { date: fmtDay(k.last_used), time: k.last_used.slice(11, 16) }) : t('pk.unused'),
+      k.here ? null : t('pk.at_site', { site: k.site }),
     ].filter(Boolean).join(' · '))),
-    h('button', { type: 'button', class: 'btn sm', 'aria-label': k.name + ': sil', onclick: e => deletePasskey(e.currentTarget, k) }, h('span', { class: 'lbl' }, 'Sil')))));
+    h('button', { type: 'button', class: 'btn sm', 'aria-label': t('pk.delete_label', { name: k.name }), onclick: e => deletePasskey(e.currentTarget, k) }, h('span', { class: 'lbl' }, t('pk.delete'))))));
   const canAdd = PK_OK && !!d.site;
   let note = '';
-  if (!PK_OK) note = 'Bu tarayıcı parmak izi ya da yüz tanıma ile girişi desteklemiyor.';
-  else if (!d.site) note = d.host ? 'Parmak izi yalnızca ' + d.host + ' adresinden eklenebilir.' : 'Parmak izi için panelin alan adıyla (tünel üzerinden) açılması gerekir.';
-  else if (!d.list.length) note = 'Eklersen girişte parola yerine ' + (IOS ? 'Face ID' : 'parmak izi ya da yüz tanıma') + ' kullanılır. Parola da geçerli kalır.';
+  if (!PK_OK) note = t('pk.no_browser');
+  else if (!d.site) note = d.host ? t('pk.only_host', { host: d.host }) : t('pk.need_domain');
+  else if (!d.list.length) note = t('pk.intro', { method: IOS ? t('pk.method_faceid') : t('pk.method_fp') });
   $('#pkNote').textContent = note; $('#pkNote').hidden = !note;
   $('#pkAddBox').hidden = !canAdd;
   $('#pkAdd').hidden = !$('#pkForm').hidden;
 }
 
 async function deletePasskey(btn, k) {
-  if (!arm(btn, 'Emin misin?')) return;
+  if (!arm(btn, t('common.sure'))) return;
   try {
     await api('/api/passkey/delete', { id: k.id });
     // Also removes it from the phone's own list if supported (Chrome)
     try { if (k.here && PublicKeyCredential.signalUnknownCredential) PublicKeyCredential.signalUnknownCredential({ rpId: k.site, credentialId: k.id }).catch(() => {}); } catch (_) {}
-    toast('Silindi: ' + k.name);
+    toast(t('toast.deleted', { name: k.name }));
     loadPasskeys();
   } catch (e) { toast(e.message, true); }
 }
@@ -928,14 +968,14 @@ $('#pkForm').addEventListener('submit', async e => {
       } });
     } catch (e) { throw new Error(pkError(e)); }
     const r = cred.response;
-    if (!r.getPublicKey || !r.getAuthenticatorData) throw new Error('Tarayıcı eski: güncelleyip yeniden dene');
+    if (!r.getPublicKey || !r.getAuthenticatorData) throw new Error(t('pk.err_old_browser'));
     const key = r.getPublicKey();
-    if (!key || r.getPublicKeyAlgorithm() !== -7) throw new Error('Bu cihazın anahtar türü desteklenmiyor');
+    if (!key || r.getPublicKeyAlgorithm() !== -7) throw new Error(t('err.pk_alg'));
     const res = await api('/api/passkey/register', {
       password: pw, id: b64e(cred.rawId), client_data: b64e(r.clientDataJSON), auth_data: b64e(r.getAuthenticatorData()),
       public_key: b64e(key), alg: -7, name: deviceName(),
     });
-    toast('Eklendi: ' + res.name);
+    toast(t('toast.added', { name: res.name }));
     $('#pkForm').hidden = true; $('#pkPw').value = '';
     loadPasskeys();
   } catch (err) {
@@ -947,7 +987,7 @@ $('#pkForm').addEventListener('submit', async e => {
 // ---------- screenshot and status ----------
 
 // Frames are taken only while visible: the Screen tab or full screen.
-function onScreen() { return S.tab === 'ekran' || S.fs; }
+function onScreen() { return S.tab === 'screen' || S.fs; }
 
 // One request at a time: frames do not pile up on a slow network. `why`:
 //   'live'   live frame from the timer; cancelled when the mode changes, so no frame lands after pausing
@@ -978,7 +1018,7 @@ async function refresh(why) {
     if (why) status();
   } catch (e) {
     S.aimNext = null;
-    if (e.name !== 'AbortError' && e.message !== 'giriş gerekli') toast(e.message, true);
+    if (e.name !== 'AbortError' && !e.auth) toast(e.message, true);
   } finally {
     S.refreshing = false; S.liveReq = null; busy(false);
     if (S.again) { S.again = false; refresh('urgent'); }
@@ -997,10 +1037,10 @@ async function status() {
 // Foreground window in the header: app icon and title; a red lock when locked
 function renderFg() {
   const s = S.status || {}, locked = s.lock === 'locked';
-  const name = locked ? 'Bilgisayar kilitli' : (s.foreground || 'Masaüstü');
+  const name = locked ? t('top.locked') : (s.foreground || t('top.desktop'));
   $('#fgName').textContent = name;
   $('#fgBtn').classList.toggle('locked', locked);
-  $('#fgBtn').setAttribute('aria-label', (locked ? 'Bilgisayar kilitli' : 'Öndeki pencere: ' + name) + '. Pencere değiştir');
+  $('#fgBtn').setAttribute('aria-label', locked ? t('top.locked_label') : t('top.fg_label', { name }));
   const hw = s.foreground_hwnd == null ? null : s.foreground_hwnd;
   if (hw === S.fgHwnd) return;
   S.fgHwnd = hw;
@@ -1010,21 +1050,21 @@ function renderFg() {
 // SVG elements have no .hidden property; hide them with the attribute
 $('#fgIcon').onload = () => { $('#fgIcon').hidden = false; $('#fgGen').setAttribute('hidden', ''); };
 $('#fgIcon').onerror = () => { $('#fgIcon').hidden = true; $('#fgGen').removeAttribute('hidden'); };
-$('#fgBtn').onclick = () => { S.wl = 'open'; store.set('wl', S.wl); showTab('pencereler'); };
+$('#fgBtn').onclick = () => { S.wl = 'open'; store.set('wl', S.wl); showTab('windows'); };
 
 function renderQtPlaceholder() {
   const w = S.typeInto || (S.status && S.status.foreground);
-  const ph = w ? 'Yaz → ' + w : 'Öndeki pencereye yaz';
+  const ph = w ? t('screen.type_to', { name: w }) : t('screen.type_ph');
   $('#qt').placeholder = ph; $('#fsQt').placeholder = ph;
 }
 
 // State in the corner of the image. When paused or lagging, the frame's time is shown.
 function renderLiveTag() {
   let text, state;
-  if (S.mode === 'off') { text = 'Durdu' + (S.shotAt ? ' · ' + hhmm(S.shotAt) : ''); state = 'off'; }
-  else if (S.shotAt && Date.now() - S.shotAt > 10000) { text = 'Gecikiyor · ' + hhmm(S.shotAt); state = 'late'; }
-  else { text = 'Canlı · ' + S.mode.toUpperCase(); state = 'on'; }
-  $$('.livetag').forEach(t => { t.dataset.state = state; $('.lt', t).textContent = text; });
+  if (S.mode === 'off') { text = t('live.paused') + (S.shotAt ? ' · ' + hhmm(S.shotAt) : ''); state = 'off'; }
+  else if (S.shotAt && Date.now() - S.shotAt > 10000) { text = t('live.late') + ' · ' + hhmm(S.shotAt); state = 'late'; }
+  else { text = t('live.on') + ' · ' + S.mode.toUpperCase(); state = 'on'; }
+  $$('.livetag').forEach(tag => { tag.dataset.state = state; $('.lt', tag).textContent = text; });
 }
 setInterval(renderLiveTag, 2000);
 
@@ -1117,9 +1157,9 @@ function setAim(p) {
   placeAim();
   renderTarget('loading');
   loadLoupe(p, seq);
-  api('/api/target?x=' + p.x + '&y=' + p.y).then(t => {
+  api('/api/target?x=' + p.x + '&y=' + p.y).then(el => {
     if (seq !== S.aimSeq) return;
-    S.target = t && { ...t, kind: KIND_TR[t.kind] || t.kind, source: t.source === 'taskbar' ? 'görev çubuğu' : t.source };
+    S.target = el && { ...el, kind: kindName(el.kind), source: el.source === 'taskbar' ? t('target.taskbar') : el.source };
     renderTarget();
   }).catch(() => { if (seq === S.aimSeq) renderTarget('error'); });
 }
@@ -1129,15 +1169,15 @@ function renderTarget(state) {
   const has = !!S.aim;
   let name, kind;
   if (!has) {
-    name = S.quick ? 'Hızlı dokunuş açık' : 'Ekrana dokun, nişan al';
-    kind = S.quick ? 'Dokunduğun yer hemen tıklanır' : 'Sonra Tıkla, Çift, Sağ ya da kaydır';
+    name = S.quick ? t('target.quick') : t('target.idle');
+    kind = S.quick ? t('target.quick_sub') : t('target.idle_sub');
   } else if (state === 'loading') { name = '…'; kind = 'x ' + S.aim.x + ' · y ' + S.aim.y; }
-  else if (state === 'error') { name = 'Öğe okunamadı'; kind = ''; }
+  else if (state === 'error') { name = t('target.error'); kind = ''; }
   else if (S.target) { name = S.target.name; kind = [S.target.kind, S.target.source].filter(Boolean).join(' · '); }
-  else { name = 'Adı olmayan bir alan'; kind = 'Windows bu noktada öğe bildirmiyor'; }
+  else { name = t('target.unnamed'); kind = t('target.unnamed_sub'); }
   $('#tstrip').classList.toggle('idle', !has);
   $('#tName').textContent = name; $('#tKind').textContent = kind;
-  $('#tstrip').setAttribute('aria-label', has ? 'Hedef: ' + name + (kind ? ', ' + kind : '') : name);
+  $('#tstrip').setAttribute('aria-label', has ? t('target.label', { name }) + (kind ? ', ' + kind : '') : name);
   $('#fsTarget').hidden = !has;
   $('#fsTName').textContent = name;
   $('#fsTKind').textContent = has && S.target ? S.target.kind : '';
@@ -1177,7 +1217,7 @@ async function act(kind, p) {
   try {
     if (scroll) await api('/api/scroll', { x: p.x, y: p.y, notches: kind === 'up' ? 5 : -5 });
     else await api('/api/click', { x: p.x, y: p.y, button: kind === 'right' ? 'right' : 'left', count: kind === 'double' ? 2 : 1, label: name || undefined });
-    toast(VERB[kind] + (name ? ' · ' + name : ''));
+    toast(t('act.done_' + kind) + (name ? ' · ' + name : ''));
   } catch (e) { toast(e.message, true); return; }
   if (scroll) {
     // The crosshair stays so scrolling can be repeated
@@ -1190,12 +1230,12 @@ async function act(kind, p) {
 $$('[data-act]').forEach(b => b.onclick = () => act(b.dataset.act));
 
 // Types the text into the foreground window (the phone keyboard's Enter only submits; there is a separate Enter key)
-async function sendText(t, enter) {
-  const where = S.typeInto || (S.status && S.status.foreground) || 'öndeki pencere';
+async function sendText(text, enter) {
+  const where = S.typeInto || (S.status && S.status.foreground) || t('screen.fg_window');
   try {
-    if (t) await api('/api/type', { text: t, enter }); else await api('/api/key', { combo: 'enter' });
-    const n = [...t].length;
-    toast((n ? n + ' karakter yazıldı' + (enter ? ', Enter' : '') : 'Enter gönderildi') + ' → ' + where);
+    if (text) await api('/api/type', { text, enter }); else await api('/api/key', { combo: 'enter' });
+    const n = [...text].length;
+    toast(!n ? t('toast.enter_sent', { where }) : enter ? t('toast.typed_enter', { n, where }) : t('toast.typed', { n, where }));
     S.typeInto = ''; renderQtPlaceholder();
     after();
     return true;
@@ -1228,10 +1268,10 @@ function withMods(combo) {
   return [...MODS.filter(m => S.mods.has(m) || parts.includes(m)), ...parts.filter(p => !MODS.includes(p))].join('+');
 }
 
-async function sendKey(combo, label, remember) {
+async function sendKey(combo, remember) {
   try {
     await api('/api/key', { combo });
-    toast('Gönderildi: ' + (label || prettyCombo(combo)));
+    toast(t('toast.sent', { combo }));
     if (remember) addRecent(combo);
     clearMods();
     after();
@@ -1242,20 +1282,17 @@ async function sendKey(combo, label, remember) {
 document.addEventListener('click', e => {
   const b = e.target.closest('[data-k]');
   if (!b) return;
-  if (b.hasAttribute('data-risky') && !arm(b, 'Emin misin?')) return;
+  if (b.hasAttribute('data-risky') && !arm(b, t('common.sure'))) return;
   // Modifier keys apply only on the Keyboard tab
-  const mods = !!b.closest('#p-klavye') && S.mods.size > 0;
-  const combo = mods ? withMods(b.dataset.k) : b.dataset.k;
-  sendKey(combo, mods ? null : (b.getAttribute('aria-label') || b.textContent.trim()).replace(/, iki dokunuşla$/, ''), mods);
+  const mods = !!b.closest('#p-keyboard') && S.mods.size > 0;
+  sendKey(mods ? withMods(b.dataset.k) : b.dataset.k, mods);
 });
 
 function renderMods() {
   $$('[data-mod]').forEach(b => b.setAttribute('aria-pressed', String(S.mods.has(b.dataset.mod))));
-  const sel = MODS.filter(m => S.mods.has(m)).map(m => KEYNAME[m]).join(' + ');
-  $('#modHint').textContent = sel
-    ? sel + ' seçili: dokunacağın sonraki tuş ' + sel + ' ile birlikte basılır' + (sel === 'Ctrl' ? ' (Ctrl + C = kopyala).' : '.')
-    : 'Ctrl, Alt, Shift ya da Win’e dokun; sonraki tuş onunla birlikte basılır. Harf için kutuya yaz.';
-  $('#modLetter').placeholder = sel ? sel + ' + harf ya da rakam' : 'Harf ya da rakam';
+  const on = MODS.filter(m => S.mods.has(m)), sel = on.map(prettyCombo).join(' + ');
+  $('#modHint').textContent = !sel ? t('kb.mod_hint') : on.join() === 'ctrl' ? t('kb.mod_on_ctrl', { mods: sel }) : t('kb.mod_on', { mods: sel });
+  $('#modLetter').placeholder = sel ? t('kb.letter_with', { mods: sel }) : t('kb.letter');
 }
 function clearMods() { if (S.mods.size) { S.mods.clear(); renderMods(); } }
 $$('[data-mod]').forEach(b => b.onclick = () => {
@@ -1269,9 +1306,8 @@ $('#modLetter').addEventListener('input', e => {
   const c = [...e.target.value.trim()].pop();
   e.target.value = '';
   if (!c) return;
-  if (c === '+' || /\s/.test(c)) { toast('Tek bir harf ya da rakam yaz', true); return; }
-  const k = c.toLowerCase();
-  sendKey(withMods(k), null, S.mods.size > 0);
+  if (c === '+' || /\s/.test(c)) { toast(t('kb.one_letter'), true); return; }
+  sendKey(withMods(c.toLowerCase()), S.mods.size > 0);
 });
 $('#modForm').addEventListener('submit', e => e.preventDefault());
 
@@ -1280,20 +1316,20 @@ function addRecent(c) {
   store.set('recent', S.recent); renderRecent();
 }
 function renderRecent() {
-  $('#recent').replaceChildren(...S.recent.map(c => h('button', { type: 'button', 'aria-label': 'Gönder: ' + prettyCombo(c), onclick: () => sendKey(c, null, true) }, prettyCombo(c))));
+  $('#recent').replaceChildren(...S.recent.map(c => h('button', { type: 'button', 'aria-label': t('kb.send_label', { combo: c }), onclick: () => sendKey(c, true) }, prettyCombo(c))));
 }
 
 $('#fkeys').replaceChildren(...Array.from({ length: 12 }, (_, i) => h('button', { type: 'button', class: 'key', 'data-k': 'f' + (i + 1) }, 'F' + (i + 1))));
 
 // ---------- keyboard: text ----------
 
-function updateCount() { $('#count').textContent = [...$('#text').value].length + ' karakter'; }
+function updateCount() { $('#count').textContent = t('kb.count', { n: [...$('#text').value].length }); }
 $('#text').addEventListener('input', updateCount);
 
 async function typeText(enter) {
-  const ta = $('#text'), t = ta.value;
-  if (!t && !enter) { ta.focus(); return; }
-  if (await sendText(t, enter)) { ta.value = ''; updateCount(); }
+  const ta = $('#text'), v = ta.value;
+  if (!v && !enter) { ta.focus(); return; }
+  if (await sendText(v, enter)) { ta.value = ''; updateCount(); }
 }
 $('#typeBtn').onclick = () => typeText(false);
 $('#typeEnterBtn').onclick = () => typeText(true);
@@ -1306,12 +1342,12 @@ function center(r) { return { x: Math.round(r.x + r.w / 2), y: Math.round(r.y + 
 async function loadElements() {
   const btn = $('#elRefresh');
   btn.disabled = true; btn.classList.add('spin');
-  if (!S.els) $('#elList').replaceChildren(h('li', { class: 'empty' }, 'Yükleniyor…'));
+  if (!S.els) $('#elList').replaceChildren(h('li', { class: 'empty' }, t('common.loading')));
   try {
     S.els = (await api('/api/elements')).map(e => {
       const bar = e.source === 'taskbar';
       return {
-        name: e.name, kind: KIND_TR[e.kind] || e.kind, raw: e.kind, group: GROUP[e.kind] || 'dugme', rect: e.rect, bar,
+        name: e.name, kind: kindName(e.kind), raw: e.kind, group: GROUP[e.kind] || 'button', rect: e.rect, bar,
         cap: !bar && e.kind === 'button' && CAPTION.has(fold(e.name.trim())),
       };
     });
@@ -1323,10 +1359,10 @@ async function loadElements() {
 function elRow(it) {
   const text = it.raw === 'text field';
   return h('li', {},
-    h('button', { type: 'button', class: 'rowmain', 'aria-label': it.name + ': nişan al', onclick: () => aimAt(it) },
+    h('button', { type: 'button', class: 'rowmain', 'aria-label': t('el.aim_label', { name: it.name }), onclick: () => aimAt(it) },
       svgIcon(ICON.cross),
       h('span', { class: 'rowtext' }, h('span', { class: 'rowname' }, it.name), h('span', { class: 'rowsub' }, it.kind))),
-    h('button', { type: 'button', class: 'rowside', 'aria-label': text ? it.name + ' kutusuna tıkla ve yaz' : it.name + ' öğesine tıkla', onclick: () => text ? typeInto(it) : clickElement(it) }, text ? 'Yaz' : 'Tıkla'));
+    h('button', { type: 'button', class: 'rowside', 'aria-label': text ? t('el.type_label', { name: it.name }) : t('el.click_label', { name: it.name }), onclick: () => text ? typeInto(it) : clickElement(it) }, text ? t('common.type') : t('act.click')));
 }
 
 function renderElements() {
@@ -1339,19 +1375,19 @@ function renderElements() {
   const counts = { all: hits.length };
   for (const e of hits) counts[e.group] = (counts[e.group] || 0) + 1;
   $('#elChips').hidden = !all.length;
-  $('#elChips').replaceChildren(...GROUPS.filter(([k]) => has(k)).map(([k, label]) =>
+  $('#elChips').replaceChildren(...GROUPS.filter(has).map(k =>
     h('button', { type: 'button', 'aria-pressed': String(S.elKind === k), onclick: () => { S.elKind = k; renderElements(); } },
-      label, h('span', { class: 'n' }, String(counts[k] || 0)))));
+      t('group.' + k), h('span', { class: 'n' }, String(counts[k] || 0)))));
 
   const shown = S.elKind === 'all' ? hits : hits.filter(e => e.group === S.elKind);
   const win = shown.filter(e => !e.bar && !e.cap).sort((a, b) => ORDER[a.group] - ORDER[b.group]);
   const cap = shown.filter(e => e.cap), bar = shown.filter(e => e.bar);
-  $('#elWinHead').textContent = 'Öndeki pencere · ' + win.length;
+  $('#elWinHead').textContent = t('el.win_head', { n: win.length });
   $('#elList').replaceChildren(...(win.length ? win.map(elRow)
-    : [h('li', { class: 'empty' }, q || S.elKind !== 'all' ? 'Eşleşen öğe yok' : 'Bu pencere adı olan tıklanabilir öğe bildirmiyor')]));
+    : [h('li', { class: 'empty' }, q || S.elKind !== 'all' ? t('el.none_match') : t('el.none'))]));
   $('#elCapHead').hidden = !cap.length;
   $('#elCap').replaceChildren(...cap.map(elRow));
-  $('#elBarHead').textContent = 'Görev çubuğu · ' + bar.length;
+  $('#elBarHead').textContent = t('el.bar_head', { n: bar.length });
   $('#elBarHead').hidden = !bar.length;
   $('#elBar').replaceChildren(...bar.map(elRow));
 }
@@ -1361,9 +1397,9 @@ $('#elRefresh').onclick = loadElements;
 // Tapping a row aims at the element on Screen: click or scroll with the bar, see it in the magnifier.
 function aimAt(it) {
   const p = center(it.rect), a = S.scr;
-  showTab('ekran');
+  showTab('screen');
   if (a && p.x >= a.x && p.y >= a.y && p.x < a.x + a.w && p.y < a.y + a.h) { setAim(p); return; }
-  // Outside the image (e.g. the taskbar in the "Pencere" view): switch to the full screen and aim on the new frame
+  // Outside the image (e.g. the taskbar in the window view): switch to the whole screen and aim on the new frame
   S.view = 'screen'; store.set('view', S.view); renderView();
   S.aimNext = p; refresh('urgent');
 }
@@ -1372,16 +1408,16 @@ async function clickElement(it, quiet) {
   const c = center(it.rect);
   try {
     await api('/api/click', { x: c.x, y: c.y, label: it.name });
-    if (!quiet) toast('Tıklandı · ' + it.name);
+    if (!quiet) toast(t('toast.clicked', { name: it.name }));
     // The click may have changed the screen: refresh the list
-    setTimeout(() => { refresh(); status(); if (S.tab === 'ogeler') loadElements(); }, 600);
+    setTimeout(() => { refresh(); status(); if (S.tab === 'elements') loadElements(); }, 600);
   } catch (e) { toast(e.message, true); }
 }
 
 // Text field: click the field on the computer and open the typing box on Screen on the phone.
 // Focus must happen inside the tap, otherwise the phone does not open its keyboard.
 function typeInto(it) {
-  showTab('ekran');
+  showTab('screen');
   $('#qt').focus();
   S.typeInto = it.name; renderQtPlaceholder();
   clickElement(it, true);
@@ -1393,40 +1429,40 @@ function typeInto(it) {
 function appIcon(src, name) {
   const box = h('span', { class: 'appic', 'aria-hidden': 'true' });
   const img = h('img', { src, alt: '', loading: 'lazy', decoding: 'async' });
-  img.onerror = () => img.replaceWith(h('span', { class: 'letter' }, (name || '?').trim().charAt(0).toLocaleUpperCase('tr') || '?'));
+  img.onerror = () => img.replaceWith(h('span', { class: 'letter' }, (name || '?').trim().charAt(0).toLocaleUpperCase(I18N.lang) || '?'));
   box.append(img);
   return box;
 }
 
 async function loadWindows() {
   const ws = await api('/api/windows');
-  $('#wlOpenBtn').textContent = 'Açık pencereler · ' + ws.length;
+  $('#wlOpenBtn').textContent = t('win.open_n', { n: ws.length });
   const list = $('#winList');
-  if (!ws.length) { list.replaceChildren(h('li', { class: 'empty' }, 'Açık pencere yok')); return; }
+  if (!ws.length) { list.replaceChildren(h('li', { class: 'empty' }, t('win.none'))); return; }
   list.replaceChildren(...ws.map(w => {
     const title = w.title || w.app;
     const focus = async max => {
       try {
         await api('/api/focus', { hwnd: w.hwnd, maximize: max });
-        toast((max ? 'Büyütüldü: ' : 'Öne getirildi: ') + title);
+        toast(max ? t('toast.maximized', { name: title }) : t('toast.front', { name: title }));
         setTimeout(() => { refresh(); status(); loadWindows().catch(() => {}); }, 400);
       } catch (e) { toast(e.message, true); }
     };
     const badges = [
-      w.foreground ? h('span', { class: 'badge acc' }, 'önde') : null,
-      w.minimized ? h('span', { class: 'badge' }, 'küçültülmüş') : null,
-      w.elevated ? h('span', { class: 'badge bad' }, 'yönetici · tıklanamaz') : null,
-      w.own ? h('span', { class: 'badge' }, 'strcu · kapatılamaz') : null,
+      w.foreground ? h('span', { class: 'badge acc' }, t('win.badge_front')) : null,
+      w.minimized ? h('span', { class: 'badge' }, t('win.badge_min')) : null,
+      w.elevated ? h('span', { class: 'badge bad' }, t('win.badge_admin')) : null,
+      w.own ? h('span', { class: 'badge' }, t('win.badge_own')) : null,
     ];
     return h('li', {},
-      h('button', { type: 'button', class: 'rowmain', 'aria-label': title + ': öne getir', onclick: () => focus(false) },
+      h('button', { type: 'button', class: 'rowmain', 'aria-label': t('win.front_label', { name: title }), onclick: () => focus(false) },
         appIcon('/api/icon?hwnd=' + w.hwnd, w.app || title),
         h('span', { class: 'rowtext' },
           h('span', { class: 'rowname clamp2' }, title),
           h('span', { class: 'rowmeta' }, w.app && w.app !== title ? h('span', { class: 'rowsub' }, w.app) : null, badges))),
-      h('button', { type: 'button', class: 'rowact', 'aria-label': 'Büyüt: ' + title, onclick: () => focus(true) }, svgIcon(ICON.max)),
-      w.own ? h('span', { class: 'rowact locked', title: 'strcu penceresi kapatılamaz' }, svgIcon(ICON.lock))
-        : h('button', { type: 'button', class: 'rowact', 'aria-label': 'Kapat: ' + title, onclick: e => closeWindow(e.currentTarget, w) }, svgIcon(ICON.close)));
+      h('button', { type: 'button', class: 'rowact', 'aria-label': t('win.max_label', { name: title }), onclick: () => focus(true) }, svgIcon(ICON.max)),
+      w.own ? h('span', { class: 'rowact locked', title: t('win.own_title') }, svgIcon(ICON.lock))
+        : h('button', { type: 'button', class: 'rowact', 'aria-label': t('win.close_label', { name: title }), onclick: e => closeWindow(e.currentTarget, w) }, svgIcon(ICON.close)));
   }));
 }
 
@@ -1442,14 +1478,14 @@ $$('[data-wl]').forEach(b => b.onclick = () => { S.wl = b.dataset.wl; store.set(
 // ---------- open app ----------
 
 async function loadApps() {
-  if (!S.apps) $('#appList').replaceChildren(h('li', { class: 'empty' }, 'Yükleniyor…'));
+  if (!S.apps) $('#appList').replaceChildren(h('li', { class: 'empty' }, t('common.loading')));
   S.apps = await api('/api/apps');
   renderApps();
 }
 
 function appRow(a) {
   return h('li', {},
-    h('button', { type: 'button', class: 'rowmain', 'aria-label': 'Aç: ' + a.name, onclick: () => launchApp(a) },
+    h('button', { type: 'button', class: 'rowmain', 'aria-label': t('apps.open_label', { name: a.name }), onclick: () => launchApp(a) },
       appIcon('/api/appicon?id=' + encodeURIComponent(a.id), a.name),
       h('span', { class: 'rowtext' }, h('span', { class: 'rowname' }, a.name))));
 }
@@ -1462,8 +1498,8 @@ function renderApps() {
   const recent = q ? [] : S.appRecent.filter(a => ids.has(a.id));
   $('#appRecentHead').hidden = !recent.length;
   $('#appRecent').replaceChildren(...recent.map(appRow));
-  $('#appAllHead').textContent = q ? hits.length + ' sonuç' : 'Tüm uygulamalar · ' + all.length;
-  $('#appList').replaceChildren(...(hits.length ? hits.map(appRow) : [h('li', { class: 'empty' }, 'Eşleşen uygulama yok')]));
+  $('#appAllHead').textContent = q ? t('apps.results', { n: hits.length }) : t('apps.all_n', { n: all.length });
+  $('#appList').replaceChildren(...(hits.length ? hits.map(appRow) : [h('li', { class: 'empty' }, t('apps.none'))]));
 }
 $('#appQ').addEventListener('input', renderApps);
 
@@ -1472,24 +1508,24 @@ async function launchApp(a) {
     await api('/api/launch', { id: a.id });
     S.appRecent = [{ id: a.id, name: a.name }, ...S.appRecent.filter(x => x.id !== a.id)].slice(0, 5);
     store.set('appRecent', S.appRecent);
-    toast('Açılıyor: ' + a.name);
-    showTab('ekran');
+    toast(t('toast.opening', { name: a.name }));
+    showTab('screen');
     after(1200);
     after(3500);
   } catch (e) { toast(e.message, true); }
 }
 
-// Two taps: the first says "Kapat?", a second within 3.5 s closes
+// Two taps: the first asks to confirm, a second within 3.5 s closes
 async function closeWindow(btn, w) {
   if (btn.dataset.armed !== '1') {
-    btn.dataset.armed = '1'; btn.classList.add('armed'); btn.replaceChildren('Kapat?');
+    btn.dataset.armed = '1'; btn.classList.add('armed'); btn.replaceChildren(t('win.close_confirm'));
     btn._t = setTimeout(() => { btn.dataset.armed = ''; btn.classList.remove('armed'); btn.replaceChildren(svgIcon(ICON.close)); }, 3500);
     return;
   }
   clearTimeout(btn._t);
   try {
     await api('/api/close', { hwnd: w.hwnd });
-    toast('Kapatılıyor: ' + (w.title || w.app));
+    toast(t('toast.closing', { name: w.title || w.app }));
     setTimeout(() => { refresh(); status(); loadWindows().catch(() => {}); }, 600);
   } catch (e) { toast(e.message, true); loadWindows().catch(() => {}); }
 }
@@ -1498,14 +1534,14 @@ async function closeWindow(btn, w) {
 
 function renderSession() {
   const email = S.me && S.me.email;
-  $('#sessWho').textContent = email || 'Bu bilgisayardan bağlısın';
+  $('#sessWho').textContent = email || t('more.local_who');
   const left = S.status && S.status.session_left;
-  let t = email ? 'Cloudflare Access' : 'Yerel bağlantı';
+  let line = email ? 'Cloudflare Access' : t('more.local');
   if (left != null) {
     const hh = Math.floor(left / 3600), mm = Math.floor(left % 3600 / 60);
-    t += ' · ' + (hh ? hh + ' sa ' : '') + mm + ' dk kaldı';
+    line += ' · ' + (hh ? t('more.left_hm', { h: hh, m: mm }) : t('more.left_m', { m: mm }));
   }
-  $('#sessLeft').textContent = t;
+  $('#sessLeft').textContent = line;
 }
 
 function renderQuick() { $('#quickSw').setAttribute('aria-checked', String(S.quick)); renderTarget(); }
@@ -1520,19 +1556,19 @@ async function loadLog() {
 function renderLog() {
   const items = S.log || [], list = $('#logList'), more = $('#logMore');
   more.hidden = items.length <= LOG_SHORT;
-  more.textContent = S.logAll ? 'Daha az göster' : 'Tümünü göster · ' + items.length;
-  if (!items.length) { list.replaceChildren(h('li', {}, h('span', { class: 'a' }, 'Henüz kayıt yok'))); return; }
+  more.textContent = S.logAll ? t('more.log_less') : t('more.log_all', { n: items.length });
+  if (!items.length) { list.replaceChildren(h('li', {}, h('span', { class: 'a' }, t('more.log_empty')))); return; }
   list.replaceChildren(...items.slice(0, S.logAll ? items.length : LOG_SHORT).map(e => h('li', { class: e.ok ? '' : 'err' },
     h('span', { class: 't' }, (e.time || '').slice(11, 16)),
-    h('span', { class: 'a' }, e.action),
-    svgIcon(e.ok ? ICON.check : ICON.close, 'ic m', e.ok ? 'tamam' : 'hata'))));
+    h('span', { class: 'a' }, tm(e.msg)),
+    svgIcon(e.ok ? ICON.check : ICON.close, 'ic m', e.ok ? t('more.log_ok') : t('more.log_err')))));
 }
 $('#logMore').onclick = () => { S.logAll = !S.logAll; renderLog(); };
 
 $('#lockBtn').onclick = async () => {
   const b = $('#lockBtn');
-  if (!arm(b, 'Emin misin?')) return;
-  try { await api('/api/lock', {}); toast('Bilgisayar kilitlendi'); status(); loadLog(); }
+  if (!arm(b, t('common.sure'))) return;
+  try { await api('/api/lock', {}); toast(t('toast.locked')); status(); loadLog(); }
   catch (e) { toast(e.message, true); }
 };
 
@@ -1541,13 +1577,13 @@ $('#lockBtn').onclick = async () => {
 $('#offBtn').onclick = async () => {
   $('#offCard').hidden = false;
   $('#offCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  $('#offWinHead').textContent = 'Açık pencereler yükleniyor…'; $('#offWins').replaceChildren();
+  $('#offWinHead').textContent = t('off.loading'); $('#offWins').replaceChildren();
   try {
     const ws = await api('/api/windows');
-    $('#offWinHead').textContent = ws.length ? 'Açık pencereler · ' + ws.length : 'Açık pencere yok';
+    $('#offWinHead').textContent = ws.length ? t('win.open_n', { n: ws.length }) : t('win.none');
     $('#offWins').replaceChildren(...ws.slice(0, 8).map(w => h('li', {}, w.title || w.app || w.process)),
-      ...(ws.length > 8 ? [h('li', { class: 'more' }, '+' + (ws.length - 8) + ' pencere daha')] : []));
-  } catch (_) { $('#offWinHead').textContent = 'Pencereler okunamadı'; }
+      ...(ws.length > 8 ? [h('li', { class: 'more' }, t('off.more', { n: ws.length - 8 }))] : []));
+  } catch (_) { $('#offWinHead').textContent = t('off.read_fail'); }
 };
 $('#offNo').onclick = () => { $('#offCard').hidden = true; };
 $('#offYes').onclick = async () => {
@@ -1558,7 +1594,7 @@ $('#offYes').onclick = async () => {
   } catch (e) { toast(e.message, true); }
 };
 $('#offCancel').onclick = async () => {
-  try { await api('/api/shutdown/cancel', {}); toast('Kapatma iptal edildi'); }
+  try { await api('/api/shutdown/cancel', {}); toast(t('toast.off_cancelled')); }
   catch (e) { toast(e.message, true); }
   stopCountdown(); loadLog();
 };
@@ -1570,7 +1606,7 @@ function startCountdown(secs) {
   const tick = () => {
     const left = Math.ceil((S.offUntil - Date.now()) / 1000);
     $('#offCancel').hidden = left <= 0;
-    $('#offLeft').textContent = left > 0 ? 'Bilgisayar ' + left + ' sn sonra kapanacak' : 'Bilgisayar kapanıyor…';
+    $('#offLeft').textContent = left > 0 ? t('off.left', { s: left }) : t('off.now');
     if (left <= 0) clearInterval(S.offTimer);
   };
   $('#offBanner').hidden = false;
@@ -1586,6 +1622,20 @@ function syncShutdown(left) {
 }
 
 $('#logoutBtn').onclick = async () => { try { await api('/api/logout', {}); } catch (_) {} showLogin(); };
+
+// Panel language: Automatic follows the phone; a choice goes in a cookie so the server sends the page in it
+function renderLang() {
+  const cur = I18N.langs.find(l => l.code === I18N.lang);
+  $('#langSel').replaceChildren(h('option', { value: '' }, t('more.lang_auto')), ...I18N.langs.map(l => h('option', { value: l.code }, l.name)));
+  $('#langSel').value = I18N.auto ? '' : I18N.lang;
+  $('#langNote').textContent = I18N.auto ? t('more.lang_auto_note', { name: cur ? cur.name : I18N.lang }) : t('more.lang_fixed_note');
+}
+$('#langSel').onchange = e => {
+  const v = e.target.value, secure = location.protocol === 'https:' ? '; Secure' : '';
+  document.cookie = 'strcu_lang=' + (v ? v + '; Max-Age=31536000' : '; Max-Age=0') + '; Path=/; SameSite=Strict' + secure;
+  store.set('reopen', 'more');
+  location.reload();
+};
 
 // ---------- full screen ----------
 
@@ -1670,7 +1720,7 @@ $('#fsImg').addEventListener('load', () => {
 // Turning the phone sideways switches Screen to full screen; holding it upright switches back
 const LAND = matchMedia('(orientation: landscape) and (max-height: 500px) and (pointer: coarse)');
 LAND.addEventListener('change', () => {
-  if (LAND.matches) { if (!S.fs && S.tab === 'ekran' && !$('#app').hidden && !S.offUntil) enterFs(false); }
+  if (LAND.matches) { if (!S.fs && S.tab === 'screen' && !$('#app').hidden && !S.offUntil) enterFs(false); }
   else if (S.fs && S.fsAuto) exitFs();
 });
 
@@ -1734,15 +1784,15 @@ $('#fsType').addEventListener('submit', async e => {
 // ---------- tabs ----------
 
 function showTab(name) {
-  if (S.tab === 'klavye' && name !== 'klavye') clearMods();
+  if (S.tab === 'keyboard' && name !== 'keyboard') clearMods();
   S.tab = name;
   $$('.panel').forEach(p => { p.hidden = p.id !== 'p-' + name; });
   $$('#tabs [data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'));
   $('#main').scrollTop = 0;
-  if (name === 'ekran') { placeAim(); if (S.shotAt && Date.now() - S.shotAt > 2000) refresh(); }
-  if (name === 'pencereler') renderWl();
-  if (name === 'ogeler') loadElements();
-  if (name === 'diger') { loadLog(); loadPasskeys(); status(); }
+  if (name === 'screen') { placeAim(); if (S.shotAt && Date.now() - S.shotAt > 2000) refresh(); }
+  if (name === 'windows') renderWl();
+  if (name === 'elements') loadElements();
+  if (name === 'more') { loadLog(); loadPasskeys(); status(); }
 }
 $$('#tabs [data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
@@ -1752,8 +1802,17 @@ function start() {
   showApp(); renderView(); renderQuick(); renderRecent(); renderMods(); renderLive(); renderSession(); renderTarget();
   showTab(S.tab);
   refresh('urgent'); startLive(); status();
-  if (LAND.matches && S.tab === 'ekran') enterFs(false);
+  if (LAND.matches && S.tab === 'screen') enterFs(false);
 }
+
+$('#loginFoot').textContent = t('login.foot', { tries: 5, min: 5, hours: 12 });
+$('#offSub').textContent = t('more.off_sub', { s: OFF_SECS });
+$('#offNote').textContent = t('off.note', { s: OFF_SECS });
+$('#offYes').textContent = t('off.yes', { s: OFF_SECS });
+showPassword(false); renderLang(); updateCount();
+// After a language change the page reloads; come back to More
+const reopen = store.get('reopen', null);
+if (reopen) { store.set('reopen', null); S.tab = reopen; }
 
 (async () => {
   try { S.me = await (await fetch('/api/me')).json(); } catch (_) { S.me = { email: null }; }

@@ -11,6 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 };
 
 use super::Rect;
+use crate::i18n::Msg;
 
 /// Virtual desktop rectangle covering all monitors (physical pixels).
 pub fn virtual_screen() -> Rect {
@@ -32,7 +33,7 @@ pub fn capture(area: Rect) -> Result<RgbaImage> {
     unsafe {
         let screen_dc = GetDC(None);
         if screen_dc.is_invalid() {
-            bail!("GetDC failed (the session may be locked or the desktop unreachable)");
+            bail!(Msg::new("err.screen_unavailable"));
         }
         let mem_dc = CreateCompatibleDC(Some(screen_dc));
         let bmp = CreateCompatibleBitmap(screen_dc, area.w, area.h);

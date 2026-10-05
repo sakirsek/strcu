@@ -17,6 +17,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use base64::Engine;
 
+use crate::i18n::Msg;
 use crate::{config, download, sys};
 
 /// The cloudflared version strcu is tested with.
@@ -90,9 +91,9 @@ pub fn save_token(text: &str) -> Result<String> {
     let (token, id) = text
         .split_whitespace()
         .find_map(|w| tunnel_id(w).map(|id| (w, id)))
-        .context("no valid tunnel token in the text")?;
+        .context(Msg::new("err.no_token_in_text"))?;
     std::fs::create_dir_all(config::data_dir())?;
-    std::fs::write(token_path(), token).context("could not write the token")?;
+    std::fs::write(token_path(), token).context(Msg::new("err.token_write"))?;
     Ok(id)
 }
 
@@ -129,9 +130,9 @@ async fn ready(http: &reqwest::Client) -> bool {
 /// keeps running anyway (cloudflared retries by itself); the state is in `ready`.
 pub async fn start() -> Result<Tunnel> {
     if !exe().exists() {
-        bail!("cloudflared is not installed: `strcu tunnel install`");
+        bail!(Msg::new("err.cloudflared_missing"));
     }
-    let token = token().context("no tunnel token: `strcu tunnel token`")?;
+    let token = token().context(Msg::new("err.no_tunnel_token"))?;
     let log = std::fs::File::create(log_path())?;
     let child = Command::new(exe())
         .args(["tunnel", "--no-autoupdate", "--metrics", METRICS, "run"])
@@ -140,7 +141,7 @@ pub async fn start() -> Result<Tunnel> {
         .stdout(Stdio::from(log.try_clone()?))
         .stderr(Stdio::from(log))
         .spawn()
-        .context("could not start cloudflared")?;
+        .context(Msg::new("err.cloudflared_start"))?;
     sys::proc::tie(&child);
     let mut tunnel = Tunnel { child, ready: false };
 
@@ -148,7 +149,7 @@ pub async fn start() -> Result<Tunnel> {
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_millis(500)).await;
         if let Ok(Some(status)) = tunnel.child.try_wait() {
-            bail!("cloudflared exited ({status}); details: {}", log_path().display());
+            bail!(Msg::new("err.cloudflared_exited").with("status", status.to_string()).with("log", log_path().display().to_string()));
         }
         if ready(&http).await {
             tunnel.ready = true;

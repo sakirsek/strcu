@@ -20,6 +20,7 @@ use serde_json::{Value, json};
 
 use crate::access::Verifier;
 use crate::auth::{self, Auth, Check};
+use crate::i18n::{self, Msg};
 use crate::passkey::{self, Kind, Site};
 use crate::sys::{Rect, apps, icons, input, power, screen, uia, window};
 use crate::tunnel;
@@ -97,27 +98,28 @@ pub async fn serve(bind: SocketAddr, open_tunnel: bool) -> Result<()> {
         .layer(middleware::from_fn_with_state(state.clone(), require_access))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind(bind).await?;
-    println!("panel: http://{bind}");
+    let lang = i18n::term();
+    println!("{}", lang.render(&Msg::new("term.panel").with("url", format!("http://{bind}"))));
 
     // The tunnel opens after the panel starts listening, and only if Access verification is set up
     let _tunnel = match (open_tunnel, &cfg.access, tunnel::saved_tunnel_id()) {
         (false, ..) => None,
         (true, _, None) => None,
         (true, None, Some(_)) => {
-            println!("tunnel not opened: Access is not set up (`strcu tunnel setup ...`)");
+            println!("{}", lang.t("term.tunnel_no_access"));
             None
         }
         (true, Some(a), Some(_)) => {
             let t = tunnel::start().await?;
             if t.ready {
-                println!("tunnel: https://{} (only {})", a.hostname, a.email);
+                println!("{}", lang.render(&Msg::new("term.tunnel_up").with("host", &a.hostname).with("email", &a.email)));
             } else {
-                println!("tunnel not connected yet, cloudflared keeps trying (cloudflared.log)");
+                println!("{}", lang.t("term.tunnel_waiting"));
             }
             Some(t)
         }
     };
-    println!("close this window or press Ctrl+C to stop");
+    println!("{}", lang.t("term.stop_hint"));
     axum::serve(listener, app)
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -128,11 +130,12 @@ pub async fn serve(bind: SocketAddr, open_tunnel: bool) -> Result<()> {
 
 // ---------- errors and log ----------
 
-struct ApiError(StatusCode, String);
+/// An error for the panel: a message it shows in its own language.
+struct ApiError(StatusCode, Msg);
 
 impl From<anyhow::Error> for ApiError {
     fn from(e: anyhow::Error) -> Self {
-        ApiError(StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}"))
+        ApiError(StatusCode::INTERNAL_SERVER_ERROR, i18n::from_error(&e))
     }
 }
 
@@ -147,7 +150,7 @@ type ApiResult<T> = std::result::Result<T, ApiError>;
 #[derive(Serialize, Clone)]
 struct LogEntry {
     time: String,
-    action: String,
+    msg: Msg,
     ok: bool,
 }
 
@@ -157,12 +160,12 @@ struct ActionLog {
 }
 
 impl ActionLog {
-    fn add(&self, action: String, ok: bool) {
-        let e = LogEntry { time: local_time(), action, ok };
+    fn add(&self, msg: Msg, ok: bool) {
+        let e = LogEntry { time: local_time(), msg, ok };
         if let Ok(mut f) =
             std::fs::OpenOptions::new().create(true).append(true).open(crate::config::data_dir().join("actions.log"))
         {
-            let _ = writeln!(f, "{} {} {}", e.time, if ok { "OK " } else { "ERR" }, e.action);
+            let _ = writeln!(f, "{} {} {}", e.time, if ok { "OK " } else { "ERR" }, i18n::term().render(&e.msg));
         }
         let mut r = self.recent.lock().unwrap();
         r.push_front(e);
@@ -181,37 +184,13 @@ fn short(s: &str) -> String {
     t
 }
 
-/// Readable key name for the log: "ctrl+shift+esc" -> "Ctrl+Shift+Esc", "win+d" -> "Win+D".
-fn key_label(combo: &str) -> String {
-    combo
-        .split('+')
-        .map(|p| {
-            let p = p.trim();
-            match p.to_lowercase().as_str() {
-                "up" => "↑".to_string(),
-                "down" => "↓".to_string(),
-                "left" => "←".to_string(),
-                "right" => "→".to_string(),
-                "pageup" | "pgup" => "Page Up".to_string(),
-                "pagedown" | "pgdn" => "Page Down".to_string(),
-                "space" | "spacebar" => "Space".to_string(),
-                _ => {
-                    let mut c = p.chars();
-                    c.next().map(|f| f.to_uppercase().chain(c).collect()).unwrap_or_default()
-                }
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("+")
-}
-
 fn local_time() -> String {
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
 }
 
 /// Runs the action and logs its result.
-async fn logged<T, F>(st: &AppState, action: String, f: F) -> ApiResult<T>
+async fn logged<T, F>(st: &AppState, action: Msg, f: F) -> ApiResult<T>
 where
     T: Send + 'static,
     F: FnOnce(&mut crate::worker::Ctx) -> Result<T> + Send + 'static,
@@ -246,18 +225,18 @@ async fn require_access(State(st): State<AppState>, mut req: Request, next: Next
         return next.run(req).await;
     }
     let reason = match (&st.access, req.headers().get("cf-access-jwt-assertion").and_then(|v| v.to_str().ok())) {
-        (None, _) => "Access verification is not set up".to_string(),
-        (Some(_), None) => "no Access token".to_string(),
+        (None, _) => Msg::new("err.access_not_set"),
+        (Some(_), None) => Msg::new("err.access_no_token"),
         (Some(v), Some(token)) => match v.verify(token).await {
             Ok(email) => {
                 req.extensions_mut().insert(AccessUser(email));
                 return next.run(req).await;
             }
-            Err(e) => format!("{e:#}"),
+            Err(e) => i18n::from_error(&e),
         },
     };
     let ip = req.headers().get("cf-connecting-ip").and_then(|v| v.to_str().ok()).unwrap_or("?").to_string();
-    st.log.add(format!("Access denied ({ip}): {reason}"), false);
+    st.log.add(Msg::new("ev.access_denied").with("ip", ip).with("reason", reason), false);
     (StatusCode::FORBIDDEN, "access denied").into_response()
 }
 
@@ -271,7 +250,7 @@ async fn require_session(State(st): State<AppState>, req: Request, next: Next) -
         .and_then(auth::token_from_cookie)
         .is_some_and(|t| st.auth.check(t));
     if !ok {
-        return ApiError(StatusCode::UNAUTHORIZED, "sign-in required".into()).into_response();
+        return ApiError(StatusCode::UNAUTHORIZED, Msg::new("err.signin_required")).into_response();
     }
     next.run(req).await
 }
@@ -293,26 +272,27 @@ fn session_cookie(st: &AppState, headers: &HeaderMap) -> [(header::HeaderName, S
     [(header::SET_COOKIE, format!("{}={token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200{secure}", auth::COOKIE))]
 }
 
-/// Response for a wrong password or too many attempts; None if the password is right.
-async fn password_denied(st: &AppState, pw: &str, what: &str, status: StatusCode) -> Option<Response> {
+/// Response for a wrong password or too many attempts; None if the password is right. `event` is logged for
+/// a wrong password.
+async fn password_denied(st: &AppState, pw: &str, event: &'static str, status: StatusCode) -> Option<Response> {
     match st.auth.check_password(pw) {
         Check::Ok => None,
         Check::Wrong => {
-            st.log.add(format!("{what}: wrong password"), false);
+            st.log.add(Msg::new(event), false);
             tokio::time::sleep(std::time::Duration::from_millis(700)).await;
-            Some(ApiError(status, "wrong password".into()).into_response())
+            Some(ApiError(status, Msg::new("err.wrong_password")).into_response())
         }
-        Check::LockedOut(s) => Some(
-            ApiError(StatusCode::TOO_MANY_REQUESTS, format!("too many failed attempts, wait {s} s")).into_response(),
-        ),
+        Check::LockedOut(s) => {
+            Some(ApiError(StatusCode::TOO_MANY_REQUESTS, Msg::new("err.locked_out").with("s", s)).into_response())
+        }
     }
 }
 
 async fn login(State(st): State<AppState>, headers: HeaderMap, Json(r): Json<LoginReq>) -> Response {
-    if let Some(denied) = password_denied(&st, &r.password, "Sign-in", StatusCode::UNAUTHORIZED).await {
+    if let Some(denied) = password_denied(&st, &r.password, "ev.signin_wrong_pw", StatusCode::UNAUTHORIZED).await {
         return denied;
     }
-    st.log.add("Signed in".into(), true);
+    st.log.add(Msg::new("ev.signed_in"), true);
     (session_cookie(&st, &headers), Json(json!({ "ok": true }))).into_response()
 }
 
@@ -331,7 +311,7 @@ fn passkey_site(st: &AppState, h: &HeaderMap) -> Option<Site> {
 }
 
 fn no_site() -> ApiError {
-    ApiError(StatusCode::BAD_REQUEST, "passkeys cannot be used at this address".into())
+    ApiError(StatusCode::BAD_REQUEST, Msg::new("err.pk_no_site"))
 }
 
 /// Sign-in screen: the challenge for the phone to sign and the keys registered for this site. No session needed.
@@ -339,7 +319,7 @@ async fn passkey_login_start(State(st): State<AppState>, headers: HeaderMap) -> 
     let site = passkey_site(&st, &headers).ok_or_else(no_site)?;
     let allow = st.passkeys.ids(&site);
     if allow.is_empty() {
-        return Err(ApiError(StatusCode::NOT_FOUND, "no passkey registered for this address".into()));
+        return Err(ApiError(StatusCode::NOT_FOUND, Msg::new("err.pk_none")));
     }
     let challenge = st.passkeys.begin(Kind::Login, &site);
     Ok(Json(json!({ "challenge": challenge, "rp_id": site.rp_id, "allow": allow, "timeout": passkey::TIMEOUT.as_millis() as u64 })))
@@ -349,12 +329,13 @@ async fn passkey_login(State(st): State<AppState>, headers: HeaderMap, Json(a): 
     let Some(site) = passkey_site(&st, &headers) else { return no_site().into_response() };
     match st.passkeys.finish_login(&a, &site, &local_time()) {
         Ok(name) => {
-            st.log.add(format!("Signed in (passkey · {name})"), true);
+            st.log.add(Msg::new("ev.signed_in_pk").with("name", name), true);
             (session_cookie(&st, &headers), Json(json!({ "ok": true }))).into_response()
         }
         Err(e) => {
-            st.log.add(format!("Passkey sign-in rejected: {e:#}"), false);
-            ApiError(StatusCode::UNAUTHORIZED, format!("{e:#}")).into_response()
+            let why = i18n::from_error(&e);
+            st.log.add(Msg::new("ev.pk_rejected").with("reason", why.clone()), false);
+            ApiError(StatusCode::UNAUTHORIZED, why).into_response()
         }
     }
 }
@@ -401,17 +382,18 @@ struct PasskeyRegisterReq {
 async fn passkey_register(State(st): State<AppState>, headers: HeaderMap, Json(r): Json<PasskeyRegisterReq>) -> Response {
     let Some(site) = passkey_site(&st, &headers) else { return no_site().into_response() };
     // Not 401: the panel treats 401 as "session ended"
-    if let Some(denied) = password_denied(&st, &r.password, "Could not add passkey", StatusCode::FORBIDDEN).await {
+    if let Some(denied) = password_denied(&st, &r.password, "ev.pk_add_wrong_pw", StatusCode::FORBIDDEN).await {
         return denied;
     }
     match st.passkeys.finish_register(&r.reg, &site, &local_time()) {
         Ok(k) => {
-            st.log.add(format!("Passkey added: {}", k.name), true);
+            st.log.add(Msg::new("ev.pk_added").with("name", &k.name), true);
             Json(json!({ "ok": true, "name": k.name })).into_response()
         }
         Err(e) => {
-            st.log.add(format!("Could not add passkey: {e:#}"), false);
-            ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")).into_response()
+            let why = i18n::from_error(&e);
+            st.log.add(Msg::new("ev.pk_add_failed").with("reason", why.clone()), false);
+            ApiError(StatusCode::BAD_REQUEST, why).into_response()
         }
     }
 }
@@ -422,8 +404,8 @@ struct PasskeyDeleteReq {
 }
 
 async fn passkey_delete(State(st): State<AppState>, Json(r): Json<PasskeyDeleteReq>) -> ApiResult<Json<Value>> {
-    let k = st.passkeys.remove(&r.id).map_err(|e| ApiError(StatusCode::NOT_FOUND, format!("{e:#}")))?;
-    st.log.add(format!("Passkey removed: {}", k.name), true);
+    let k = st.passkeys.remove(&r.id).map_err(|e| ApiError(StatusCode::NOT_FOUND, i18n::from_error(&e)))?;
+    st.log.add(Msg::new("ev.pk_removed").with("name", k.name), true);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -452,9 +434,37 @@ fn mask_email(e: &str) -> String {
 
 // ---------- page ----------
 
-async fn index() -> Response {
-    let mut r = Html(include_str!("web/index.html")).into_response();
+/// Cookie with the panel language chosen under More; without it the phone's language is used.
+const LANG_COOKIE: &str = "strcu_lang";
+/// Placeholders in index.html that the page's language fills in
+const LANG_ATTR: &str = r#"<html lang="en">"#;
+const LANG_SLOT: &str = r#"<script id="i18n" type="application/json">{}</script>"#;
+
+/// The page, with the texts of its language embedded: no extra request and no flash of untranslated text.
+async fn index(headers: HeaderMap) -> Response {
+    let chosen = headers
+        .get(header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|c| auth::cookie(c, LANG_COOKIE))
+        .and_then(i18n::get);
+    let lang = chosen
+        .or_else(|| headers.get(header::ACCEPT_LANGUAGE).and_then(|v| v.to_str().ok()).and_then(i18n::from_accept_language))
+        .unwrap_or_else(i18n::en);
+    let langs: Vec<Value> = i18n::all().iter().map(|l| json!({ "code": l.code, "name": l.name })).collect();
+    let boot = format!(
+        r#"{{"lang":{},"auto":{},"langs":{},"dict":{}}}"#,
+        json!(lang.code),
+        chosen.is_none(),
+        Value::from(langs).to_string().replace("</", "<\\/"),
+        lang.page_json()
+    );
+    let page = include_str!("web/index.html")
+        .replacen(LANG_ATTR, &format!(r#"<html lang="{}">"#, lang.code), 1)
+        .replacen(LANG_SLOT, &format!(r#"<script id="i18n" type="application/json">{boot}</script>"#), 1);
+    let mut r = Html(page).into_response();
     let h = r.headers_mut();
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
+    h.insert(header::VARY, HeaderValue::from_static("Accept-Language, Cookie"));
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     h.insert(
@@ -604,15 +614,15 @@ struct ClickReq {
 async fn click(State(st): State<AppState>, Json(r): Json<ClickReq>) -> ApiResult<Json<Value>> {
     let button = r.button.unwrap_or(input::Button::Left);
     let count = r.count.unwrap_or(1).clamp(1, 3);
-    let verb = match (button, count) {
-        (input::Button::Right, _) => "Right-clicked",
-        (input::Button::Middle, _) => "Middle-clicked",
-        (_, 1) => "Clicked",
-        _ => "Double-clicked",
-    };
+    let verb = Msg::new(match (button, count) {
+        (input::Button::Right, _) => "ev.right_click",
+        (input::Button::Middle, _) => "ev.middle_click",
+        (_, 1) => "ev.click",
+        _ => "ev.double_click",
+    });
     let desc = match r.label.as_deref().map(str::trim) {
-        Some(l) if !l.is_empty() => format!("{verb} · {}", short(l)),
-        _ => verb.to_string(),
+        Some(l) if !l.is_empty() => Msg::new("ev.labeled").with("action", verb).with("label", short(l)),
+        _ => verb,
     };
     logged(&st, desc, move |ctx| {
         input::click(r.x, r.y, button, count)?;
@@ -632,13 +642,13 @@ struct TypeReq {
 
 async fn type_text(State(st): State<AppState>, Json(r): Json<TypeReq>) -> ApiResult<Json<Value>> {
     if r.text.chars().count() > 5000 {
-        return Err(ApiError(StatusCode::BAD_REQUEST, "text too long (5000 characters at most)".into()));
+        return Err(ApiError(StatusCode::BAD_REQUEST, Msg::new("err.text_too_long").with("max", 5000)));
     }
     let n = r.text.chars().count();
     let desc = match (n, r.enter) {
-        (0, _) => "Pressed Enter".to_string(),
-        (_, true) => format!("Typed {n} characters, pressed Enter"),
-        _ => format!("Typed {n} characters"),
+        (0, _) => Msg::new("ev.enter"),
+        (_, true) => Msg::new("ev.typed_enter").with("n", n),
+        _ => Msg::new("ev.typed").with("n", n),
     };
     logged(&st, desc, move |_| {
         input::type_text(&r.text)?;
@@ -657,7 +667,7 @@ struct KeyReq {
 }
 
 async fn key(State(st): State<AppState>, Json(r): Json<KeyReq>) -> ApiResult<Json<Value>> {
-    let desc = format!("Key sent: {}", key_label(&r.combo));
+    let desc = Msg::new("ev.key").with("combo", &r.combo);
     logged(&st, desc, move |_| input::hotkey(&r.combo)).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -670,7 +680,7 @@ struct ScrollReq {
 }
 
 async fn scroll(State(st): State<AppState>, Json(r): Json<ScrollReq>) -> ApiResult<Json<Value>> {
-    let desc = if r.notches > 0 { "Scrolled up" } else { "Scrolled down" }.to_string();
+    let desc = Msg::new(if r.notches > 0 { "ev.scroll_up" } else { "ev.scroll_down" });
     logged(&st, desc, move |_| input::scroll(r.x, r.y, r.notches.clamp(-30, 30))).await?;
     Ok(Json(json!({ "ok": true })))
 }
@@ -692,8 +702,8 @@ struct FocusReq {
 
 async fn focus(State(st): State<AppState>, Json(r): Json<FocusReq>) -> ApiResult<Json<Value>> {
     let title = window::info(window::hwnd(r.hwnd)).title;
-    let verb = if r.maximize { "Maximized" } else { "Brought to front" };
-    let desc = if title.is_empty() { verb.to_string() } else { format!("{verb}: {}", short(&title)) };
+    let verb = Msg::new(if r.maximize { "ev.maximized" } else { "ev.front" });
+    let desc = if title.is_empty() { verb } else { Msg::new("ev.titled").with("action", verb).with("title", short(&title)) };
     logged(&st, desc, move |_| {
         window::focus(r.hwnd)?;
         if r.maximize {
@@ -715,13 +725,13 @@ struct CloseReq {
 async fn close_window(State(st): State<AppState>, Json(r): Json<CloseReq>) -> ApiResult<Json<Value>> {
     let w = st.worker.run(move |_| Ok(window::list().into_iter().find(|w| w.hwnd == r.hwnd))).await?;
     let Some(w) = w else {
-        return Err(ApiError(StatusCode::NOT_FOUND, "the window no longer exists".into()));
+        return Err(ApiError(StatusCode::NOT_FOUND, Msg::new("err.window_gone")));
     };
     if w.own {
-        return Err(ApiError(StatusCode::FORBIDDEN, "this is strcu's own window; closing it would close the panel too".into()));
+        return Err(ApiError(StatusCode::FORBIDDEN, Msg::new("err.own_window")));
     }
-    let title = w.title;
-    logged(&st, format!("Closed: {}", short(&title)), move |_| window::close(r.hwnd)).await?;
+    let desc = Msg::new("ev.titled").with("action", Msg::new("ev.closed")).with("title", short(&w.title));
+    logged(&st, desc, move |_| window::close(r.hwnd)).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -762,7 +772,7 @@ async fn icon_png(st: &AppState, path: String) -> ApiResult<Response> {
             p
         }
     };
-    let Some(png) = png else { return Err(ApiError(StatusCode::NOT_FOUND, "no icon".into())) };
+    let Some(png) = png else { return Err(ApiError(StatusCode::NOT_FOUND, Msg::new("err.no_icon"))) };
     let mut r = png.as_ref().clone().into_response();
     let h = r.headers_mut();
     h.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
@@ -772,15 +782,15 @@ async fn icon_png(st: &AppState, path: String) -> ApiResult<Response> {
 
 /// App icon of an open window. For a Store app, the Start menu app matching the title is used.
 async fn window_icon(State(st): State<AppState>, Query(q): Query<IconQ>) -> ApiResult<Response> {
-    let hwnd = q.hwnd.ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "hwnd required".into()))?;
+    let hwnd = q.hwnd.ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, Msg::new("err.missing").with("name", "hwnd")))?;
     let w = st.worker.run(move |_| Ok(window::list().into_iter().find(|w| w.hwnd == hwnd))).await?;
-    let Some(w) = w else { return Err(ApiError(StatusCode::NOT_FOUND, "no such window".into())) };
+    let Some(w) = w else { return Err(ApiError(StatusCode::NOT_FOUND, Msg::new("err.window_gone"))) };
     let path = if window::is_store_frame(&w.process) {
         let list = app_list(&st).await?;
         let t = w.title.to_lowercase();
         match list.iter().find(|a| a.name.to_lowercase() == t) {
             Some(a) => format!(r"shell:AppsFolder\{}", a.id),
-            None => return Err(ApiError(StatusCode::NOT_FOUND, "no icon".into())),
+            None => return Err(ApiError(StatusCode::NOT_FOUND, Msg::new("err.no_icon"))),
         }
     } else {
         w.path
@@ -790,12 +800,12 @@ async fn window_icon(State(st): State<AppState>, Query(q): Query<IconQ>) -> ApiR
 
 /// Icon of a Start menu app; only ids in the list.
 async fn app_icon(State(st): State<AppState>, Query(q): Query<IconQ>) -> ApiResult<Response> {
-    let id = q.id.ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, "id required".into()))?;
+    let id = q.id.ok_or_else(|| ApiError(StatusCode::BAD_REQUEST, Msg::new("err.missing").with("name", "id")))?;
     let path = format!(r"shell:AppsFolder\{id}");
     // Read first so the cache lock is not held across the await
     let cached = st.icons.lock().unwrap().contains_key(&path);
     if !cached && !app_list(&st).await?.iter().any(|a| a.id == id) {
-        return Err(ApiError(StatusCode::NOT_FOUND, "there is no app with this id".into()));
+        return Err(ApiError(StatusCode::NOT_FOUND, Msg::new("err.no_app")));
     }
     icon_png(&st, path).await
 }
@@ -807,24 +817,27 @@ struct LaunchReq {
 
 async fn launch(State(st): State<AppState>, Json(r): Json<LaunchReq>) -> ApiResult<Json<Value>> {
     let res = tokio::task::spawn_blocking(move || apps::launch(&r.id)).await.map_err(anyhow::Error::from)?;
-    let desc = res.as_ref().map(|a| format!("Opened: {}", a.name)).unwrap_or_else(|_| "Could not open: no such app".into());
+    let desc = match &res {
+        Ok(a) => Msg::new("ev.opened").with("name", &a.name),
+        Err(e) => Msg::new("ev.open_failed").with("reason", i18n::from_error(e)),
+    };
     st.log.add(desc, res.is_ok());
     Ok(Json(json!({ "ok": true, "name": res?.name })))
 }
 
 async fn lock(State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    logged(&st, "Computer locked".into(), |_| power::lock()).await?;
+    logged(&st, Msg::new("ev.locked"), |_| power::lock()).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
 async fn shutdown(State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    logged(&st, format!("Shutdown started ({SHUTDOWN_SECS} s)"), |_| power::shutdown(SHUTDOWN_SECS)).await?;
+    logged(&st, Msg::new("ev.shutdown").with("s", SHUTDOWN_SECS), |_| power::shutdown(SHUTDOWN_SECS)).await?;
     *st.shutdown_at.lock().unwrap() = Some(Instant::now() + Duration::from_secs(SHUTDOWN_SECS.into()));
     Ok(Json(json!({ "seconds": SHUTDOWN_SECS })))
 }
 
 async fn cancel_shutdown(State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let r = logged(&st, "Shutdown cancelled".into(), |_| power::cancel_shutdown()).await;
+    let r = logged(&st, Msg::new("ev.shutdown_cancelled"), |_| power::cancel_shutdown()).await;
     *st.shutdown_at.lock().unwrap() = None;
     r?;
     Ok(Json(json!({ "ok": true })))
@@ -836,14 +849,10 @@ async fn log(State(st): State<AppState>) -> Json<Vec<LogEntry>> {
 
 #[cfg(test)]
 mod tests {
-    use super::{key_label, short};
+    use super::short;
 
     #[test]
-    fn log_texts() {
-        assert_eq!(key_label("ctrl+shift+esc"), "Ctrl+Shift+Esc");
-        assert_eq!(key_label("win+d"), "Win+D");
-        assert_eq!(key_label("alt+f4"), "Alt+F4");
-        assert_eq!(key_label("pagedown"), "Page Down");
+    fn shortening() {
         assert_eq!(short("short"), "short");
         let long = "é".repeat(80);
         assert_eq!(short(&long).chars().count(), 60);

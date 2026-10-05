@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::access::AccessConfig;
+use crate::i18n::Msg;
 use crate::passkey::Passkey;
 
 #[derive(Serialize, Deserialize, Default)]
@@ -16,6 +17,9 @@ pub struct Config {
     /// Public keys of phones registered for fingerprint / face sign-in
     #[serde(default)]
     pub passkeys: Vec<Passkey>,
+    /// Terminal language code ("tr"); unset means the Windows display language
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
 }
 
 pub fn data_dir() -> PathBuf {
@@ -34,9 +38,9 @@ pub fn load() -> Config {
 /// defaults would wipe the password and the tunnel settings.
 pub fn update(f: impl FnOnce(&mut Config)) -> Result<()> {
     let mut cfg = match std::fs::read_to_string(path()) {
-        Ok(s) => serde_json::from_str(&s).context("could not read config.json")?,
+        Ok(s) => serde_json::from_str(&s).context(Msg::new("err.config_read"))?,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Config::default(),
-        Err(e) => return Err(e).context("could not read config.json"),
+        Err(e) => return Err(e).context(Msg::new("err.config_read")),
     };
     f(&mut cfg);
     save(&cfg)
@@ -44,5 +48,5 @@ pub fn update(f: impl FnOnce(&mut Config)) -> Result<()> {
 
 pub fn save(cfg: &Config) -> Result<()> {
     std::fs::create_dir_all(data_dir())?;
-    std::fs::write(path(), serde_json::to_string_pretty(cfg)?).context("could not write config")
+    std::fs::write(path(), serde_json::to_string_pretty(cfg)?).context(Msg::new("err.config_write"))
 }

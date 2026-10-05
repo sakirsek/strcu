@@ -11,6 +11,8 @@ use serde::Deserialize;
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
+use crate::i18n::Msg;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Button {
@@ -22,10 +24,7 @@ pub enum Button {
 fn send(inputs: &[INPUT]) -> Result<()> {
     let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
-        bail!(
-            "SendInput sent {sent}/{} events (Windows blocks input if the foreground window runs as administrator)",
-            inputs.len()
-        );
+        bail!(Msg::new("err.input_blocked").with("sent", sent).with("total", inputs.len()));
     }
     Ok(())
 }
@@ -179,7 +178,7 @@ pub fn vk_from_name(name: &str) -> Result<VIRTUAL_KEY> {
             }
             let mut chars = name.chars();
             let (Some(c), None) = (chars.next(), chars.next()) else {
-                bail!("unknown key: '{name}'");
+                bail!(Msg::new("err.unknown_key").with("key", name));
             };
             if c.is_ascii_alphanumeric() {
                 VIRTUAL_KEY(c.to_ascii_uppercase() as u16)
@@ -187,7 +186,7 @@ pub fn vk_from_name(name: &str) -> Result<VIRTUAL_KEY> {
                 // Punctuation and non-ASCII letters: virtual code from the active keyboard layout
                 let r = unsafe { VkKeyScanW(c as u16) };
                 if r == -1 {
-                    bail!("'{c}' does not map to a key in this keyboard layout");
+                    bail!(Msg::new("err.key_not_in_layout").with("char", c.to_string()));
                 }
                 VIRTUAL_KEY((r & 0xff) as u16)
             }

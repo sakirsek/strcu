@@ -13,15 +13,17 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 use argon2::Argon2;
 
 use crate::config;
+use crate::i18n::Msg;
 
 pub const COOKIE: &str = "strcu_session";
+pub const MIN_PASSWORD: usize = 10;
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const MAX_FAILS: u32 = 5;
 const LOCKOUT: Duration = Duration::from_secs(5 * 60);
 
 pub fn set_password(pw: &str) -> Result<()> {
-    if pw.chars().count() < 10 {
-        bail!("the password must be at least 10 characters long");
+    if pw.chars().count() < MIN_PASSWORD {
+        bail!(Msg::new("err.password_short").with("min", MIN_PASSWORD));
     }
     let mut raw = [0u8; 16];
     getrandom::fill(&mut raw).map_err(|e| anyhow::anyhow!("could not generate a random salt: {e}"))?;
@@ -47,7 +49,7 @@ pub enum Check {
 
 impl Auth {
     pub fn from_config() -> Result<Self> {
-        let hash = config::load().password_hash.context("no password set: run `strcu passwd` first")?;
+        let hash = config::load().password_hash.context(Msg::new("err.no_password"))?;
         Ok(Auth { hash, sessions: Mutex::new(HashMap::new()), fails: Mutex::new((0, Instant::now())) })
     }
 
@@ -105,5 +107,10 @@ fn random_token() -> String {
 
 /// Extracts the session value from a "Cookie" header.
 pub fn token_from_cookie(header: &str) -> Option<&str> {
-    header.split(';').map(str::trim).find_map(|kv| kv.strip_prefix(COOKIE).and_then(|r| r.strip_prefix('=')))
+    cookie(header, COOKIE)
+}
+
+/// Value of a cookie in a "Cookie" header.
+pub fn cookie<'a>(header: &'a str, name: &str) -> Option<&'a str> {
+    header.split(';').map(str::trim).find_map(|kv| kv.strip_prefix(name).and_then(|r| r.strip_prefix('=')))
 }

@@ -12,6 +12,8 @@ use futures_util::StreamExt;
 use reqwest::header::RANGE;
 use sha2::{Digest, Sha256};
 
+use crate::i18n::{self, Msg};
+
 pub struct Remote {
     pub url: String,
     pub size: u64,
@@ -39,7 +41,7 @@ fn human(bytes: u64) -> String {
 
 pub async fn fetch(remote: &Remote, dest: &Path, label: &str) -> Result<()> {
     if dest.metadata().is_ok_and(|m| m.len() == remote.size) {
-        eprintln!("  {label}: already present ({})", human(remote.size));
+        say(Msg::new("dl.present").with("label", label).with("size", human(remote.size)));
         return Ok(());
     }
     if let Some(dir) = dest.parent() {
@@ -63,7 +65,7 @@ pub async fn fetch(remote: &Remote, dest: &Path, label: &str) -> Result<()> {
             }
             hasher.update(&buf[..n]);
         }
-        eprintln!("  {label}: resuming from {}", human(have));
+        say(Msg::new("dl.resume").with("label", label).with("size", human(have)));
     }
 
     let http = reqwest::Client::builder().connect_timeout(Duration::from_secs(20)).build()?;
@@ -73,7 +75,9 @@ pub async fn fetch(remote: &Remote, dest: &Path, label: &str) -> Result<()> {
         match stream(&http, remote, &part, &mut have, &mut hasher, label).await {
             Ok(()) => {}
             Err(e) if attempt < 8 => {
-                eprintln!("\n  {label}: connection problem ({e:#}), retrying from {}", human(have));
+                eprintln!();
+                let why = i18n::from_error(&e);
+                say(Msg::new("dl.retry").with("label", label).with("error", why).with("size", human(have)));
                 tokio::time::sleep(Duration::from_secs(3)).await;
             }
             Err(e) => return Err(e),
@@ -82,18 +86,22 @@ pub async fn fetch(remote: &Remote, dest: &Path, label: &str) -> Result<()> {
     eprintln!();
 
     if have != remote.size {
-        bail!("{label}: size mismatch ({have} / {})", remote.size);
+        bail!(Msg::new("err.dl_size").with("label", label).with("have", have).with("want", remote.size));
     }
     if let Some(want) = &remote.sha256 {
         let got = hex(&hasher.finalize());
         if &got != want {
             let _ = std::fs::remove_file(&part);
-            bail!("{label}: SHA-256 check failed, file deleted (expected {want}, got {got})");
+            bail!(Msg::new("err.dl_sha").with("label", label));
         }
     }
     std::fs::rename(&part, dest)?;
-    eprintln!("  {label}: done{}", if remote.sha256.is_some() { ", SHA-256 verified" } else { "" });
+    say(Msg::new(if remote.sha256.is_some() { "dl.verified" } else { "dl.done" }).with("label", label));
     Ok(())
+}
+
+fn say(m: Msg) {
+    eprintln!("  {}", i18n::term().render(&m));
 }
 
 async fn stream(
@@ -137,7 +145,7 @@ async fn stream(
     }
     file.flush()?;
     if *have < remote.size {
-        bail!("the stream ended early");
+        bail!(Msg::new("err.dl_stream"));
     }
     Ok(())
 }

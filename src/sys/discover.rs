@@ -141,7 +141,8 @@ fn monitors() -> Vec<Monitor> {
         .collect()
 }
 
-fn ui_language() -> String {
+/// Windows display language, e.g. "tr-TR".
+pub(crate) fn ui_language() -> String {
     let mut buf = [0u16; 85];
     let lang = unsafe { GetUserDefaultUILanguage() } as u32;
     unsafe { LCIDToLocaleName(lang, Some(&mut buf), 0) };

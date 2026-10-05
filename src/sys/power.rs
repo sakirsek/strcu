@@ -16,6 +16,8 @@ use windows::Win32::System::Shutdown::LockWorkStation;
 use windows::Win32::UI::WindowsAndMessaging::{GetSystemMetrics, SM_REMOTESESSION};
 use windows::core::PWSTR;
 
+use crate::i18n::Msg;
+
 /// While on, the system does not go to sleep. If `display` is true the screen does not turn off either
 /// (matters where a dark screen leads to a lock); if false the screen may turn off but the session and
 /// screenshots keep working.
@@ -96,8 +98,8 @@ fn shutdown_exe(args: &[&str]) -> Result<()> {
     // The output depends on the language and code page; the exit code is enough
     match out.status.code() {
         Some(0) => Ok(()),
-        Some(1190) => bail!("a shutdown is already scheduled"),
-        Some(1116) => bail!("there is no shutdown to cancel"),
+        Some(1190) => bail!(Msg::new("err.shutdown_pending")),
+        Some(1116) => bail!(Msg::new("err.no_shutdown")),
         Some(c) => bail!("shutdown.exe exit code {c}"),
         None => bail!("shutdown.exe was interrupted"),
     }

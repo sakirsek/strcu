@@ -19,6 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::*;
 use windows::core::{BOOL, HSTRING, PWSTR};
 
 use super::{Rect, input, wide_to_string};
+use crate::i18n::Msg;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct WindowInfo {
@@ -255,7 +256,7 @@ pub fn focus(h: isize) -> Result<()> {
     }
     thread::sleep(Duration::from_millis(150));
     if unsafe { GetForegroundWindow() } != target {
-        bail!("could not bring the window to the front");
+        bail!(Msg::new("err.focus_failed"));
     }
     Ok(())
 }

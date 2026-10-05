@@ -11,7 +11,7 @@
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Context, Result, ensure};
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD as B64;
 use p256::ecdsa::signature::Verifier;
@@ -20,6 +20,8 @@ use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::pkcs8::DecodePublicKey;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+use crate::i18n::Msg;
 
 /// Time the phone has to sign the challenge.
 pub const TIMEOUT: Duration = Duration::from_secs(120);
@@ -143,37 +145,37 @@ impl Store {
     /// Checks the client data the browser signed: the challenge must have been issued for this purpose and
     /// site (and is removed, so it cannot be used twice), and the type and origin must be right.
     fn client_data(&self, raw: &[u8], kind: Kind, site: &Site) -> Result<()> {
-        let cd: ClientData = serde_json::from_slice(raw).context("could not read the client data")?;
+        let cd: ClientData = serde_json::from_slice(raw).with_context(|| invalid("client data"))?;
         let c = decode(&cd.challenge)?;
         let p = {
             let mut pending = self.pending.lock().unwrap();
-            let i = pending.iter().position(|x| x.challenge[..] == c[..]).context("the challenge is invalid or already used")?;
+            let i = pending.iter().position(|x| x.challenge[..] == c[..]).context(Msg::new("err.pk_challenge"))?;
             pending.remove(i)
         };
-        ensure!(p.at.elapsed() < TIMEOUT, "timed out, try again");
-        ensure!(p.kind == kind && p.rp_id == site.rp_id, "the challenge was not issued for this");
+        ensure!(p.at.elapsed() < TIMEOUT, Msg::new("err.pk_timeout"));
+        ensure!(p.kind == kind && p.rp_id == site.rp_id, Msg::new("err.pk_challenge"));
         let want = match kind {
             Kind::Register => "webauthn.create",
             Kind::Login => "webauthn.get",
         };
-        ensure!(cd.kind == want, "unexpected request type: {}", cd.kind);
-        ensure!(cd.origin == site.origin, "origin does not match: {}", cd.origin);
+        ensure!(cd.kind == want, invalid(&format!("type {}", cd.kind)));
+        ensure!(cd.origin == site.origin, Msg::new("err.pk_origin").with("origin", &cd.origin));
         Ok(())
     }
 
     /// Verifies and saves a new key. The caller checks the password.
     pub fn finish_register(&self, r: &Registration, site: &Site, now: &str) -> Result<Passkey> {
         self.client_data(&decode(&r.client_data)?, Kind::Register, site)?;
-        ensure!(r.alg == -7, "this device's key type is not supported (ES256 only)");
+        ensure!(r.alg == -7, Msg::new("err.pk_alg"));
         let ad = decode(&r.auth_data)?;
         let count = check_auth_data(&ad, site, true)?;
         // The key id in the authenticator data must match the one the browser reported:
         // 37 byte header + 16 byte AAGUID + 2 byte length + id
         let raw_id = decode(&r.id)?;
-        let n = ad.get(53..55).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).context("key data is missing")?;
-        ensure!(!raw_id.is_empty() && ad.get(55..55 + n) == Some(&raw_id[..]), "key id does not match");
+        let n = ad.get(53..55).map(|b| u16::from_be_bytes([b[0], b[1]]) as usize).with_context(|| invalid("key data"))?;
+        ensure!(!raw_id.is_empty() && ad.get(55..55 + n) == Some(&raw_id[..]), invalid("key id"));
         let key = p256::PublicKey::from_public_key_der(&decode(&r.public_key)?)
-            .map_err(|_| anyhow!("could not read the public key (P-256 only)"))?;
+            .map_err(|_| Msg::new("err.pk_alg"))?;
         let pk = Passkey {
             id: B64.encode(&raw_id),
             key: B64.encode(key.to_encoded_point(false).as_bytes()),
@@ -184,7 +186,7 @@ impl Store {
             sign_count: count,
         };
         let mut keys = self.keys.lock().unwrap();
-        ensure!(!keys.iter().any(|k| k.id == pk.id), "this phone is already added");
+        ensure!(!keys.iter().any(|k| k.id == pk.id), Msg::new("err.pk_exists"));
         let mut next = keys.clone();
         next.push(pk.clone());
         (self.save)(&next)?;
@@ -198,19 +200,19 @@ impl Store {
         self.client_data(&cd, Kind::Login, site)?;
         let id = B64.encode(decode(&a.id)?);
         let mut keys = self.keys.lock().unwrap();
-        let i = keys.iter().position(|k| k.id == id && k.rp_id == site.rp_id).context("this key is not registered")?;
+        let i = keys.iter().position(|k| k.id == id && k.rp_id == site.rp_id).context(Msg::new("err.pk_unknown"))?;
         let ad = decode(&a.auth_data)?;
         let count = check_auth_data(&ad, site, false)?;
-        let vk = VerifyingKey::from_sec1_bytes(&decode(&keys[i].key)?).map_err(|_| anyhow!("the saved key is corrupt"))?;
-        let sig = Signature::from_der(&decode(&a.signature)?).map_err(|_| anyhow!("could not read the signature"))?;
+        let vk = VerifyingKey::from_sec1_bytes(&decode(&keys[i].key)?).map_err(|_| invalid("saved key"))?;
+        let sig = Signature::from_der(&decode(&a.signature)?).map_err(|_| invalid("signature"))?;
         // Some devices sign in "high s" form; both are valid, normalised to one form for verification
         let sig = sig.normalize_s().unwrap_or(sig);
         let mut msg = ad.clone();
         msg.extend_from_slice(&Sha256::digest(&cd));
-        vk.verify(&msg, &sig).map_err(|_| anyhow!("signature verification failed"))?;
+        vk.verify(&msg, &sig).map_err(|_| Msg::new("err.pk_signature"))?;
         // If the counter did not increase the key may have been cloned (synced keys always report 0)
         let old = keys[i].sign_count;
-        ensure!((count == 0 && old == 0) || count > old, "the key's counter went backwards ({count} <= {old})");
+        ensure!((count == 0 && old == 0) || count > old, Msg::new("err.pk_counter").with("count", count).with("old", old));
         let mut next = keys.clone();
         next[i].sign_count = count;
         next[i].last_used = Some(now.to_string());
@@ -222,7 +224,7 @@ impl Store {
 
     pub fn remove(&self, id: &str) -> Result<Passkey> {
         let mut keys = self.keys.lock().unwrap();
-        let i = keys.iter().position(|k| k.id == id).context("this key is not registered")?;
+        let i = keys.iter().position(|k| k.id == id).context(Msg::new("err.pk_unknown"))?;
         let mut next = keys.clone();
         let gone = next.remove(i);
         (self.save)(&next)?;
@@ -233,17 +235,22 @@ impl Store {
 
 /// Authenticator data: site hash, flags and signature counter.
 fn check_auth_data(ad: &[u8], site: &Site, registering: bool) -> Result<u32> {
-    ensure!(ad.len() >= 37, "authenticator data is incomplete");
-    ensure!(ad[..32] == Sha256::digest(site.rp_id.as_bytes())[..], "the key is not for this site");
+    ensure!(ad.len() >= 37, invalid("authenticator data"));
+    ensure!(ad[..32] == Sha256::digest(site.rp_id.as_bytes())[..], Msg::new("err.pk_site"));
     let flags = ad[32];
-    ensure!(flags & UP != 0, "user presence missing");
-    ensure!(flags & UV != 0, "fingerprint or face not verified");
-    ensure!(!registering || flags & AT != 0, "the new key is missing");
+    ensure!(flags & UP != 0, Msg::new("err.pk_presence"));
+    ensure!(flags & UV != 0, Msg::new("err.pk_uv"));
+    ensure!(!registering || flags & AT != 0, invalid("new key"));
     Ok(u32::from_be_bytes([ad[33], ad[34], ad[35], ad[36]]))
 }
 
 fn decode(s: &str) -> Result<Vec<u8>> {
-    B64.decode(s.trim_end_matches('=')).context("could not read the data (base64url)")
+    B64.decode(s.trim_end_matches('=')).with_context(|| invalid("base64url"))
+}
+
+/// Malformed data from the browser; `what` names the part (technical, not translated).
+fn invalid(what: &str) -> Msg {
+    Msg::new("err.pk_invalid").with("what", what)
 }
 
 fn clean_name(s: &str) -> String {

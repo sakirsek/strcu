@@ -13,6 +13,8 @@ use jsonwebtoken::jwk::Jwk;
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
 use serde::{Deserialize, Serialize};
 
+use crate::i18n::Msg;
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct AccessConfig {
     /// Public address of the panel, e.g. strcu.example.com
@@ -82,25 +84,30 @@ impl Verifier {
         if !recent {
             self.refresh().await?;
         }
-        self.cached(kid).context("unknown signing key")
+        self.cached(kid).context(bad_token("unknown signing key"))
     }
 
     /// Returns the email if the token is valid.
     pub async fn verify(&self, token: &str) -> Result<String> {
-        let header = decode_header(token).context("malformed token")?;
+        let header = decode_header(token).context(bad_token("malformed"))?;
         if header.alg != Algorithm::RS256 {
-            bail!("unexpected signature type {:?}", header.alg);
+            bail!(bad_token(&format!("signature type {:?}", header.alg)));
         }
-        let key = self.key(&header.kid.context("no key id")?).await?;
+        let key = self.key(&header.kid.context(bad_token("no key id"))?).await?;
         let mut v = Validation::new(Algorithm::RS256);
         v.set_audience(&[&self.cfg.aud]);
         v.set_issuer(&[format!("https://{}", self.cfg.team_domain)]);
         v.leeway = 30;
-        let data = decode::<Claims>(token, &key, &v).context("invalid signature or expired")?;
-        let email = data.claims.email.context("no email")?;
+        let data = decode::<Claims>(token, &key, &v).context(Msg::new("err.access_expired"))?;
+        let email = data.claims.email.context(bad_token("no email"))?;
         if !email.eq_ignore_ascii_case(&self.cfg.email) {
-            bail!("email not allowed: {email}");
+            bail!(Msg::new("err.access_email").with("email", email));
         }
         Ok(email)
     }
+}
+
+/// A token that cannot be checked; `what` is technical and not translated.
+fn bad_token(what: &str) -> Msg {
+    Msg::new("err.access_token").with("what", what)
 }

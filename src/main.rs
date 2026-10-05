@@ -2,6 +2,7 @@ mod access;
 mod auth;
 mod config;
 mod download;
+mod i18n;
 mod passkey;
 mod server;
 mod sys;
@@ -12,6 +13,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use i18n::Msg;
 use sys::{apps, input, power, screen, uia, window};
 
 #[derive(Parser)]
@@ -184,19 +186,20 @@ enum DevCmd {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
+async fn main() {
     sys::init();
     // Started with a double-click: run the panel. On error keep the window open so the message can be read.
-    if std::env::args_os().len() == 1 {
-        let r = run(Cli::parse_from(["strcu", "serve"])).await;
-        if let Err(e) = &r {
-            eprintln!("error: {e:#}
-press Enter to close");
+    let double_click = std::env::args_os().len() == 1;
+    let cli = if double_click { Cli::parse_from(["strcu", "serve"]) } else { Cli::parse() };
+    if let Err(e) = run(cli).await {
+        let lang = i18n::term();
+        eprintln!("{}", lang.render(&Msg::new("term.error").with("msg", i18n::from_error(&e))));
+        if double_click {
+            eprintln!("{}", lang.t("term.press_enter"));
             let _ = std::io::stdin().read_line(&mut String::new());
         }
-        return r;
+        std::process::exit(1);
     }
-    run(Cli::parse()).await
 }
 
 async fn run(cli: Cli) -> Result<()> {
@@ -212,14 +215,15 @@ async fn run(cli: Cli) -> Result<()> {
                 std::io::stdin().read_line(&mut s)?;
                 s.trim_end().to_string()
             } else {
-                let a = rpassword::prompt_password("New password: ")?;
-                if a != rpassword::prompt_password("Again: ")? {
-                    bail!("the passwords do not match");
+                let lang = i18n::term();
+                let a = rpassword::prompt_password(lang.t("term.pw_new"))?;
+                if a != rpassword::prompt_password(lang.t("term.pw_again"))? {
+                    bail!(Msg::new("err.passwords_differ"));
                 }
                 a
             };
             auth::set_password(&pw)?;
-            println!("password saved");
+            println!("{}", i18n::term().t("term.pw_saved"));
         }
         Cmd::Tunnel { cmd } => tunnel_cmd(cmd).await?,
         Cmd::Doctor { json } => doctor(json)?,
@@ -354,47 +358,57 @@ fn doctor(json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
-    let p = &profile;
-    println!("Operating system : {} {} (build {}, {})", p.os.name, p.os.version, p.os.build, p.os.arch);
-    println!("Processor        : {} ({} threads)", p.cpu, p.threads);
-    println!("Memory           : {} GB", p.memory_gb);
+    let (p, lang) = (&profile, i18n::term());
+    let mut rows = vec![
+        (lang.t("doctor.os"), format!("{} {} (build {}, {})", p.os.name, p.os.version, p.os.build, p.os.arch)),
+        (lang.t("doctor.cpu"), format!("{} ({})", p.cpu, lang.render(&Msg::new("doctor.threads").with("n", p.threads)))),
+        (lang.t("doctor.memory"), format!("{} GB", p.memory_gb)),
+    ];
     for m in &p.monitors {
-        println!(
-            "Display          : {} {}x{} @ ({},{}) {}% scale{}",
-            m.device,
-            m.rect.w,
-            m.rect.h,
-            m.rect.x,
-            m.rect.y,
-            m.scale_percent,
-            if m.primary { " [primary]" } else { "" }
-        );
+        let scale = lang.render(&Msg::new("doctor.scale").with("n", m.scale_percent));
+        let primary = if m.primary { format!(" [{}]", lang.t("doctor.primary")) } else { String::new() };
+        let value = format!("{} {}x{} @ ({},{}) {scale}{primary}", m.device, m.rect.w, m.rect.h, m.rect.x, m.rect.y);
+        rows.push((lang.t("doctor.display"), value));
     }
-    println!("UI language      : {} | region: {}", p.ui_language, p.locale);
-    println!("Keyboard         : {}", p.keyboard_layout);
-    println!("Browser          : {}", p.default_browser.as_deref().unwrap_or("?"));
-    println!("Session          : {:?}{}", p.session.lock, if p.session.remote { " (remote desktop)" } else { "" });
-    println!("Tunnel           : {}", tunnel_summary());
-    println!("Profile saved    : {}", path.display());
+    rows.extend([
+        (lang.t("doctor.language"), format!("{} | {}: {}", p.ui_language, lang.t("doctor.region"), p.locale)),
+        (lang.t("doctor.keyboard"), p.keyboard_layout.clone()),
+        (lang.t("doctor.browser"), p.default_browser.clone().unwrap_or_else(|| "?".into())),
+        (
+            lang.t("doctor.session"),
+            format!("{:?}{}", p.session.lock, if p.session.remote { format!(" ({})", lang.t("doctor.remote")) } else { String::new() }),
+        ),
+        (lang.t("doctor.tunnel"), tunnel_summary()),
+        (lang.t("doctor.saved"), path.display().to_string()),
+    ]);
+    let width = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
+    for (k, v) in rows {
+        println!("{k:<width$} : {v}");
+    }
     Ok(())
 }
 
 fn tunnel_summary() -> String {
     let access = config::load().access;
-    match (tunnel::installed_version(), tunnel::saved_tunnel_id(), access) {
-        (None, ..) => "cloudflared is not installed (strcu tunnel install)".into(),
-        (Some(_), None, _) => "no token (strcu tunnel token)".into(),
-        (Some(_), Some(_), None) => "Access is not set up (strcu tunnel setup ...)".into(),
-        (Some(v), Some(_), Some(a)) => format!("https://{} (cloudflared {v}, Access: {})", a.hostname, a.email),
-    }
+    let m = match (tunnel::installed_version(), tunnel::saved_tunnel_id(), access) {
+        (None, ..) => Msg::new("term.ts_no_cloudflared"),
+        (Some(_), None, _) => Msg::new("term.ts_no_token"),
+        (Some(_), Some(_), None) => Msg::new("term.ts_no_access"),
+        (Some(v), Some(_), Some(a)) => {
+            Msg::new("term.ts_ok").with("host", a.hostname).with("version", v).with("email", a.email)
+        }
+    };
+    i18n::term().render(&m)
 }
 
 async fn tunnel_cmd(cmd: TunnelCmd) -> Result<()> {
     match cmd {
         TunnelCmd::Install => {
-            println!("installing cloudflared {}", tunnel::CLOUDFLARED_TAG);
+            let lang = i18n::term();
+            println!("{}", lang.render(&Msg::new("term.installing").with("version", tunnel::CLOUDFLARED_TAG)));
             tunnel::install().await?;
-            println!("installed: {}", tunnel::installed_version().unwrap_or_default());
+            let version = tunnel::installed_version().unwrap_or_default();
+            println!("{}", lang.render(&Msg::new("term.installed").with("version", version)));
         }
         TunnelCmd::Token { stdin } => {
             let text = if stdin {
@@ -402,25 +416,25 @@ async fn tunnel_cmd(cmd: TunnelCmd) -> Result<()> {
                 std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)?;
                 s
             } else {
-                rpassword::prompt_password("Tunnel token (or the command the dashboard shows): ")?
+                rpassword::prompt_password(i18n::term().t("term.token_prompt"))?
             };
             let id = tunnel::save_token(&text)?;
-            println!("token saved (tunnel {id})");
+            println!("{}", i18n::term().render(&Msg::new("term.token_saved").with("id", id)));
         }
         TunnelCmd::Setup { hostname, team, aud, email } => {
             let clean = |s: String| s.trim().trim_start_matches("https://").trim_end_matches('/').to_lowercase();
             let (hostname, team) = (clean(hostname), clean(team));
             let aud = aud.trim().to_lowercase();
             if !aud.chars().all(|c| c.is_ascii_hexdigit()) || aud.len() < 32 {
-                bail!("the AUD tag must be a hexadecimal string");
+                bail!(Msg::new("err.aud"));
             }
             if !email.contains('@') {
-                bail!("invalid email");
+                bail!(Msg::new("err.email"));
             }
             let mut cfg = config::load();
             cfg.access = Some(access::AccessConfig { hostname, team_domain: team, aud, email: email.trim().to_string() });
             config::save(&cfg)?;
-            println!("Access set up: {}", tunnel_summary());
+            println!("{}", i18n::term().render(&Msg::new("term.access_set").with("summary", tunnel_summary())));
         }
         TunnelCmd::Status => println!("{}", tunnel_summary()),
     }
