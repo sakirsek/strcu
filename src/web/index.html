@@ -69,6 +69,11 @@
   .eye[aria-pressed="true"] .slash { display: inline; }
   .err { margin: 0; min-height: 20px; font-size: 14px; color: var(--bad); }
   .foot { margin: auto 0 0; padding-top: 24px; font-size: 13px; color: var(--muted); }
+  .pairlink { margin-top: 14px; align-self: center; }
+  #pairForm { margin-top: 24px; display: flex; flex-direction: column; gap: 10px; }
+  #pairForm label { font-size: 14px; font-weight: 500; color: var(--fg2); }
+  #pairCode { font-family: var(--mono); font-size: 22px; letter-spacing: .25em; text-align: center; }
+  .pairhint { margin: 0; font-size: 13px; color: var(--muted); }
 
   /* ---- app shell ---- */
   #app { max-width: 760px; margin: 0 auto; height: 100vh; height: 100dvh; display: flex; flex-direction: column; }
@@ -352,6 +357,14 @@
     <button id="loginSubmit" class="btn primary big" type="submit" data-i18n="login.submit"></button>
     <p id="loginErr" class="err" role="alert"></p>
   </form>
+  <button type="button" id="pairLink" class="linkbtn pairlink" data-i18n="login.pair_link"></button>
+  <form id="pairForm" hidden>
+    <label for="pairCode" data-i18n="login.pair_code"></label>
+    <input id="pairCode" class="field" inputmode="numeric" autocomplete="one-time-code" maxlength="7" required>
+    <button class="btn primary big" type="submit" data-i18n="login.pair_btn"></button>
+    <p class="pairhint" data-i18n="login.pair_hint"></p>
+    <p id="pairErr" class="err" role="alert"></p>
+  </form>
   <p id="loginFoot" class="foot"></p>
 </div>
 
@@ -561,7 +574,7 @@
           <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l7 3v5c0 4.5-3 8.2-7 10-4-1.8-7-5.5-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>
           <div><span id="sessWho"></span><span id="sessLeft"></span></div>
         </div>
-        <button type="button" id="logoutBtn" class="btn"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg><span data-i18n="more.logout"></span></button>
+        <button type="button" id="logoutBtn" class="btn"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg><span id="logoutLbl" data-i18n="more.logout"></span></button>
       </section>
 
       <h2 class="eyebrow" style="margin-top:4px" data-i18n="more.passkeys"></h2>
@@ -814,6 +827,23 @@ $('#loginForm').addEventListener('submit', async e => {
     $('#pw').value = ''; showPassword(false);
     start();
   } catch (err) { $('#loginErr').textContent = err.message; }
+});
+
+// ---------- pairing with the code shown on the computer ----------
+
+async function pairWith(code) { await api('/api/pair', { code, name: deviceName() }); }
+
+function showPair(err) {
+  $('#pairLink').hidden = true; $('#pairForm').hidden = false;
+  $('#pairErr').textContent = err || '';
+  $('#pairCode').focus();
+}
+$('#pairLink').onclick = () => showPair();
+$('#pairForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  $('#pairErr').textContent = '';
+  try { await pairWith($('#pairCode').value); $('#pairCode').value = ''; start(); }
+  catch (err) { $('#pairErr').textContent = err.message; }
 });
 
 function showPassword(on) {
@@ -1535,13 +1565,17 @@ async function closeWindow(btn, w) {
 function renderSession() {
   const me = S.me || {}, email = me.email;
   const left = S.status && S.status.session_left;
+  // A paired phone: its card shows the pairing, and signing out unpairs it
+  const dev = S.status && S.status.device;
   let who = t('more.local_who'), line = t('more.local');
-  if (me.via === 'home') { who = t('more.home_who'); line = t('more.home', { ip: me.ip }); }
+  if (dev) { who = t('more.paired_who'); line = t('more.paired', { name: dev.name, n: dev.days }); }
+  else if (me.via === 'home') { who = t('more.home_who'); line = t('more.home', { ip: me.ip }); }
   else if (email) { who = email; line = 'Cloudflare Access'; }
   $('#sessWho').textContent = who;
   // Nothing to sign out of on this computer
-  $('#logoutBtn').hidden = left == null && me.signin === false;
-  if (left != null) {
+  $('#logoutBtn').hidden = left == null && !dev && me.signin === false;
+  $('#logoutLbl').textContent = dev ? t('more.unpair') : t('more.logout');
+  if (left != null && !dev) {
     const hh = Math.floor(left / 3600), mm = Math.floor(left % 3600 / 60);
     line += ' · ' + (hh ? t('more.left_hm', { h: hh, m: mm }) : t('more.left_m', { m: mm }));
   }
@@ -1818,9 +1852,21 @@ showPassword(false); renderLang(); updateCount();
 const reopen = store.get('reopen', null);
 if (reopen) { store.set('reopen', null); S.tab = reopen; }
 
+// Opened from the QR code on the computer: pair with the code in the address, then drop it from the address.
+// Also when the panel is already open at this address: then only the part after # changes, and nothing reloads.
+async function pairFromAddress() {
+  const pairing = location.hash.match(/pair=(\d{6})/);
+  if (!pairing) return false;
+  history.replaceState(null, '', location.pathname + location.search);
+  try { await pairWith(pairing[1]); start(); } catch (e) { showLogin(); showPair(e.message); }
+  return true;
+}
+window.addEventListener('hashchange', pairFromAddress);
+
 (async () => {
   try { S.me = await (await fetch('/api/me')).json(); } catch (_) { S.me = { email: null }; }
   renderMe();
+  if (await pairFromAddress()) return;
   try { await api('/api/status'); start(); } catch (_) { showLogin(); }
 })();
 </script>

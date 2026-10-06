@@ -6,9 +6,10 @@ home and talking them through "open that program, click there".
 - See the screen live on the phone; a tap aims a crosshair, then you click, scroll or type.
 - Uses Windows' own accessibility data (UI Automation): the name of the element under the crosshair is shown,
   and the elements on screen come as a list. No AI, no GPU, no extra install.
-- A single exe. The web panel is protected by a password, with passkeys (fingerprint / Face ID) as an option.
+- A single exe. The web panel is protected by a password; a phone can instead be paired once with a QR code,
+  and passkeys (fingerprint / Face ID) are an option.
 
-> Work in progress: QR pairing, guided Cloudflare setup and one-line install are on the way to v1.0.
+> Work in progress: guided Cloudflare setup and one-line install are on the way to v1.0.
 
 ## Build and run
 
@@ -21,9 +22,10 @@ elease\strcu.exe
 `strcu.exe` opens in the terminal. The first start is a short setup: language, panel password (at least 10
 characters, argon2), home network, remote access (optional) and starting with Windows (minimized). After that
 the main screen shows where the phone can open the panel, the recent important events (sign-ins, failed
-attempts, fingerprints added or removed, locking, the tunnel coming and going) and three keys: settings, the
-full log and quit. Settings change the language, the password (phones are signed out), the home network,
-remote access, starting with Windows, registered fingerprints and the port (8765 by default).
+attempts, phones paired, fingerprints added or removed, locking, the tunnel coming and going) and four keys:
+pair a phone, settings, the full log and quit. Settings change the language, the password (phones are signed
+out), the home network, remote access, starting with Windows, paired phones and registered fingerprints, and
+the port (8765 by default).
 
 Only one StrCu runs at a time; starting it again brings the running one's window to the front. Closing the
 window stops the panel and the tunnel.
@@ -92,8 +94,8 @@ this computer, the program that opened it), not only by its headers.
   that points its own name at 127.0.0.1 is treated as remote (DNS rebinding).
 - **Home network** (when turned on): private addresses (192.168.x, 10.x, 172.16-31.x) on a network Windows
   counts as *Private*; on a *Public* network (café, hotel) it switches itself off. The address typed must be
-  the computer's IP or its name. Sign-in with the panel password. The connection is plain HTTP, so anyone on
-  the same Wi-Fi could read it; browsers offer no passkeys there.
+  the computer's IP or its name. Sign-in with the panel password or a paired phone. The connection is plain
+  HTTP, so anyone on the same Wi-Fi could read it; browsers offer no passkeys there.
 - **Remote:** through the Cloudflare tunnel, below. Connections opened by cloudflared always count as remote.
 - **Anything else** is refused, with the reason shown in the visitor's language and written to the log (once a
   minute per address).
@@ -101,6 +103,25 @@ this computer, the program that opened it), not only by its headers.
 Five wrong passwords lock that source out for five minutes; each address has its own count, so a guesser on
 the home network cannot lock out remote sign-in. Sign-ins and failed attempts are logged with where they came
 from ("Signed in · home network 192.168.1.50").
+
+The port is held for StrCu alone (`SO_EXCLUSIVEADDRUSE`): otherwise, while StrCu listens on 0.0.0.0, another
+program could still listen on 127.0.0.1 at the same port and Windows would hand it this computer's
+connections, the tunnel's among them.
+
+### Pairing a phone
+
+On the main screen, **[E]** (Turkish) / **[P]** (English) shows a QR code and the same six-digit code. The phone
+either scans the QR code, which opens the panel with the code in the part after `#` (never sent to the server
+in the address, and removed from it at once), or types the code under "Pair with a code from the computer" on
+the sign-in screen (`src/pair.rs`).
+
+- The code is open only while that screen is shown, for five minutes, and works once. Five wrong tries close
+  it; a new one is a key press away.
+- The paired phone gets an `HttpOnly` cookie that lets it in without the password for 30 days, renewed while it
+  is used. It works only at the address it was paired on (home network IP or tunnel hostname); through the
+  tunnel Cloudflare Access is still checked first.
+- Only a SHA-256 hash of the cookie's secret is kept in `config.json`. A paired phone is removed in Settings → 6,
+  or from the phone with "Unpair" under More.
 
 ## Remote access: Cloudflare Tunnel + Access
 
@@ -141,7 +162,8 @@ the origin, the site hash, user verification, the ES256 signature and the signat
 - `src/server.rs` + `src/web/` the panel; `src/worker.rs` runs operating system work in order on one thread
 - `src/app.rs` what runs while StrCu is open (listener, tunnel watcher); `src/tui/` the terminal screens, plain
   functions from state to frames that the terminal draws and `strcu dev preview` turns into HTML
-- `src/auth.rs` sign-in, `src/passkey.rs` passkeys, `src/access.rs` Cloudflare Access verification
+- `src/auth.rs` sign-in, `src/pair.rs` paired phones, `src/passkey.rs` passkeys, `src/access.rs` Cloudflare
+  Access verification
 - `src/i18n.rs` + `lang/` languages; the server sends message keys, the panel and the terminal render them
 - `src/tunnel.rs` cloudflared management, `src/download.rs` downloads verified with SHA-256
 

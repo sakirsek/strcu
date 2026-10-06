@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use crate::access::{AccessConfig, Verifier};
 use crate::auth::{self, Auth, Check};
 use crate::i18n::{self, Msg};
+use crate::pair::{self, Pairing};
 use crate::passkey::{self, Kind, Site};
 use crate::sys::{Rect, apps, icons, input, net, power, screen, uia, window};
 use crate::worker::Worker;
@@ -50,6 +51,8 @@ struct AppState {
     apps: AppCache,
     /// Passkeys (fingerprint / face sign-in) and pending challenges
     passkeys: Arc<passkey::Store>,
+    /// Pairing codes and paired phones
+    pairing: Arc<Pairing>,
     /// Process id of the running cloudflared (0: none): its connections always count as remote
     tunnel_pid: Arc<AtomicU32>,
     /// This computer's addresses on networks Windows counts as private
@@ -70,6 +73,14 @@ const SHUTDOWN_SECS: u32 = 15;
 /// The panel's state, shared by every listener.
 pub struct Panel {
     state: AppState,
+}
+
+/// Listens on `addr` with the port kept to the panel alone (see `net::exclusive`).
+fn bind_alone(addr: SocketAddr) -> std::io::Result<tokio::net::TcpListener> {
+    let s = if addr.is_ipv4() { tokio::net::TcpSocket::new_v4()? } else { tokio::net::TcpSocket::new_v6()? };
+    crate::sys::net::exclusive(&s)?;
+    s.bind(addr)?;
+    s.listen(1024)
 }
 
 /// A running listener. Dropping it stops it at once; `stop` lets open requests finish first.
@@ -108,6 +119,7 @@ impl Panel {
             icons: Arc::default(),
             apps: Arc::default(),
             passkeys: Arc::new(passkey::Store::load()),
+            pairing: Arc::new(Pairing::load()),
             tunnel_pid: Arc::default(),
             private: Arc::default(),
             denied: Arc::default(),
@@ -132,15 +144,20 @@ impl Panel {
         &self.state.passkeys
     }
 
+    pub fn pairing(&self) -> &Pairing {
+        &self.state.pairing
+    }
+
     /// Remote access was set up or removed: requests through the tunnel are verified with the new settings.
     pub fn set_access(&self, cfg: Option<AccessConfig>) {
         *self.state.access.write().unwrap() = cfg.map(|a| Arc::new(Verifier::new(a)));
     }
 
     pub async fn listen(&self, addr: SocketAddr) -> Result<Listener> {
-        let tcp = match tokio::net::TcpListener::bind(addr).await {
+        let tcp = match bind_alone(addr) {
             Ok(t) => t,
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => {
+            // Refused by a port held for one program alone (another StrCu, say) is "denied", not "in use"
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied) => {
                 return Err(Msg::new("err.port_busy").with("port", addr.port()).into());
             }
             Err(e) => return Err(anyhow::Error::new(e).context(Msg::new("err.listen").with("addr", addr.to_string()))),
@@ -191,6 +208,7 @@ impl Panel {
             .route("/fonts/{file}", get(font))
             .route("/api/me", get(me))
             .route("/api/login", post(login))
+            .route("/api/pair", post(pair))
             .route("/api/passkey/login/start", post(passkey_login_start))
             .route("/api/passkey/login", post(passkey_login))
             .merge(api)
@@ -240,6 +258,10 @@ impl LogEntry {
             "ev.pk_add_failed",
             "ev.pk_removed",
             "ev.password_changed",
+            "ev.paired",
+            "ev.unpaired",
+            "ev.pair_wrong",
+            "ev.device_back",
             "ev.locked",
             "ev.shutdown",
             "ev.shutdown_cancelled",
@@ -515,19 +537,74 @@ fn local_needs_signin() -> bool {
     cfg!(debug_assertions) && std::env::var_os("STRCU_DEV_LOCAL_SIGNIN").is_some()
 }
 
+/// A session, a paired phone's cookie, or this computer. A paired phone's cookie is sent again now and then,
+/// so its 30 days start over while it is used.
 async fn require_session(State(st): State<AppState>, req: Request, next: Next) -> Response {
-    let local = req.extensions().get::<Via>() == Some(&Via::Local) && !local_needs_signin();
-    let ok = local
-        || req
-            .headers()
-            .get(header::COOKIE)
-            .and_then(|v| v.to_str().ok())
-            .and_then(auth::token_from_cookie)
-            .is_some_and(|t| st.auth.check(t));
-    if !ok {
-        return ApiError(StatusCode::UNAUTHORIZED, Msg::new("err.signin_required")).into_response();
+    let via = req.extensions().get::<Via>().cloned().unwrap_or(Via::Remote);
+    if via == Via::Local && !local_needs_signin() {
+        return next.run(req).await;
     }
-    next.run(req).await
+    let cookies = req.headers().get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
+    if auth::token_from_cookie(&cookies).is_some_and(|t| st.auth.check(t)) {
+        return next.run(req).await;
+    }
+    let host = host_name(req.headers()).unwrap_or_default();
+    let device = auth::cookie(&cookies, pair::COOKIE).and_then(|c| Some((c, st.pairing.check(c, &host, &local_time())?)));
+    let Some((value, seen)) = device else {
+        return ApiError(StatusCode::UNAUTHORIZED, Msg::new("err.signin_required")).into_response();
+    };
+    if seen.came_back {
+        let from = via.source(req.headers());
+        st.log.add(Msg::new("ev.device_back").with("name", &seen.device.name).with("from", from), true);
+    }
+    let renew = seen.renew.then(|| device_cookie(req.headers(), value));
+    let mut r = next.run(req).await;
+    if let Some(c) = renew {
+        r.headers_mut().append(header::SET_COOKIE, c);
+    }
+    r
+}
+
+/// The cookie that keeps a phone paired; HTTPS-only when it came through the tunnel.
+fn device_cookie(h: &HeaderMap, value: &str) -> HeaderValue {
+    let secure = if is_https(h) { "; Secure" } else { "" };
+    let max_age = pair::DEVICE_DAYS * 86_400;
+    let c = format!("{}={value}; HttpOnly; SameSite=Strict; Path=/; Max-Age={max_age}{secure}", pair::COOKIE);
+    HeaderValue::from_str(&c).unwrap_or_else(|_| HeaderValue::from_static(""))
+}
+
+#[derive(Deserialize)]
+struct PairReq {
+    code: String,
+    #[serde(default)]
+    name: String,
+}
+
+/// The phone entered (or scanned) the code shown on the computer. No session needed.
+async fn pair(State(st): State<AppState>, Extension(via): Extension<Via>, headers: HeaderMap, Json(r): Json<PairReq>) -> Response {
+    let host = host_name(&headers).unwrap_or_default();
+    match st.pairing.redeem(&r.code, &r.name, &host, &local_time()) {
+        Ok((d, cookie)) => {
+            st.log.add(Msg::new("ev.paired").with("name", &d.name).with("from", via.source(&headers)), true);
+            ([(header::SET_COOKIE, device_cookie(&headers, &cookie))], Json(json!({ "ok": true, "name": d.name }))).into_response()
+        }
+        Err(e) => {
+            let why = i18n::from_error(&e);
+            if why.code != "err.pair_none" {
+                st.log.add(Msg::new("ev.pair_wrong").with("from", via.source(&headers)), false);
+                tokio::time::sleep(Duration::from_millis(700)).await;
+            }
+            // Not 401: the panel treats 401 as "session ended"
+            ApiError(StatusCode::FORBIDDEN, why).into_response()
+        }
+    }
+}
+
+/// The paired phone a request's cookie belongs to, if it is still paired at this address.
+fn paired(st: &AppState, h: &HeaderMap) -> Option<pair::Device> {
+    let cookies = h.get(header::COOKIE)?.to_str().ok()?;
+    let value = auth::cookie(cookies, pair::COOKIE)?;
+    Some(st.pairing.check(value, &host_name(h)?, &local_time())?.device)
 }
 
 fn is_https(h: &HeaderMap) -> bool {
@@ -711,12 +788,25 @@ async fn passkey_delete(State(st): State<AppState>, Json(r): Json<PasskeyDeleteR
     Ok(Json(json!({ "ok": true })))
 }
 
+/// Signs this phone out: ends its session and, if it is paired, unpairs it (its cookie would let it straight
+/// back in otherwise).
 async fn logout(State(st): State<AppState>, headers: HeaderMap) -> Response {
     if let Some(t) = headers.get(header::COOKIE).and_then(|v| v.to_str().ok()).and_then(auth::token_from_cookie) {
         st.auth.logout(t);
     }
-    let clear = format!("{}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0", auth::COOKIE);
-    ([(header::SET_COOKIE, clear)], Json(json!({ "ok": true }))).into_response()
+    if let Some(d) = paired(&st, &headers)
+        && st.pairing.remove(&d.id).is_ok()
+    {
+        st.log.add(Msg::new("ev.unpaired").with("name", d.name), true);
+    }
+    let mut r = Json(json!({ "ok": true })).into_response();
+    for name in [auth::COOKIE, pair::COOKIE] {
+        let clear = format!("{name}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0");
+        if let Ok(v) = HeaderValue::from_str(&clear) {
+            r.headers_mut().append(header::SET_COOKIE, v);
+        }
+    }
+    r
 }
 
 /// For the sign-in screen: where the request comes from, the email (partly hidden) when coming through
@@ -825,6 +915,7 @@ async fn font(axum::extract::Path(file): axum::extract::Path<String>) -> Respons
 // ---------- endpoints ----------
 
 async fn status(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
+    let device = paired(&st, &headers).map(|d| json!({ "name": d.name, "days": d.days_left(pair::unix_now()) }));
     let session_left = headers
         .get(header::COOKIE)
         .and_then(|v| v.to_str().ok())
@@ -848,6 +939,7 @@ async fn status(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<Jso
                 "foreground_hwnd": fg.as_ref().map(|w| w.hwnd),
                 "shutdown_in": shutdown_in,
                 "session_left": session_left,
+                "device": device,
                 "version": env!("CARGO_PKG_VERSION"),
             }))
         })

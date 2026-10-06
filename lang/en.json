@@ -10,6 +10,10 @@
   "login.hide_password": "Hide password",
   "login.submit": "Sign in",
   "login.foot": "After {tries} wrong attempts you have to wait {min} minutes. A panel session lasts {hours} hours.",
+  "login.pair_link": "Pair with a code from the computer",
+  "login.pair_code": "Code shown on the computer",
+  "login.pair_btn": "Pair",
+  "login.pair_hint": "On the computer, choose “pair a phone” on StrCu’s main screen.",
   "top.desktop": "Desktop",
   "top.locked": "Computer locked",
   "top.locked_label": "Computer locked. Switch window",
@@ -202,6 +206,12 @@
   "more.log_err": "error",
   "more.home_who": "Connected from the home network",
   "more.home": "Home network · {ip}",
+  "more.paired_who": "Paired phone",
+  "more.paired": {
+    "one": "{name} · {n} day left",
+    "other": "{name} · {n} days left"
+  },
+  "more.unpair": "Unpair",
   "pk.add": "Add this phone",
   "pk.password": "Panel password to add it",
   "pk.add_btn": "Add",
@@ -305,6 +315,10 @@
   "ev.tunnel_up": "Remote access connected",
   "ev.tunnel_down": "Remote access lost its connection",
   "ev.tunnel_failed": "Remote access is not working: {reason}",
+  "ev.paired": "Phone paired: {name} · {from}",
+  "ev.unpaired": "Phone unpaired: {name}",
+  "ev.pair_wrong": "Pairing: wrong code · {from}",
+  "ev.device_back": "Paired phone connected: {name} · {from}",
   "err.internal": "Something went wrong",
   "err.detail": "{msg}: {detail}",
   "err.shot": "Could not take a screenshot",
@@ -369,6 +383,13 @@
   "err.not_home": "Not from the home network",
   "err.public_network": "Windows marks this network as Public; home network access works only on Private networks",
   "err.unknown_host": "Opened with an address that is not this computer's",
+  "err.pair_none": "No pairing code is open; on the computer choose “pair a phone”",
+  "err.pair_wrong": {
+    "one": "Wrong code; {n} try left",
+    "other": "Wrong code; {n} tries left"
+  },
+  "err.pair_closed": "Wrong code too many times; open a new one on the computer",
+  "err.pair_unknown": "This phone is not paired",
   "term.error": "error: {msg}",
   "term.press_enter": "press Enter to close",
   "term.panel": "panel: {url}",
@@ -420,6 +441,7 @@
   "ui.on": "on",
   "ui.off": "off",
   "ui.continue": "Continue",
+  "ui.hint_continue": "Press any key to continue",
   "setup.title": "Setup",
   "setup.lang_title": "Language",
   "setup.lang_system": "this computer's language",
@@ -474,6 +496,8 @@
   "dash.log_title": "Log",
   "dash.log_keys": "↑ ↓ PgUp PgDn scroll",
   "dash.home_public": "off: Windows treats this network as Public; make it Private in Windows settings",
+  "dash.key_pair": "p",
+  "dash.pair": "pair a phone",
   "set.title": "Settings",
   "set.language": "Language",
   "set.password": "Password",
@@ -497,6 +521,13 @@
   "set.port_text": "The panel listens on this port (1024–65535). The default is 8765.",
   "set.port_invalid": "Enter a number between 1024 and 65535.",
   "set.port_tunnel": "Saved. In the Cloudflare dashboard, change the tunnel's service to http://localhost:{port} too.",
+  "set.dev_title": "Paired phones",
+  "set.dev_none": "None yet; pair one from the main screen.",
+  "set.dev_left": {
+    "one": "{n} day left",
+    "other": "{n} days left"
+  },
+  "set.dev_confirm": "Unpair {name}? That phone will need a code or the password again.",
   "remote.incomplete": "Setup was not finished; set it up again.",
   "remote.address": "Address",
   "remote.email": "Allowed email",
@@ -528,5 +559,15 @@
   "remote.connecting": "Starting the tunnel…",
   "src.local": "this computer",
   "src.home": "home network {ip}",
-  "src.remote": "remote {ip}"
+  "src.remote": "remote {ip}",
+  "pair.title": "Pair a phone",
+  "pair.scan": "Scan with the phone's camera,",
+  "pair.or_code": "or enter this code on its sign-in screen:",
+  "pair.note": {
+    "one": "A paired phone gets in without the password for {days} day, renewed while it is used. Remove it in Settings → 6.",
+    "other": "A paired phone gets in without the password for {days} days, renewed while it is used. Remove it in Settings → 6."
+  },
+  "pair.done": "Paired: {name}",
+  "pair.closed": "The code expired or was entered wrong too many times.",
+  "pair.new_code": "New code"
 }

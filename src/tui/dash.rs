@@ -118,7 +118,12 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
         f.text(Tone::Warn, t.t("dash.quit_ask"));
         f.text(Tone::Dim, t.render(&Msg::new("dash.quit_how").with("key", t.t("dash.key_quit").to_uppercase())));
     } else {
-        f.push(keys(t, &[("dash.key_settings", "dash.settings"), ("dash.key_log", "dash.log"), ("dash.key_quit", "dash.quit")]));
+        f.push(keys(t, &[
+            ("dash.key_pair", "dash.pair"),
+            ("dash.key_settings", "dash.settings"),
+            ("dash.key_log", "dash.log"),
+            ("dash.key_quit", "dash.quit"),
+        ]));
     }
     f
 }
@@ -162,7 +167,9 @@ pub async fn run(io: &mut impl Io, app: &mut App) {
             continue;
         }
         confirm = false;
-        if is_key(t, k, "dash.key_settings") {
+        if is_key(t, k, "dash.key_pair") {
+            confirm = super::pair::run(io, app).await == Step::Quit;
+        } else if is_key(t, k, "dash.key_settings") {
             if super::settings::run(io, app).await == Step::Quit {
                 confirm = true;
             }

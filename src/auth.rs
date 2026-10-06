@@ -117,7 +117,12 @@ impl Auth {
 }
 
 fn random_token() -> String {
-    let mut b = [0u8; 32];
+    random_hex(32)
+}
+
+/// `bytes` random bytes as hex.
+pub fn random_hex(bytes: usize) -> String {
+    let mut b = vec![0u8; bytes];
     getrandom::fill(&mut b).expect("the operating system did not provide random numbers");
     b.iter().map(|x| format!("{x:02x}")).collect()
 }

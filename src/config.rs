@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::access::AccessConfig;
 use crate::i18n::Msg;
+use crate::pair::Device;
 use crate::passkey::Passkey;
 
 #[derive(Serialize, Deserialize)]
@@ -17,6 +18,9 @@ pub struct Config {
     /// Public keys of phones registered for fingerprint / face sign-in
     #[serde(default)]
     pub passkeys: Vec<Passkey>,
+    /// Phones paired with a code: they get in without the password for a while
+    #[serde(default)]
+    pub devices: Vec<Device>,
     /// Terminal language code ("tr"); unset means the Windows display language
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub language: Option<String>,
@@ -43,6 +47,7 @@ impl Default for Config {
             password_hash: None,
             access: None,
             passkeys: Vec::new(),
+            devices: Vec::new(),
             language: None,
             lan: false,
             port: DEFAULT_PORT,

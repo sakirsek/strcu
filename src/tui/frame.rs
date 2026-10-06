@@ -18,6 +18,8 @@ pub enum Tone {
     Bad,
     /// Hints and secondary text
     Dim,
+    /// A QR code: black on white whatever the terminal's colours, or phones cannot read it
+    Qr,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -209,7 +211,7 @@ fn merge(row: Row) -> Row {
     let mut out: Row = Vec::new();
     for s in row.into_iter().filter(|s| !s.text.is_empty()) {
         match out.last_mut() {
-            Some(last) if last.tone == s.tone || s.text.trim().is_empty() && last.tone == Tone::Plain => {
+            Some(last) if last.tone == s.tone || (s.tone != Tone::Qr && s.text.trim().is_empty() && last.tone == Tone::Plain) => {
                 last.text.push_str(&s.text)
             }
             _ => out.push(s),

@@ -7,6 +7,7 @@
 mod dash;
 mod frame;
 mod html;
+mod pair;
 mod preview;
 mod remote;
 mod settings;

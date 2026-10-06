@@ -1,7 +1,8 @@
-//! The computer's network: its home network addresses, whether Windows counts each network as private, and
-//! which program opened a connection to the panel.
+//! The computer's network: its home network addresses, whether Windows counts each network as private,
+//! which program opened a connection to the panel, and a port kept to the panel alone.
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::os::windows::io::AsRawSocket;
 
 use windows::Win32::Foundation::{ERROR_BUFFER_OVERFLOW, ERROR_INSUFFICIENT_BUFFER, NO_ERROR};
 use windows::Win32::NetworkManagement::IpHelper::{
@@ -13,7 +14,7 @@ use windows::Win32::NetworkManagement::Ndis::IfOperStatusUp;
 use windows::Win32::Networking::NetworkListManager::{
     INetworkListManager, NLM_NETWORK_CATEGORY_DOMAIN_AUTHENTICATED, NLM_NETWORK_CATEGORY_PRIVATE, NetworkListManager,
 };
-use windows::Win32::Networking::WinSock::{AF_INET, SOCKADDR_IN};
+use windows::Win32::Networking::WinSock::{AF_INET, SO_EXCLUSIVEADDRUSE, SOCKADDR_IN, SOCKET, SOL_SOCKET, WSAGetLastError, setsockopt};
 use windows::Win32::System::Com::{CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::GetCurrentProcessId;
@@ -138,6 +139,19 @@ fn braced(g: &GUID) -> String {
         "{{{:08X}-{:04X}-{:04X}-{:02X}{:02X}-{:02X}{:02X}{:02X}{:02X}{:02X}{:02X}}}",
         g.data1, g.data2, g.data3, d4[0], d4[1], d4[2], d4[3], d4[4], d4[5], d4[6], d4[7]
     )
+}
+
+/// No other socket may then use this one's port, not even on a narrower address. Without it, while the panel
+/// listens on 0.0.0.0:8765, another program can still listen on 127.0.0.1:8765 and Windows gives it this
+/// computer's connections, the tunnel's among them. Set before binding.
+pub fn exclusive(s: &impl AsRawSocket) -> std::io::Result<()> {
+    let on = 1i32.to_ne_bytes();
+    // SAFETY: a valid socket handle and a 4-byte option value
+    if unsafe { setsockopt(SOCKET(s.as_raw_socket() as usize), SOL_SOCKET, SO_EXCLUSIVEADDRUSE, Some(&on)) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::from_raw_os_error(unsafe { WSAGetLastError() }.0))
+    }
 }
 
 /// The process that opened a connection from `peer` to this computer's `server` address (IPv4).

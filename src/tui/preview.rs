@@ -7,10 +7,11 @@ use anyhow::{Context, Result};
 use super::frame::Frame;
 use super::remote::{Download, Field, StatusView};
 use super::settings::Values;
-use super::{Notice, dash, html, remote, settings, wizard};
+use super::{Notice, dash, html, pair, remote, settings, wizard};
 use crate::access::AccessConfig;
 use crate::app::{Remote, Urls};
 use crate::i18n::{self, Lang, Msg};
+use crate::pair::{DEVICE_DAYS, Device, unix_now};
 use crate::passkey::Passkey;
 use crate::server::{LogEntry, local_time};
 
@@ -46,6 +47,7 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
     let remote = Msg::new("src.remote").with("ip", "203.0.113.24");
     let home = Msg::new("src.home").with("ip", "192.168.1.50");
     let events = vec![
+        entry(today, "14:05:12", Msg::new("ev.paired").with("name", "iPhone · Safari").with("from", home.clone()), true),
         entry(today, "14:02:41", Msg::new("ev.signed_in_pk").with("name", "Android · Chrome").with("from", remote), true),
         entry(today, "13:59:10", Msg::new("ev.tunnel_up"), true),
         entry(today, "13:58:03", Msg::new("ev.signin_wrong_pw").with("from", Msg::new("src.home").with("ip", "192.168.1.73")), false),
@@ -81,8 +83,24 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         passkey("Android · Chrome", host, Some(&format!("{today} 14:02:41"))),
         passkey("iPhone · Safari", "localhost", None),
     ];
-    let values =
-        Values { lang: t.name.clone(), lan: true, remote: Some(host.into()), autostart: true, passkeys: keys.len(), port: 8765 };
+    let devices = vec![Device {
+        id: "d1".into(),
+        name: "iPhone · Safari".into(),
+        host: "192.168.1.24".into(),
+        created: format!("{today} 14:05:12"),
+        last_used: format!("{today} 14:05:12"),
+        expires: unix_now() + DEVICE_DAYS * 86_400,
+        secret: String::new(),
+    }];
+    let places: Vec<pair::Place> = vec![("dash.home", "http://192.168.1.24:8765".into()), ("dash.remote", format!("https://{host}"))];
+    let values = Values {
+        lang: t.name.clone(),
+        lan: true,
+        remote: Some(host.into()),
+        autostart: true,
+        passkeys: keys.len() + devices.len(),
+        port: 8765,
+    };
     let failed = Remote::Failed(Msg::new("err.cloudflared_exited").with("status", "exit code: 1").with("log", r"C:\Users\you\AppData\Local\strcu\cloudflared.log"));
 
     let pages: Vec<(&str, Frame)> = vec![
@@ -117,7 +135,9 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
                 error: None,
             }),
         ),
-        ("15-phones", settings::phones_view(t, &keys, "", None)),
+        ("15-pair", pair::view(t, &places, 0, &pair::State::Open("482913", std::time::Duration::from_secs(272)), COLS)),
+        ("15b-pair-done", pair::view(t, &places, 0, &pair::State::Done("iPhone · Safari"), COLS)),
+        ("15c-phones", settings::phones_view(t, &devices, &keys, unix_now(), "", None)),
         ("16-port", settings::port_view(t, "8765", None)),
     ];
     std::fs::create_dir_all(dir)?;

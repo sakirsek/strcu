@@ -12,6 +12,7 @@ fn class(t: Tone) -> &'static str {
         Tone::Warn => "w",
         Tone::Bad => "b",
         Tone::Dim => "d",
+        Tone::Qr => "q",
     }
 }
 
@@ -26,7 +27,20 @@ pub fn page(f: &Frame, cols: usize, rows: usize) -> String {
     for (i, row) in lines.iter().take(rows).enumerate() {
         let mut col = 0;
         for s in row {
-            body.push_str(&format!(r#"<span class="{}">{}</span>"#, class(s.tone), escape(&s.text)));
+            if s.tone == Tone::Qr {
+                // A font's half blocks do not fill the line exactly: each module pair is drawn as a box
+                for c in s.text.chars() {
+                    let n = match c {
+                        '▀' => 1,
+                        '▄' => 2,
+                        '█' => 3,
+                        _ => 0,
+                    };
+                    body.push_str(&format!(r#"<span class="q q{n}"></span>"#));
+                }
+            } else {
+                body.push_str(&format!(r#"<span class="{}">{}</span>"#, class(s.tone), escape(&s.text)));
+            }
             col += s.text.chars().count();
         }
         if let Some((r, c)) = cursor
@@ -61,6 +75,12 @@ pre {{ margin: 0; padding: 10px 12px 14px; color: #cccccc; font: 15px/1.32 "Casc
 .b {{ color: #f87171; }}
 .d {{ color: #8c8c8c; }}
 .cur {{ background: #cccccc; }}
+/* One pixel wider and taller than a cell, overlapping the next: no seams between modules */
+.q {{ display: inline-block; width: calc(1ch + 1px); height: calc(1.32em + 1px); margin: 0 -1px -1px 0; vertical-align: top; }}
+.q0 {{ background: #fff; }}
+.q1 {{ background: linear-gradient(#000 50%, #fff 50%); }}
+.q2 {{ background: linear-gradient(#fff 50%, #000 50%); }}
+.q3 {{ background: #000; }}
 </style></head><body><div class="win"><div class="bar"><span class="tab">StrCu</span>
 <span class="ctl"><span>&#x2014;</span><span>&#x2610;</span><span>&#x2715;</span></span></div><pre>{body}</pre></div></body></html>
 "#

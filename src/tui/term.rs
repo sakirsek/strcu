@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use anyhow::Result;
 use crossterm::event::{self, Event, EventStream, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use crossterm::style::{Attribute, Color, Print, SetAttribute, SetForegroundColor};
+use crossterm::style::{Attribute, Color, Print, SetAttribute, SetBackgroundColor, SetForegroundColor};
 use crossterm::terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen};
 use crossterm::{cursor, execute, queue};
 use futures_util::StreamExt;
@@ -46,7 +46,11 @@ impl Terminal {
             Tone::Warn => (rgb(250, 204, 21), false),
             Tone::Bad => (rgb(248, 113, 113), false),
             Tone::Dim => (rgb(140, 140, 140), false),
+            Tone::Qr => (Some(Color::Rgb { r: 0, g: 0, b: 0 }), false),
         };
+        if tone == Tone::Qr {
+            return (color, false);
+        }
         (color.filter(|_| self.color), bold || (!self.color && matches!(tone, Tone::Accent | Tone::Title)))
     }
 
@@ -58,6 +62,9 @@ impl Terminal {
                 let (color, bold) = self.style(s.tone);
                 if let Some(c) = color {
                     queue!(self.out, SetForegroundColor(c))?;
+                }
+                if s.tone == Tone::Qr {
+                    queue!(self.out, SetBackgroundColor(Color::Rgb { r: 255, g: 255, b: 255 }))?;
                 }
                 if bold {
                     queue!(self.out, SetAttribute(Attribute::Bold))?;

@@ -5,6 +5,7 @@ use super::wizard;
 use super::{Io, Notice, Step, choose, footer, header, hint_back, option, prompt, read_line};
 use crate::app::App;
 use crate::i18n::{self, Lang, Msg};
+use crate::pair::{Device, unix_now};
 use crate::passkey::Passkey;
 use crate::{config, sys};
 
@@ -58,7 +59,7 @@ fn values(app: &App) -> Values {
         lan: cfg.lan,
         remote: cfg.access.map(|a| a.hostname),
         autostart: sys::autostart::enabled(),
-        passkeys: app.panel.passkeys().list().len(),
+        passkeys: app.panel.passkeys().list().len() + app.panel.pairing().list().len(),
         port: cfg.port,
     }
 }
@@ -185,26 +186,49 @@ async fn autostart(io: &mut impl Io, current: bool) -> Step<Option<Notice>> {
 
 // ---------- phones ----------
 
-pub fn phones_view(t: &Lang, keys: &[Passkey], typed: &str, notice: Option<&Notice>) -> Frame {
+/// Paired phones (numbered first) and fingerprints (after them).
+pub fn phones_view(t: &Lang, devices: &[Device], keys: &[Passkey], now: u64, typed: &str, notice: Option<&Notice>) -> Frame {
     let mut f = Frame::default();
     header(&mut f, &title(t, "set.phones"), Vec::new());
+    let names = devices.iter().map(|d| &d.name).chain(keys.iter().map(|k| &k.name));
+    let w = names.map(|n| n.chars().count()).max().unwrap_or(0) + 3;
+    let row = |f: &mut Frame, n: usize, name: &str, about: String| {
+        // A long line continues under the details, not under the name
+        let prefix = vec![
+            span(Tone::Plain, "  "),
+            span(Tone::Accent, n.to_string()),
+            span(Tone::Plain, "  "),
+            span(Tone::Plain, super::pad(name, w)),
+        ];
+        f.hang(prefix, vec![span(Tone::Dim, about)]);
+    };
+    f.text(Tone::Strong, t.t("set.dev_title"));
+    f.blank();
+    if devices.is_empty() {
+        f.text(Tone::Dim, t.t("set.dev_none"));
+    }
+    for (i, d) in devices.iter().enumerate() {
+        let left = t.render(&Msg::new("set.dev_left").with("n", d.days_left(now)));
+        let used = t.render(&Msg::new("set.pk_used").with("time", short_time(&d.last_used)));
+        row(&mut f, i + 1, &d.name, format!("{} · {left} · {used}", d.host));
+    }
+    f.blank();
     f.text(Tone::Strong, t.t("set.pk_title"));
     f.blank();
     if keys.is_empty() {
         f.text(Tone::Dim, t.t("set.pk_none"));
     }
-    let w = keys.iter().map(|k| k.name.chars().count()).max().unwrap_or(0) + 3;
     for (i, k) in keys.iter().enumerate() {
         let used = match &k.last_used {
             Some(when) => t.render(&Msg::new("set.pk_used").with("time", short_time(when))),
             None => t.t("set.pk_never"),
         };
-        let prefix = vec![span(Tone::Plain, "  "), span(Tone::Accent, (i + 1).to_string()), span(Tone::Plain, "  ")];
-        f.hang(prefix, vec![span(Tone::Plain, super::pad(&k.name, w)), span(Tone::Dim, format!("{} · {used}", k.rp_id))]);
+        row(&mut f, devices.len() + i + 1, &k.name, format!("{} · {used}", k.rp_id));
     }
+    f.blank();
     option(&mut f, 0, &t.t("ui.back"), None);
     f.blank();
-    if keys.is_empty() {
+    if devices.is_empty() && keys.is_empty() {
         prompt(&mut f, t, None, typed);
     } else {
         f.push(vec![span(Tone::Plain, format!("{}: ", t.t("set.pk_delete_hint"))), span(Tone::Accent, typed)]);
@@ -220,10 +244,11 @@ fn short_time(s: &str) -> &str {
     s.get(..16).unwrap_or(s)
 }
 
-pub fn delete_view(t: &Lang, name: &str, typed: &str) -> Frame {
+/// `question`: "set.pk_confirm" or "set.dev_confirm".
+pub fn delete_view(t: &Lang, question: &'static str, name: &str, typed: &str) -> Frame {
     let mut f = Frame::default();
     header(&mut f, &title(t, "set.phones"), Vec::new());
-    f.text(Tone::Plain, t.render(&Msg::new("set.pk_confirm").with("name", name)));
+    f.text(Tone::Plain, t.render(&Msg::new(question).with("name", name)));
     f.blank();
     option(&mut f, 1, &t.t("pk.delete"), None);
     option(&mut f, 2, &t.t("common.cancel"), None);
@@ -237,19 +262,36 @@ async fn phones(io: &mut impl Io, app: &App) -> Step<Option<Notice>> {
     let mut notice = None;
     loop {
         let t = i18n::term();
+        let devices = app.panel.pairing().list();
         let keys = app.panel.passkeys().list();
         let shown = notice.take();
-        let n = match choose(io, keys.len(), None, |typed| phones_view(t, &keys, typed, shown.as_ref())).await {
+        let count = devices.len() + keys.len();
+        let view = |typed: &str| phones_view(t, &devices, &keys, unix_now(), typed, shown.as_ref());
+        let n = match choose(io, count, None, view).await {
             Step::Done(n) => n,
             Step::Back => return Step::Done(None),
             Step::Quit => return Step::Quit,
         };
-        let k = &keys[n - 1];
-        match choose(io, 2, Some(2), |typed| delete_view(t, &k.name, typed)).await {
+        let (question, name) = match devices.get(n - 1) {
+            Some(d) => ("set.dev_confirm", &d.name),
+            None => ("set.pk_confirm", &keys[n - 1 - devices.len()].name),
+        };
+        match choose(io, 2, Some(2), |typed| delete_view(t, question, name, typed)).await {
             Step::Done(1) => {}
             Step::Done(_) | Step::Back => continue,
             Step::Quit => return Step::Quit,
         }
+        if let Some(d) = devices.get(n - 1) {
+            notice = Some(match app.panel.pairing().remove(&d.id) {
+                Ok(gone) => {
+                    app.panel.log().add(Msg::new("ev.unpaired").with("name", &gone.name), true);
+                    Notice::Ok(Msg::new("set.pk_deleted").with("name", gone.name))
+                }
+                Err(e) => Notice::Err(i18n::from_error(&e)),
+            });
+            continue;
+        }
+        let k = &keys[n - 1 - devices.len()];
         notice = Some(match app.panel.passkeys().remove(&k.id) {
             Ok(gone) => {
                 app.panel.log().add(Msg::new("ev.pk_removed").with("name", &gone.name), true);

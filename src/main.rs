@@ -4,6 +4,7 @@ mod auth;
 mod config;
 mod download;
 mod i18n;
+mod pair;
 mod passkey;
 mod server;
 mod sys;
