@@ -1,0 +1,42 @@
+# A release for every v* tag: strcu.exe, its SHA-256 checksum and install.ps1. A tag with a hyphen
+# (v1.1.0-rc.1) becomes a pre-release, which `releases/latest` and so install.ps1 skip.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: The tag matches the version in Cargo.toml
+        shell: pwsh
+        run: |
+          $version = (cargo metadata --no-deps --format-version 1 | ConvertFrom-Json).packages[0].version
+          if ("v$version" -ne $env:GITHUB_REF_NAME) { throw "Tag $env:GITHUB_REF_NAME, but Cargo.toml says $version" }
+      - run: cargo test --locked
+      - run: cargo build --release --locked
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory dist | Out-Null
+          Copy-Item target/release/strcu.exe, install.ps1 dist/
+          $hash = (Get-FileHash dist/strcu.exe -Algorithm SHA256).Hash.ToLower()
+          [IO.File]::WriteAllText("$PWD/dist/strcu.exe.sha256", "$hash  strcu.exe`n")
+          Get-Content dist/strcu.exe.sha256
+      - name: Publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $extra = @()
+          if ($env:GITHUB_REF_NAME -like '*-*') { $extra += '--prerelease' }
+          gh release create $env:GITHUB_REF_NAME dist/strcu.exe dist/strcu.exe.sha256 dist/install.ps1 `
+            --title "StrCu $env:GITHUB_REF_NAME" --generate-notes @extra

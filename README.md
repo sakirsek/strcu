@@ -9,7 +9,25 @@ home and talking them through "open that program, click there".
 - A single exe. The web panel is protected by a password; a phone can instead be paired once with a QR code,
   and passkeys (fingerprint / Face ID) are an option.
 
-> Work in progress: a one-line install is on the way to v1.0.
+## Install
+
+In PowerShell (Windows 10 or 11, no administrator rights needed):
+
+```
+irm https://github.com/sakirsek/strcu/releases/latest/download/install.ps1 | iex
+```
+
+It downloads the latest release, checks its SHA-256 checksum, installs it to `%LOCALAPPDATA%\strcu`, adds
+StrCu to the Start menu and the desktop, and opens it for the first-start setup. Running the same line again
+updates StrCu (a running StrCu is closed and started again; settings stay). To remove StrCu with all its
+settings, shortcuts and its start with Windows:
+
+```
+& ([scriptblock]::Create((irm https://github.com/sakirsek/strcu/releases/latest/download/install.ps1))) -Uninstall
+```
+
+With the home network turned on, Windows asks once whether StrCu may accept connections; allow it on private
+networks.
 
 ## Build and run
 

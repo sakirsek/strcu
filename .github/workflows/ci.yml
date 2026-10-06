@@ -1,0 +1,26 @@
+# Lints and tests on every push to main and on pull requests.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: install.ps1 is ASCII only
+        shell: pwsh
+        run: |
+          # Windows PowerShell reads a downloaded script as Latin-1
+          if ([IO.File]::ReadAllBytes("$PWD/install.ps1") | Where-Object { $_ -gt 127 }) {
+            throw 'install.ps1 must be ASCII only'
+          }
+      - run: cargo clippy --all-targets --locked -- -D warnings
+      - run: cargo test --locked
