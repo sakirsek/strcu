@@ -9,7 +9,7 @@ home and talking them through "open that program, click there".
 - A single exe. The web panel is protected by a password; a phone can instead be paired once with a QR code,
   and passkeys (fingerprint / Face ID) are an option.
 
-> Work in progress: guided Cloudflare setup and one-line install are on the way to v1.0.
+> Work in progress: a one-line install is on the way to v1.0.
 
 ## Build and run
 
@@ -130,13 +130,27 @@ protected by an Access application. No Windows service or administrator rights a
 cloudflared as its own child process, watches its connection, starts it again if it stops, and closes it with
 the panel (or if StrCu crashes).
 
-Remote access is set up from the terminal (Settings → Remote access): it downloads cloudflared, then asks for
-the tunnel token and the Access settings. The same steps exist as commands:
+Remote access is set up from the terminal (in the first-start setup, or Settings → Remote access). You need a
+Cloudflare account and a domain whose DNS is on Cloudflare; both the tunnel and Access are free. The setup
+walks through the Cloudflare dashboard and checks each step:
+
+1. cloudflared is downloaded (a pinned version, verified with SHA-256).
+2. **Tunnel:** Networking → Tunnels → Create a tunnel. The install command it shows is pasted into StrCu,
+   not run. StrCu starts the tunnel at once, so the dashboard sees it connect and lets you go on.
+3. **Address:** on the tunnel's Routes tab, Add route → Published application, with the Service URL
+   `http://localhost:8765` (the port StrCu shows).
+4. **Access:** Zero Trust → Access controls → Applications → Create new application → Self-hosted and private,
+   for that address, with a policy that allows your email. StrCu opens the address and reads the team domain
+   and the application's AUD tag from Access's own sign-in redirect; if Access is missing it says so, and the
+   two values can also be typed.
+5. The allowed email.
+
+The same steps exist as commands:
 
 ```
 strcu tunnel install              # cloudflared 2026.9.3, verified with SHA-256
 strcu tunnel token                # the dashboard's token (or the whole command it shows); never printed
-strcu tunnel setup --hostname strcu.example.com --team <team>.cloudflareaccess.com --aud <AUD> --email <email>
+strcu tunnel setup --hostname strcu.example.com --email <email>   # --team, --aud: found if left out
 strcu tunnel status
 strcu serve [--no-tunnel]
 ```

@@ -98,6 +98,14 @@ pub fn launch(id: &str) -> Result<App> {
     Ok(app)
 }
 
+/// Opens a web page in the default browser. Only fixed https addresses from StrCu itself come here.
+pub fn open_url(url: &str) -> Result<()> {
+    anyhow::ensure!(url.starts_with("https://"), "not a web address");
+    let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+    Command::new(format!(r"{windir}\explorer.exe")).arg(url).spawn().context(Msg::new("err.launch_failed"))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::is_app;

@@ -139,7 +139,93 @@ pub fn clean_email(s: &str) -> Result<String> {
     Ok(e.to_string())
 }
 
+/// What answers at a panel address on the internet, found by opening it without signing in.
+#[derive(Debug, PartialEq)]
+pub enum Front {
+    /// Cloudflare Access: its team domain and the application's AUD tag, read from its sign-in redirect
+    Access { team: String, aud: String },
+    /// Cloudflare without Access in front
+    Open,
+    /// Not served through Cloudflare
+    Elsewhere,
+}
+
+/// Opens `https://host/` without following redirects. Access answers before the tunnel is even reached, so
+/// this works while the panel is not running yet.
+pub async fn front(host: &str) -> Result<Front> {
+    let http = reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).timeout(Duration::from_secs(15)).build()?;
+    let r = match http.get(format!("https://{host}/")).send().await {
+        Ok(r) => r,
+        Err(e) if no_such_host(&e) => bail!(Msg::new("err.host_dns").with("host", host)),
+        Err(e) if e.is_timeout() => bail!(Msg::new("err.host_timeout").with("host", host)),
+        Err(e) => bail!(Msg::new("err.host_unreachable").with("host", host).with("reason", innermost(&e))),
+    };
+    let location = r.headers().get(reqwest::header::LOCATION).and_then(|v| v.to_str().ok());
+    if r.status().is_redirection()
+        && let Some(found) = location.and_then(|l| access_login(l, host))
+    {
+        return Ok(found);
+    }
+    Ok(if r.headers().contains_key("cf-ray") { Front::Open } else { Front::Elsewhere })
+}
+
+/// The team domain and AUD tag in an Access sign-in redirect:
+/// `https://<team>.cloudflareaccess.com/cdn-cgi/access/login/<host>?kid=<aud>&...`
+fn access_login(location: &str, host: &str) -> Option<Front> {
+    let url = reqwest::Url::parse(location).ok()?;
+    let path = url.path().strip_prefix("/cdn-cgi/access/login/")?;
+    if url.scheme() != "https" || !path.eq_ignore_ascii_case(host) {
+        return None;
+    }
+    let team = clean_team(url.host_str()?).ok()?;
+    let aud = url.query_pairs().find(|(k, _)| k == "kid").and_then(|(_, v)| clean_aud(&v).ok())?;
+    Some(Front::Access { team, aud })
+}
+
+/// The name is not in DNS (Windows: WSAHOST_NOT_FOUND, WSANO_DATA).
+fn no_such_host(e: &(dyn std::error::Error + 'static)) -> bool {
+    let mut cur = Some(e);
+    while let Some(err) = cur {
+        if let Some(io) = err.downcast_ref::<std::io::Error>()
+            && matches!(io.raw_os_error(), Some(11001 | 11004))
+        {
+            return true;
+        }
+        cur = err.source();
+    }
+    false
+}
+
+/// The deepest cause, which says what actually failed.
+fn innermost(e: &(dyn std::error::Error + 'static)) -> String {
+    let mut cur = e;
+    while let Some(next) = cur.source() {
+        cur = next;
+    }
+    cur.to_string()
+}
+
 /// A token that cannot be checked; `what` is technical and not translated.
 fn bad_token(what: &str) -> Msg {
     Msg::new("err.access_token").with("what", what)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn access_sign_in_redirect() {
+        let aud = "72112973cc2e796ea8d29b8fb637154b223aa4fbf7c7df8f77619e8474ef9722";
+        let loc = format!(
+            "https://myteam.cloudflareaccess.com/cdn-cgi/access/login/strcu.example.com?kid={aud}&meta=eyJ0eXAi&redirect_url=%2F"
+        );
+        let want = Front::Access { team: "myteam.cloudflareaccess.com".into(), aud: aud.into() };
+        assert_eq!(access_login(&loc, "strcu.example.com"), Some(want));
+        // Another application's sign-in, a page that is not a sign-in, no AUD
+        assert_eq!(access_login(&loc, "other.example.com"), None);
+        assert_eq!(access_login(&format!("https://myteam.cloudflareaccess.com/?kid={aud}"), "strcu.example.com"), None);
+        assert_eq!(access_login("https://myteam.cloudflareaccess.com/cdn-cgi/access/login/strcu.example.com", "strcu.example.com"), None);
+        assert_eq!(access_login(&loc.replacen("https", "http", 1), "strcu.example.com"), None);
+    }
 }

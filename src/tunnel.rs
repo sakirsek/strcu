@@ -158,13 +158,17 @@ async fn ready(http: &reqwest::Client) -> bool {
     }
 }
 
-/// Starts cloudflared and waits 20 s for at least one connection to Cloudflare. If it cannot connect it
-/// keeps running anyway (cloudflared retries by itself); the state is in `ready`.
+/// Starts cloudflared with the saved token and waits 20 s for at least one connection to Cloudflare. If it
+/// cannot connect it keeps running anyway (cloudflared retries by itself); the state is in `ready`.
 pub async fn start() -> Result<Tunnel> {
+    start_with(&token().context(Msg::new("err.no_tunnel_token"))?).await
+}
+
+/// The same with a token not saved yet: the setup tries it right after it is pasted.
+pub async fn start_with(token: &str) -> Result<Tunnel> {
     if !exe().exists() {
         bail!(Msg::new("err.cloudflared_missing"));
     }
-    let token = token().context(Msg::new("err.no_tunnel_token"))?;
     let log = std::fs::File::create(log_path())?;
     let child = Command::new(exe())
         .args(["tunnel", "--no-autoupdate", "--metrics", METRICS, "run"])

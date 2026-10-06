@@ -80,12 +80,12 @@ enum TunnelCmd {
         /// Public address of the panel, e.g. strcu.example.com
         #[arg(long)]
         hostname: String,
-        /// Access team domain, e.g. myteam.cloudflareaccess.com
-        #[arg(long)]
-        team: String,
-        /// AUD tag of the Access application
-        #[arg(long)]
-        aud: String,
+        /// Access team domain, e.g. myteam.cloudflareaccess.com (found by itself when left out)
+        #[arg(long, requires = "aud")]
+        team: Option<String>,
+        /// AUD tag of the Access application (found by itself when left out)
+        #[arg(long, requires = "team")]
+        aud: Option<String>,
         /// Email allowed to sign in
         #[arg(long)]
         email: String,
@@ -471,12 +471,16 @@ async fn tunnel_cmd(cmd: TunnelCmd) -> Result<()> {
             println!("{}", i18n::term().render(&Msg::new("term.token_saved").with("id", id)));
         }
         TunnelCmd::Setup { hostname, team, aud, email } => {
-            let a = access::AccessConfig {
-                hostname: access::clean_host(&hostname)?,
-                team_domain: access::clean_team(&team)?,
-                aud: access::clean_aud(&aud)?,
-                email: access::clean_email(&email)?,
+            let hostname = access::clean_host(&hostname)?;
+            let (team, aud) = match (team, aud) {
+                (Some(team), Some(aud)) => (access::clean_team(&team)?, access::clean_aud(&aud)?),
+                // Read from the address's Access sign-in redirect
+                _ => match access::front(&hostname).await? {
+                    access::Front::Access { team, aud } => (team, aud),
+                    _ => bail!(Msg::new("err.no_access_in_front").with("host", hostname)),
+                },
             };
+            let a = access::AccessConfig { hostname, team_domain: team, aud, email: access::clean_email(&email)? };
             config::update(|c| c.access = Some(a))?;
             println!("{}", i18n::term().render(&Msg::new("term.access_set").with("summary", tunnel_summary())));
         }

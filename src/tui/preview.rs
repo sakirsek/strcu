@@ -120,8 +120,9 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
             "12-settings-remote",
             remote::status_view(t, &StatusView { access: Some(&access), state: &Remote::Up, version: Some("2026.9.3") }, "", None),
         ),
+        ("13-remote-intro", remote::intro_view(t, "", None)),
         (
-            "13-remote-download",
+            "13b-remote-download",
             remote::download_view(t, &Download { note: None, have: 13_002_342, total: 39_845_888, speed: 3_355_443.0 }, None, ""),
         ),
         (
@@ -129,9 +130,35 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
             remote::field_view(t, &Field {
                 step: 2,
                 title: "remote.token_title",
-                text: "remote.token_text",
+                text: &t.render(&Msg::new("remote.token_steps").with("pc", "laptop")),
                 value: &super::dots(184),
                 hint: Some("remote.paste_hint"),
+                before: None,
+                error: None,
+            }),
+        ),
+        (
+            "14b-remote-host",
+            remote::field_view(t, &Field {
+                step: 3,
+                title: "remote.host_title",
+                text: &t.render(&Msg::new("remote.host_steps").with("port", 8765u16)),
+                value: host,
+                hint: None,
+                before: Some(&Notice::Ok(Msg::new("remote.trial_up"))),
+                error: None,
+            }),
+        ),
+        ("14c-remote-no-access", remote::access_view(t, host, Some(&remote::Seen::Open), "")),
+        (
+            "14d-remote-email",
+            remote::field_view(t, &Field {
+                step: 5,
+                title: "remote.email_title",
+                text: &t.t("remote.email_text"),
+                value: "you@example.com",
+                hint: None,
+                before: Some(&Notice::Ok(Msg::new("remote.access_found").with("team", "myteam.cloudflareaccess.com"))),
                 error: None,
             }),
         ),

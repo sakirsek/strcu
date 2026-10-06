@@ -138,20 +138,17 @@ pub async fn run(io: &mut impl Io, app: &App) -> Step<()> {
     let pairing = app.panel.pairing();
     let places = places(app);
     let mut pick = 0;
-    let before = pairing.list().len();
     if !places.is_empty() {
         pairing.open();
     }
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let result = loop {
         let t = i18n::term();
-        let offer = pairing.offer();
-        let devices = pairing.list();
-        let paired = (devices.len() > before).then(|| devices.last().map(|d| d.name.clone())).flatten();
-        let state = match (&offer, &paired) {
-            (_, Some(name)) => State::Done(name),
-            (Some((code, left)), None) => State::Open(code, *left),
-            (None, None) => State::Closed,
+        let code = pairing.code();
+        let state = match &code {
+            pair::Code::Open(code, left) => State::Open(code, *left),
+            pair::Code::Paired(name) => State::Done(name),
+            pair::Code::Closed => State::Closed,
         };
         io.draw(&view(t, &places, pick, &state, io.size().0));
         let done = matches!(state, State::Done(_));

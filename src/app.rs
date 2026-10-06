@@ -147,6 +147,16 @@ impl App {
         }
     }
 
+    /// Closes the tunnel until `restart_remote`: the setup tries a new token meanwhile.
+    pub async fn pause_remote(&mut self) {
+        if let Some(t) = self.tunnel_task.take() {
+            t.abort();
+            let _ = t.await;
+        }
+        self.panel.tunnel_pid().store(0, Ordering::Relaxed);
+        self.remote.send_replace(Remote::Off);
+    }
+
     pub async fn stop(mut self) {
         if let Some(t) = self.tunnel_task.take() {
             t.abort();

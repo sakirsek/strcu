@@ -52,6 +52,27 @@ struct Offer {
     tries: u32,
 }
 
+/// The code shown on the computer, or what became of it.
+#[derive(Default)]
+enum Slot {
+    #[default]
+    Closed,
+    Open(Offer),
+    /// A phone paired with it: its name
+    Paired(String),
+}
+
+/// What the pairing screen shows.
+#[derive(Debug, PartialEq)]
+pub enum Code {
+    /// The code and the time it has left
+    Open(String, Duration),
+    /// A phone paired with it: its name
+    Paired(String),
+    /// Expired, closed after wrong tries, or never opened
+    Closed,
+}
+
 /// A phone's cookie checked: it is let in, and maybe its cookie should be sent again (renewed).
 pub struct Seen {
     pub device: Device,
@@ -61,7 +82,7 @@ pub struct Seen {
 }
 
 pub struct Pairing {
-    offer: Mutex<Option<Offer>>,
+    slot: Mutex<Slot>,
     devices: Mutex<Vec<Device>>,
     /// Last time each device was seen (in memory; written down every `TOUCH`)
     seen: Mutex<std::collections::HashMap<String, Instant>>,
@@ -96,47 +117,49 @@ impl Pairing {
     }
 
     fn new(devices: Vec<Device>, save: fn(&[Device]) -> Result<()>) -> Self {
-        Pairing { offer: Mutex::default(), devices: Mutex::new(devices), seen: Mutex::default(), save }
+        Pairing { slot: Mutex::default(), devices: Mutex::new(devices), seen: Mutex::default(), save }
     }
 
     /// Opens a new code (an open one is replaced).
     pub fn open(&self) -> String {
         let code = new_code();
-        *self.offer.lock().unwrap() = Some(Offer { code: code.clone(), until: Instant::now() + CODE_TTL, tries: 0 });
+        *self.slot.lock().unwrap() = Slot::Open(Offer { code: code.clone(), until: Instant::now() + CODE_TTL, tries: 0 });
         code
     }
 
     pub fn close(&self) {
-        *self.offer.lock().unwrap() = None;
+        *self.slot.lock().unwrap() = Slot::Closed;
     }
 
-    /// The open code and the time it has left; None if there is none (expired, used, too many tries).
-    pub fn offer(&self) -> Option<(String, Duration)> {
-        let o = self.offer.lock().unwrap();
-        let o = o.as_ref()?;
-        let left = o.until.checked_duration_since(Instant::now())?;
-        Some((o.code.clone(), left))
+    /// The code and what became of it.
+    pub fn code(&self) -> Code {
+        match &*self.slot.lock().unwrap() {
+            Slot::Open(o) => match o.until.checked_duration_since(Instant::now()) {
+                Some(left) => Code::Open(o.code.clone(), left),
+                None => Code::Closed,
+            },
+            Slot::Paired(name) => Code::Paired(name.clone()),
+            Slot::Closed => Code::Closed,
+        }
     }
 
     /// The phone entered (or scanned) a code. On success it is paired: returns the device and its cookie value.
     pub fn redeem(&self, code: &str, name: &str, host: &str, now: &str) -> Result<(Device, String)> {
         let code: String = code.chars().filter(char::is_ascii_digit).collect();
-        {
-            let mut slot = self.offer.lock().unwrap();
-            let Some(o) = slot.as_mut().filter(|o| o.until > Instant::now()) else {
-                *slot = None;
-                bail!(Msg::new("err.pair_none"));
-            };
-            if o.code != code {
-                o.tries += 1;
-                let left = MAX_TRIES.saturating_sub(o.tries);
-                if left == 0 {
-                    *slot = None;
-                    bail!(Msg::new("err.pair_closed"));
-                }
-                bail!(Msg::new("err.pair_wrong").with("n", left));
+        let mut slot = self.slot.lock().unwrap();
+        let Slot::Open(o) = &mut *slot else { bail!(Msg::new("err.pair_none")) };
+        if o.until <= Instant::now() {
+            *slot = Slot::Closed;
+            bail!(Msg::new("err.pair_none"));
+        }
+        if o.code != code {
+            o.tries += 1;
+            let left = MAX_TRIES.saturating_sub(o.tries);
+            if left == 0 {
+                *slot = Slot::Closed;
+                bail!(Msg::new("err.pair_closed"));
             }
-            *slot = None;
+            bail!(Msg::new("err.pair_wrong").with("n", left));
         }
         let secret = random_hex(32);
         let name: String = name.trim().chars().take(60).collect();
@@ -154,6 +177,8 @@ impl Pairing {
         next.push(device.clone());
         (self.save)(&next)?;
         *devices = next;
+        // Used only once it is saved: a phone that could not be paired can try again
+        *slot = Slot::Paired(device.name.clone());
         self.seen.lock().unwrap().insert(device.id.clone(), Instant::now());
         Ok((device.clone(), format!("{}.{secret}", device.id)))
     }
@@ -237,12 +262,12 @@ mod tests {
         assert_eq!(p.redeem("123456", "x", "h", "now").unwrap_err().downcast::<Msg>().unwrap().code, "err.pair_none");
         let code = p.open();
         assert_eq!(code.len(), 6);
-        assert!(p.offer().is_some_and(|(c, left)| c == code && left <= CODE_TTL));
+        assert!(matches!(p.code(), Code::Open(c, left) if c == code && left <= CODE_TTL));
         // Spaces as shown on the computer ("482 913") are fine
         let spaced = format!("{} {}", &code[..3], &code[3..]);
         let (d, cookie) = p.redeem(&spaced, "Android · Chrome", "192.168.1.24:8765", "2026-10-06 12:00:00").unwrap();
         assert_eq!(d.name, "Android · Chrome");
-        assert!(p.offer().is_none());
+        assert_eq!(p.code(), Code::Paired("Android · Chrome".into()));
         // Used: the same code does nothing now
         assert!(p.redeem(&code, "x", "h", "now").is_err());
         assert_eq!(p.list().len(), 1);
@@ -259,6 +284,10 @@ mod tests {
         // Removed: the cookie stops working
         p.remove(&d.id).unwrap();
         assert!(p.check(&cookie, "192.168.1.24:8765", "later").is_none());
+        // The screen still says which phone paired, even after it is removed
+        assert_eq!(p.code(), Code::Paired("Android · Chrome".into()));
+        p.close();
+        assert_eq!(p.code(), Code::Closed);
     }
 
     #[test]
@@ -280,8 +309,10 @@ mod tests {
     fn expired_codes_and_phones() {
         let p = store();
         let code = p.open();
-        p.offer.lock().unwrap().as_mut().unwrap().until = Instant::now() - Duration::from_secs(1);
-        assert!(p.offer().is_none());
+        if let Slot::Open(o) = &mut *p.slot.lock().unwrap() {
+            o.until = Instant::now() - Duration::from_secs(1);
+        }
+        assert_eq!(p.code(), Code::Closed);
         assert!(p.redeem(&code, "x", "h", "now").is_err());
 
         let code = p.open();

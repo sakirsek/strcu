@@ -1,5 +1,6 @@
-//! Remote access in the terminal: its state, setting it up (download cloudflared, then the tunnel token and
-//! the Access settings) and removing it.
+//! Remote access in the terminal: its state, setting it up and removing it. The setup walks through the
+//! Cloudflare dashboard step by step and checks each step: the pasted token's tunnel is started at once, and
+//! the Access team domain and application tag are read from the address's own sign-in redirect.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -143,15 +144,80 @@ async fn confirm_remove(io: &mut impl Io) -> Step<bool> {
 
 // ---------- setting up ----------
 
-const SETUP_STEPS: usize = 6;
+const SETUP_STEPS: usize = 5;
+const DASHBOARD: &str = "https://dash.cloudflare.com/";
 
+/// The setup's header; step 0 is the overview, without a number.
 fn setup_frame(t: &Lang, step: usize) -> Frame {
     let mut f = Frame::default();
-    header(&mut f, &format!("{} · {}", t.t("set.remote"), t.t("remote.setup_title")), vec![span(
-        Tone::Dim,
-        format!("{step} / {SETUP_STEPS}"),
-    )]);
+    let right = if step == 0 { Vec::new() } else { vec![span(Tone::Dim, format!("{step} / {SETUP_STEPS}"))] };
+    header(&mut f, &format!("{} · {}", t.t("set.remote"), t.t("remote.setup_title")), right);
     f
+}
+
+/// A text from the language files: lines, blank lines, and numbered steps ("1. ...") that wrap under their
+/// own text. Their numbers are dim: amber is for keys to press.
+fn steps_text(f: &mut Frame, text: &str) {
+    for line in text.split('\n') {
+        let numbered = line.split_once(". ").filter(|(n, _)| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()));
+        match numbered {
+            Some((n, rest)) => f.hang(
+                vec![span(Tone::Plain, "  "), span(Tone::Dim, format!("{n}.")), span(Tone::Plain, " ")],
+                vec![span(Tone::Plain, rest)],
+            ),
+            None if line.is_empty() => f.blank(),
+            None => f.text(Tone::Plain, line),
+        }
+    }
+}
+
+/// A notice above a step: how the step before it went.
+fn before(f: &mut Frame, t: &Lang, n: Option<&Notice>) {
+    if let Some(n) = n {
+        let (tone, m) = match n {
+            Notice::Ok(m) => (Tone::Ok, m),
+            Notice::Warn(m) => (Tone::Warn, m),
+            Notice::Err(m) => (Tone::Bad, m),
+        };
+        f.text(tone, t.render(m));
+        f.blank();
+    }
+}
+
+pub fn intro_view(t: &Lang, typed: &str, notice: Option<&Notice>) -> Frame {
+    let mut f = setup_frame(t, 0);
+    f.text(Tone::Strong, t.t("remote.intro_title"));
+    f.blank();
+    steps_text(&mut f, &t.t("remote.intro_text"));
+    f.blank();
+    option(&mut f, 1, &t.t("remote.start"), None);
+    let shown = DASHBOARD.trim_start_matches("https://").trim_end_matches('/');
+    option(&mut f, 2, &t.render(&Msg::new("remote.open_dash").with("url", shown)), None);
+    option(&mut f, 0, &t.t("ui.back"), None);
+    f.blank();
+    prompt(&mut f, t, Some(1), typed);
+    super::notice(&mut f, t, notice);
+    footer(&mut f, &[hint_back(t)]);
+    f
+}
+
+async fn intro(io: &mut impl Io) -> Step<()> {
+    let mut notice = None;
+    loop {
+        let t = i18n::term();
+        let shown = notice.take();
+        match choose(io, 2, Some(1), |typed| intro_view(t, typed, shown.as_ref())).await {
+            Step::Done(1) => return Step::Done(()),
+            Step::Done(_) => {
+                notice = Some(match crate::sys::apps::open_url(DASHBOARD) {
+                    Ok(()) => Notice::Ok(Msg::new("remote.dash_opened")),
+                    Err(e) => Notice::Err(i18n::from_error(&e)),
+                })
+            }
+            Step::Back => return Step::Back,
+            Step::Quit => return Step::Quit,
+        }
+    }
 }
 
 #[derive(Default, Clone)]
@@ -253,17 +319,21 @@ async fn install(io: &mut impl Io) -> Step<()> {
 pub struct Field<'a> {
     pub step: usize,
     pub title: &'a str,
+    /// What to do, rendered (see `steps_text`)
     pub text: &'a str,
     pub value: &'a str,
     pub hint: Option<&'a str>,
+    /// How the step before went
+    pub before: Option<&'a Notice>,
     pub error: Option<&'a Msg>,
 }
 
 pub fn field_view(t: &Lang, fl: &Field) -> Frame {
     let mut f = setup_frame(t, fl.step);
+    before(&mut f, t, fl.before);
     f.text(Tone::Strong, t.t(fl.title));
     f.blank();
-    f.text(Tone::Plain, t.t(fl.text));
+    steps_text(&mut f, fl.text);
     f.blank();
     f.push(vec![span(Tone::Accent, "› "), span(Tone::Plain, fl.value)]);
     f.cursor();
@@ -278,21 +348,32 @@ pub fn field_view(t: &Lang, fl: &Field) -> Frame {
     f
 }
 
-/// Asks for one field until `check` accepts it.
-async fn ask<T>(
-    io: &mut impl Io,
+/// A field to ask for: everything in `Field` but the value.
+struct Ask<'a> {
     step: usize,
-    keys: (&str, &str, Option<&str>),
-    initial: &str,
-    mask: bool,
-    check: impl Fn(&str) -> anyhow::Result<T>,
-) -> Step<T> {
+    title: &'a str,
+    text: String,
+    hint: Option<&'a str>,
+    before: Option<Notice>,
+    error: Option<Msg>,
+}
+
+/// Asks for one field until `check` accepts it.
+async fn ask<T>(io: &mut impl Io, a: Ask<'_>, initial: &str, mask: bool, check: impl Fn(&str) -> anyhow::Result<T>) -> Step<T> {
     let t = i18n::term();
-    let mut error: Option<Msg> = None;
+    let mut error = a.error;
     let mut value = initial.to_string();
     loop {
         let field = |shown: &str| {
-            field_view(t, &Field { step, title: keys.0, text: keys.1, value: shown, hint: keys.2, error: error.as_ref() })
+            field_view(t, &Field {
+                step: a.step,
+                title: a.title,
+                text: &a.text,
+                value: shown,
+                hint: a.hint,
+                before: a.before.as_ref(),
+                error: error.as_ref(),
+            })
         };
         match read_line(io, &value, mask, field).await {
             Step::Done(s) => match check(&s) {
@@ -308,59 +389,284 @@ async fn ask<T>(
     }
 }
 
-/// Sets remote access up and returns the hostname. With `app` (in the settings) the tunnel starts right away;
-/// in the first-start setup it starts with the main screen.
-pub async fn setup(io: &mut impl Io, app: Option<&mut App>) -> Step<String> {
+pub fn trial_view(t: &Lang) -> Frame {
+    let mut f = setup_frame(t, 2);
+    f.text(Tone::Strong, t.t("remote.token_title"));
+    f.blank();
+    f.text(Tone::Plain, t.t("remote.trying"));
+    footer(&mut f, &[hint_back(t)]);
+    f
+}
+
+/// The tunnel of a pasted token, run while the setup goes on: the dashboard waits for it to connect before
+/// it goes on. In the settings the running tunnel is closed meanwhile and comes back if the setup is left.
+#[derive(Default)]
+struct Trial {
+    tunnel: Option<tunnel::Tunnel>,
+    paused: bool,
+}
+
+/// Starts the pasted token's tunnel and waits for it to connect (20 s at most).
+async fn try_token(io: &mut impl Io, token: &str) -> Step<anyhow::Result<tunnel::Tunnel>> {
+    io.draw(&trial_view(i18n::term()));
+    let fut = tunnel::start_with(token);
+    tokio::pin!(fut);
+    loop {
+        tokio::select! {
+            r = &mut fut => return Step::Done(r),
+            k = io.key() => match k {
+                Some(Key::Esc) => return Step::Back,
+                Some(Key::Interrupt) => return Step::Quit,
+                _ => {}
+            },
+        }
+    }
+}
+
+/// Step 2: the tunnel's token, tried at once. Returns the new token (None: the saved one stays) and how the
+/// try went.
+async fn token_step(
+    io: &mut impl Io,
+    mut app: Option<&mut App>,
+    trial: &mut Trial,
+    had_token: bool,
+) -> Step<(Option<String>, Option<Notice>)> {
+    let t = i18n::term();
+    let pc = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "pc".into()).to_lowercase();
+    let mut error = None;
+    loop {
+        let a = Ask {
+            step: 2,
+            title: "remote.token_title",
+            text: t.render(&Msg::new("remote.token_steps").with("pc", pc.as_str())),
+            hint: Some(if had_token { "remote.token_keep" } else { "remote.paste_hint" }),
+            before: None,
+            error: error.take(),
+        };
+        let pasted = ask(io, a, "", true, |s| {
+            if s.trim().is_empty() && had_token {
+                return Ok(None);
+            }
+            tunnel::find_token(s).map(|(token, _)| Some(token))
+        })
+        .await;
+        let token = match pasted {
+            Step::Done(Some(token)) => token,
+            Step::Done(None) => return Step::Done((None, None)),
+            Step::Back => return Step::Back,
+            Step::Quit => return Step::Quit,
+        };
+        // An earlier try closes first; they share the metrics port
+        trial.tunnel = None;
+        if let Some(app) = app.as_deref_mut()
+            && !trial.paused
+        {
+            app.pause_remote().await;
+            trial.paused = true;
+        }
+        match try_token(io, &token).await {
+            Step::Done(Ok(tun)) => {
+                let notice = if tun.ready {
+                    Notice::Ok(Msg::new("remote.trial_up"))
+                } else {
+                    Notice::Warn(Msg::new("remote.trial_waiting"))
+                };
+                // Its connections count as remote, like the real tunnel's
+                if let Some(app) = app.as_deref_mut() {
+                    app.panel.tunnel_pid().store(tun.pid(), std::sync::atomic::Ordering::Relaxed);
+                }
+                trial.tunnel = Some(tun);
+                return Step::Done((Some(token), Some(notice)));
+            }
+            Step::Done(Err(e)) => error = Some(i18n::from_error(&e)),
+            Step::Back => {}
+            Step::Quit => return Step::Quit,
+        }
+    }
+}
+
+/// What the Access check found, as shown.
+pub enum Seen {
+    Open,
+    Elsewhere,
+    Failed(Msg),
+}
+
+/// Step 4: `seen` None while checking.
+pub fn access_view(t: &Lang, host: &str, seen: Option<&Seen>, typed: &str) -> Frame {
+    let mut f = setup_frame(t, 4);
+    f.text(Tone::Strong, t.t("remote.access_title"));
+    f.blank();
+    let Some(seen) = seen else {
+        f.text(Tone::Plain, t.render(&Msg::new("remote.checking").with("host", host)));
+        footer(&mut f, &[hint_back(t)]);
+        return f;
+    };
+    match seen {
+        Seen::Open => {
+            f.text(Tone::Warn, t.render(&Msg::new("remote.no_access").with("host", host)));
+            f.blank();
+            steps_text(&mut f, &t.render(&Msg::new("remote.access_steps").with("host", host)));
+        }
+        Seen::Elsewhere => f.text(Tone::Warn, t.render(&Msg::new("remote.not_cloudflare").with("host", host))),
+        Seen::Failed(why) => {
+            f.text(Tone::Bad, t.render(why));
+            f.blank();
+            f.text(Tone::Plain, t.t("remote.check_later"));
+        }
+    }
+    f.blank();
+    option(&mut f, 1, &t.t("remote.check_again"), None);
+    option(&mut f, 2, &t.t("remote.by_hand"), None);
+    option(&mut f, 0, &t.t("ui.back"), None);
+    f.blank();
+    prompt(&mut f, t, Some(1), typed);
+    footer(&mut f, &[hint_back(t)]);
+    f
+}
+
+/// Step 4: the Access team domain and AUD tag, read from the address's sign-in redirect, or typed by hand.
+/// The last value says whether they were found.
+async fn find_access(io: &mut impl Io, host: &str, old: Option<&AccessConfig>) -> Step<(String, String, bool)> {
+    let t = i18n::term();
+    let mut shown: Option<Seen> = None;
+    loop {
+        let seen = match shown.take() {
+            Some(s) => s,
+            None => {
+                io.draw(&access_view(t, host, None, ""));
+                let fut = access::front(host);
+                tokio::pin!(fut);
+                let r = loop {
+                    tokio::select! {
+                        r = &mut fut => break r,
+                        k = io.key() => match k {
+                            Some(Key::Esc) => return Step::Back,
+                            Some(Key::Interrupt) => return Step::Quit,
+                            _ => {}
+                        },
+                    }
+                };
+                match r {
+                    Ok(access::Front::Access { team, aud }) => return Step::Done((team, aud, true)),
+                    Ok(access::Front::Open) => Seen::Open,
+                    Ok(access::Front::Elsewhere) => Seen::Elsewhere,
+                    Err(e) => Seen::Failed(i18n::from_error(&e)),
+                }
+            }
+        };
+        match choose(io, 2, Some(1), |typed| access_view(t, host, Some(&seen), typed)).await {
+            Step::Done(1) => {}
+            Step::Done(_) => match by_hand(io, old).await {
+                Step::Done((team, aud)) => return Step::Done((team, aud, false)),
+                Step::Back => shown = Some(seen),
+                Step::Quit => return Step::Quit,
+            },
+            Step::Back => return Step::Back,
+            Step::Quit => return Step::Quit,
+        }
+    }
+}
+
+/// The team domain and AUD tag typed in, as before they could be found.
+async fn by_hand(io: &mut impl Io, old: Option<&AccessConfig>) -> Step<(String, String)> {
+    let t = i18n::term();
+    let field = |title, text: &str| Ask { step: 4, title, text: t.t(text), hint: None, before: None, error: None };
+    let mut team = old.map(|a| a.team_domain.clone()).unwrap_or_default();
+    loop {
+        team = match ask(io, field("remote.team_title", "remote.team_text"), &team, false, access::clean_team).await {
+            Step::Done(v) => v,
+            Step::Back => return Step::Back,
+            Step::Quit => return Step::Quit,
+        };
+        let aud = old.map(|a| a.aud.as_str()).unwrap_or_default();
+        match ask(io, field("remote.aud_title", "remote.aud_text"), aud, false, access::clean_aud).await {
+            Step::Done(aud) => return Step::Done((team, aud)),
+            Step::Back => {}
+            Step::Quit => return Step::Quit,
+        }
+    }
+}
+
+/// The steps of the form; returns the settings and the new token (None: the saved one stays).
+async fn form(io: &mut impl Io, mut app: Option<&mut App>, trial: &mut Trial) -> Step<(AccessConfig, Option<String>)> {
+    let t = i18n::term();
     let old = config::load().access;
     let had_token = tunnel::saved_tunnel_id().is_some();
-    let mut step = 1;
-    let (mut token, mut host, mut team, mut aud) = (None::<String>, String::new(), String::new(), String::new());
-    if let Some(a) = &old {
-        (host, team, aud) = (a.hostname.clone(), a.team_domain.clone(), a.aud.clone());
-    }
-    let email = loop {
+    let port = config::load().port;
+    let mut host = old.as_ref().map(|a| a.hostname.clone()).unwrap_or_default();
+    let (mut token, mut tried, mut found) = (None, None, None);
+    let mut step = 0;
+    loop {
         let r = match step {
-            1 => install(io).await.map(|()| String::new()),
-            2 => {
-                let hint = if had_token { "remote.token_keep" } else { "remote.paste_hint" };
-                ask(io, 2, ("remote.token_title", "remote.token_text", Some(hint)), "", true, |s| {
-                    if s.trim().is_empty() && had_token {
-                        return Ok(None);
-                    }
-                    tunnel::find_token(s).map(|(token, _)| Some(token))
-                })
-                .await
-                .map(|tk| {
-                    token = tk;
-                    String::new()
-                })
+            0 => intro(io).await,
+            1 => install(io).await,
+            2 => token_step(io, app.as_deref_mut(), trial, had_token).await.map(|(tk, notice)| {
+                (token, tried) = (tk, notice);
+            }),
+            3 => {
+                let a = Ask {
+                    step: 3,
+                    title: "remote.host_title",
+                    text: t.render(&Msg::new("remote.host_steps").with("port", port)),
+                    hint: None,
+                    before: tried.clone(),
+                    error: None,
+                };
+                ask(io, a, &host, false, access::clean_host).await.map(|h| host = h)
             }
-            3 => ask(io, 3, ("remote.host_title", "remote.host_text", None), &host, false, access::clean_host).await,
-            4 => ask(io, 4, ("remote.team_title", "remote.team_text", None), &team, false, access::clean_team).await,
-            5 => ask(io, 5, ("remote.aud_title", "remote.aud_text", None), &aud, false, access::clean_aud).await,
+            4 => find_access(io, &host, old.as_ref()).await.map(|f| found = Some(f)),
             _ => {
+                let Some((team, aud, auto)) = found.clone() else { return Step::Back };
+                let a = Ask {
+                    step: 5,
+                    title: "remote.email_title",
+                    text: t.t("remote.email_text"),
+                    hint: None,
+                    before: auto.then(|| Notice::Ok(Msg::new("remote.access_found").with("team", team.as_str()))),
+                    error: None,
+                };
                 let initial = old.as_ref().map(|a| a.email.clone()).unwrap_or_default();
-                ask(io, 6, ("remote.email_title", "remote.email_text", None), &initial, false, access::clean_email).await
+                match ask(io, a, &initial, false, access::clean_email).await {
+                    Step::Done(email) => {
+                        let cfg = AccessConfig { hostname: host, team_domain: team, aud, email };
+                        return Step::Done((cfg, token));
+                    }
+                    other => other.map(|_| ()),
+                }
             }
         };
         match r {
-            Step::Done(v) => {
-                match step {
-                    3 => host = v,
-                    4 => team = v,
-                    5 => aud = v,
-                    6 => break v,
-                    _ => {}
-                }
-                step += 1;
-            }
-            // Step 1 passes by itself once cloudflared is there
-            Step::Back if step <= 2 => return Step::Back,
-            Step::Back => step -= 1,
+            Step::Done(()) => step += 1,
+            Step::Back if step == 0 => return Step::Back,
+            // Step 1 passes by itself once cloudflared is there: back from 2 goes to the overview
+            Step::Back => step = if step == 2 { 0 } else { step - 1 },
             Step::Quit => return Step::Quit,
         }
+    }
+}
+
+/// Sets remote access up and returns the hostname. With `app` (in the settings) the tunnel starts right away;
+/// in the first-start setup it starts with the main screen.
+pub async fn setup(io: &mut impl Io, mut app: Option<&mut App>) -> Step<String> {
+    let mut trial = Trial::default();
+    let r = form(io, app.as_deref_mut(), &mut trial).await;
+    // The trial tunnel closes before the real one starts: they share the metrics port
+    let paused = trial.paused;
+    drop(trial);
+    let (cfg, token) = match r {
+        Step::Done(v) => v,
+        left => {
+            // Left halfway: the saved settings (and their tunnel, if any) come back
+            if let Some(app) = app
+                && paused
+            {
+                app.restart_remote().await;
+            }
+            return left.map(|_| String::new());
+        }
     };
-    let cfg = AccessConfig { hostname: host.clone(), team_domain: team, aud, email };
+    let host = cfg.hostname.clone();
     let saved = match &token {
         Some(tk) => tunnel::save_token(tk).map(|_| ()),
         None => Ok(()),
@@ -368,7 +674,11 @@ pub async fn setup(io: &mut impl Io, app: Option<&mut App>) -> Step<String> {
     .and_then(|()| config::update(|c| c.access = Some(cfg)));
     let t = i18n::term();
     let result = match (saved, app) {
-        (Err(e), _) => Notice::Err(i18n::from_error(&e)),
+        (Err(e), Some(app)) => {
+            app.restart_remote().await;
+            Notice::Err(i18n::from_error(&e))
+        }
+        (Err(e), None) => Notice::Err(i18n::from_error(&e)),
         (Ok(()), None) => Notice::Ok(Msg::new("remote.saved_later")),
         (Ok(()), Some(app)) => connect(io, app, &host).await,
     };
