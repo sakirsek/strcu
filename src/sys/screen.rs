@@ -80,7 +80,7 @@ pub fn capture(area: Rect) -> Result<RgbaImage> {
         }
     }
     // GDI returns BGRA; the alpha channel is meaningless.
-    for px in buf.chunks_exact_mut(4) {
+    for px in buf.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
         px[3] = 255;
     }

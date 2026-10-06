@@ -85,9 +85,9 @@ fn to_rgba(bmp: HBITMAP) -> Result<RgbaImage> {
 /// GDI returns BGRA. An icon without transparency has alpha 0 everywhere (made fully opaque); the
 /// premultiplied alpha the shell returns is converted to the straight alpha PNG expects.
 fn fix_alpha(buf: &mut [u8]) {
-    let opaque = buf.chunks_exact(4).all(|p| p[3] == 0);
-    let premul = !opaque && buf.chunks_exact(4).all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
-    for p in buf.chunks_exact_mut(4) {
+    let opaque = buf.as_chunks::<4>().0.iter().all(|p| p[3] == 0);
+    let premul = !opaque && buf.as_chunks::<4>().0.iter().all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]);
+    for p in buf.as_chunks_mut::<4>().0 {
         p.swap(0, 2);
         if opaque {
             p[3] = 255;

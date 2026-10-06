@@ -14,7 +14,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      # The version StrCu is built and tested with; raised on purpose, since a newer Clippy can add lints
+      - uses: dtolnay/rust-toolchain@1.94.1
       - uses: Swatinem/rust-cache@v2
       - name: The tag matches the version in Cargo.toml
         shell: pwsh
