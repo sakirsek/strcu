@@ -4,6 +4,7 @@ mod auth;
 mod config;
 mod download;
 mod i18n;
+mod licenses;
 mod pair;
 mod passkey;
 mod server;
@@ -58,6 +59,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Print the licenses of the third-party software built into StrCu
+    Licenses,
     /// Developer tools: drive the operating system layer from the command line
     Dev {
         #[command(subcommand)]
@@ -262,6 +265,11 @@ async fn run(cli: Cli) -> Result<()> {
         }
         Cmd::Tunnel { cmd } => tunnel_cmd(cmd).await?,
         Cmd::Doctor { json } => doctor(json)?,
+        Cmd::Licenses => {
+            use std::io::Write;
+            // Quitting `| more` early closes the pipe; that is not an error
+            let _ = std::io::stdout().lock().write_all(licenses::text().as_bytes());
+        }
         Cmd::Dev { cmd } => dev_cmd(cmd).await?,
     }
     Ok(())

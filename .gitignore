@@ -3,3 +3,5 @@
 # Screenshots from `strcu dev shot` are personal and stay out of the repo
 *.png
 *.jpg
+# README screenshots, made with made-up data
+!docs/*.png

@@ -1,0 +1,15 @@
+Third-party software built into strcu.exe, with its licenses
+============================================================
+
+StrCu itself is under the MIT License (LICENSE). It is built with the Rust crates below. The panel's fonts,
+IBM Plex Sans and IBM Plex Mono, are under the SIL Open Font License 1.1 (src/web/fonts/OFL.txt).
+`strcu licenses` prints this file and the font license.
+
+Made by cargo-about from Cargo.lock: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.txt
+{{#each licenses}}
+
+== {{{name}}} ==
+Used by: {{#each used_by}}{{crate.name}} {{crate.version}}{{#unless @last}}, {{/unless}}{{/each}}
+
+{{{text}}}
+{{/each}}

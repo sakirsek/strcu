@@ -1,0 +1,21 @@
+# When the dependencies change, THIRD-PARTY-NOTICES.txt must be made again (see about.toml); this checks it.
+name: Notices
+
+on:
+  push:
+    branches: [main]
+    paths: [Cargo.lock, about.toml, about.hbs, THIRD-PARTY-NOTICES.txt, .github/workflows/notices.yml]
+  pull_request:
+    paths: [Cargo.lock, about.toml, about.hbs, THIRD-PARTY-NOTICES.txt, .github/workflows/notices.yml]
+
+jobs:
+  notices:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.94.1
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-about --version 0.9.2 --locked --features cli
+      - run: cargo about generate about.hbs -o THIRD-PARTY-NOTICES.txt
+      # Compared after Git's line ending normalization, so CRLF from the checkout does not count
+      - run: git diff --exit-code -- THIRD-PARTY-NOTICES.txt

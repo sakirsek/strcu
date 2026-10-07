@@ -1,4 +1,4 @@
-# A release for every v* tag: strcu.exe, its SHA-256 checksum and install.ps1. A tag with a hyphen
+# A release for every v* tag: strcu.exe, its SHA-256 checksum, install.ps1 and the third-party notices. A tag with a hyphen
 # (v1.1.0-rc.1) becomes a pre-release, which `releases/latest` and so install.ps1 skip.
 name: Release
 
@@ -28,7 +28,7 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory dist | Out-Null
-          Copy-Item target/release/strcu.exe, install.ps1 dist/
+          Copy-Item target/release/strcu.exe, install.ps1, THIRD-PARTY-NOTICES.txt dist/
           $hash = (Get-FileHash dist/strcu.exe -Algorithm SHA256).Hash.ToLower()
           [IO.File]::WriteAllText("$PWD/dist/strcu.exe.sha256", "$hash  strcu.exe`n")
           Get-Content dist/strcu.exe.sha256
@@ -39,5 +39,5 @@ jobs:
         run: |
           $extra = @()
           if ($env:GITHUB_REF_NAME -like '*-*') { $extra += '--prerelease' }
-          gh release create $env:GITHUB_REF_NAME dist/strcu.exe dist/strcu.exe.sha256 dist/install.ps1 `
+          gh release create $env:GITHUB_REF_NAME dist/strcu.exe dist/strcu.exe.sha256 dist/install.ps1 dist/THIRD-PARTY-NOTICES.txt `
             --title "StrCu $env:GITHUB_REF_NAME" --generate-notes @extra
