@@ -17,6 +17,8 @@ accepted = [
     "Unlicense",
     "CDLA-Permissive-2.0",
 ]
+# StrCu itself (publish = false) is not third-party; leaving it out also keeps the order the same on every machine
+private = { ignore = true }
 # Only what is built into the Windows exe
 targets = ["x86_64-pc-windows-msvc"]
 ignore-build-dependencies = true
