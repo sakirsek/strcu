@@ -6,15 +6,15 @@ When you are away from the desk, StrCu replaces calling someone at home and talk
 program, click there". It is a single exe that serves a web panel; the phone needs nothing but its browser.
 
 <p align="center">
-  <img src="docs/panel.png" alt="The StrCu panel on a phone: the live screen with a crosshair on a file, the list of clickable elements, open windows with their app icons, and the keyboard with modifier keys" width="100%">
+  <img src="docs/panel.png" alt="The StrCu panel on a phone, tab by tab: the live screen with a crosshair on a file, the keyboard with modifier keys, the list of clickable elements, and open windows with their app icons" width="100%">
 </p>
 
 - **See the screen live** and tap to aim a crosshair; then click, double-click, right-click, scroll or type.
+- **Keyboard:** type text into the foreground window, send shortcuts (Ctrl / Alt / Shift / Win held for the next
+  key), F1–F12.
 - **Know what you are about to click.** Windows' own accessibility data (UI Automation) names the element under
   the crosshair and lists everything clickable in the window. No AI, no GPU, no extra install.
 - **Windows and apps:** bring a window to the front, maximize or close it; open any app from the Start menu.
-- **Keyboard:** type text into the foreground window, send shortcuts (Ctrl / Alt / Shift / Win held for the next
-  key), F1–F12.
 - **On your home Wi-Fi** out of the box, and **from anywhere** through a free Cloudflare Tunnel if you want.
 - **Sign in** with a password, pair a phone once with a QR code, or use a passkey (fingerprint / Face ID).
 - English and Turkish.
@@ -224,6 +224,11 @@ and placeholders as `lang/en.json`.
 - `src/i18n.rs` + `lang/` languages; the server sends message keys, the panel and the terminal render them
 - `src/tunnel.rs` cloudflared management, `src/download.rs` downloads verified with SHA-256
 - `install.ps1` the one-line installer; `.github/workflows/` CI, releases and the third-party notices check
+
+## Support
+
+StrCu is free and open source. If it saves you a phone call home, you can support its development through
+[GitHub Sponsors](https://github.com/sponsors/sakirsek).
 
 ## License
 
