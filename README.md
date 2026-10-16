@@ -9,14 +9,17 @@ program, click there". It is a single exe that serves a web panel; the phone nee
   <img src="docs/panel.png" alt="The StrCu panel on a phone, tab by tab: the live screen with a crosshair on a file, the keyboard with modifier keys, the list of clickable elements, and open windows with their app icons" width="100%">
 </p>
 
-- **See the screen live** and tap to aim a crosshair; then click, double-click, right-click, scroll or type.
-  Or switch on **Quick**: a tap clicks, two taps double-click, a long press right-clicks or drags, and what you
-  type goes to the computer key by key.
+- **See the screen live**, mouse pointer included: only what changes is sent, so a still screen uses no data.
+  Tap to aim a crosshair; then click, double-click, right-click, scroll or type. Or switch on **Quick**: a tap
+  clicks, two taps double-click, a long press right-clicks or drags, and what you type goes to the computer key
+  by key.
 - **Keyboard:** type text into the foreground window, send shortcuts (Ctrl / Alt / Shift / Win held for the next
-  key), F1–F12.
+  key), F1–F12; get the computer's clipboard text or put text on it.
 - **Know what you are about to click.** Windows' own accessibility data (UI Automation) names the element under
   the crosshair and lists everything clickable in the window. No AI, no GPU, no extra install.
 - **Windows and apps:** bring a window to the front, maximize or close it; open any app from the Start menu.
+- **Files:** download from Downloads, Desktop, Documents, Pictures and Videos, or the file selected in File
+  Explorer; send files from the phone into Downloads.
 - **Macros:** record what you do in the panel or build the steps yourself (clicks, keys, text, apps, windows,
   waits, repeats), then run them by hand or on a schedule.
 - **Phone first, tablets too:** on a tablet the screen image fills the page and every control stays in view.
@@ -62,9 +65,10 @@ StrCu opens in a terminal window. The first start is a short setup:
 <img src="docs/terminal.png" alt="StrCu's main screen: the addresses to open on the phone (home network, remote, this computer) and recent events such as a phone paired, sign-ins and a wrong password" width="640">
 
 After that the main screen shows where the phone can open the panel and the important events: sign-ins and
-failed attempts with where they came from, phones paired, fingerprints added, the computer locked, the tunnel
-coming and going. **P** pairs a phone, **S** opens the settings (language, password, home network, remote
-access, start with Windows, paired phones and fingerprints, port), **L** shows the full log and **Q** quits.
+failed attempts with where they came from, phones paired, fingerprints added, the computer locked, files sent or
+received, the clipboard read, the tunnel coming and going. **P** pairs a phone, **S** opens the settings
+(language, password, home network, remote access, start with Windows, paired phones and fingerprints, port),
+**L** shows the full log and **Q** quits.
 
 Only one StrCu runs at a time; starting it again brings the running one's window to the front. Closing the
 window stops the panel and the tunnel. While StrCu runs, the computer does not go to sleep (the display may
@@ -91,22 +95,31 @@ Six tabs: Screen, Keyboard, Elements, Windows, Macros, More.
   live, red when it is paused or lagging.
 - **Screen:** a tap aims the crosshair; a bar with Click / Double / Right, ↑ / ↓ (scroll) and ✕ appears next to
   it. Below the image, a magnifier and the element's name. A typing box and eight common keys sit underneath.
+  While the box has focus on a touch screen, a strip over it adds the keys the phone keyboard lacks: Esc, Tab,
+  the arrows and Ctrl / Alt / Shift / Win, which go with the next key or the next letter typed (Ctrl + C ...).
 - **Quick** (the switch under the image) skips the crosshair. A tap clicks, a quarter of a second later in case
   a second tap follows; two taps double-click. Hold a finger still for half a second: lifting it right-clicks,
   moving it drags with the left button held. If the phone loses its connection mid-drag, StrCu lets go of the
   button by itself after three seconds. The typing box then sends each key as it is pressed: the phone
   keyboard's corrections and suggestions come out right on the computer, Enter presses Enter, and Backspace
   still deletes when the box is empty.
-- **Live view:** SD scales the long side to 1280 pixels, HD sends full resolution. The image refreshes every
-  2.5 s while the Screen tab is open; ❚❚ freezes it.
+- **Live view:** SD scales the long side to 1280 pixels, HD sends full resolution. The computer looks at the
+  screen several times a second and sends only the parts that changed, as JPEG pieces, and nothing while the
+  screen is still. While something keeps changing (scrolling, a video) the pieces are a little softer, and they
+  come again sharp once it holds still. Each frame waits for the phone to draw the one before, so a slow
+  connection gets fewer frames rather than a growing delay. The mouse pointer is drawn in. ❚❚ freezes the image;
+  on the other tabs nothing is sent. Where WebSocket is not available (an old browser, a proxy in the way) the
+  image is fetched every 2.5 s instead.
 - **Keyboard:** a text box (types into the foreground window), modifier keys held for the next key, common keys,
-  arrows, F1–F12 and recent shortcuts.
+  arrows, F1–F12 and recent shortcuts. **Clipboard:** *Get PC clipboard* shows the text copied on the computer,
+  to copy on the phone; *Put on PC clipboard* sends the text in the box, to paste on the computer with Ctrl+V.
+  Only when asked, never on its own (it may hold a password just copied).
 - **Elements:** named clickable elements of the foreground window and the taskbar, filterable by name and kind.
 - **Windows:** open windows with their app icons; bring to front, maximize or close. **Open an app** lists the
   Start menu apps (classic and Store) with search and recent apps.
 - **Macros:** the macros, their schedules and last runs ([below](#macros)).
-- **More:** session and sign-out, passkeys, lock and shut down (with a 15 s countdown that can be cancelled),
-  panel language and a log of what was done.
+- **More:** files ([below](#files)), session and sign-out, passkeys, lock and shut down (with a 15 s countdown
+  that can be cancelled), panel language and a log of what was done.
 
 **Full screen:** ⛶ or turn the phone sideways. Pinch to zoom, drag to pan, tap to aim. With Quick on, taps
 and long presses work as above; a quick drag still pans the zoomed image.
@@ -122,6 +135,20 @@ column in the middle.
 <img src="docs/tablet.png" alt="The panel on a tablet held sideways: tabs in a rail on the left, the screen image filling the page with the crosshair and click bar on a file, and one row of controls under it" width="720">
 
 The page loads nothing from outside; its fonts (IBM Plex) are built in.
+
+### Files
+
+Under More → Files:
+
+- **To the phone:** the Downloads, Desktop, Documents, Pictures and Videos folders (wherever Windows keeps them,
+  OneDrive included), folders first and then the newest files; tap a file to download it. **Get selected file**
+  downloads what is selected in File Explorer on the computer; with several selected, a list to choose from.
+- **From the phone:** **Send from phone** puts files into Downloads. They travel in 4 MB pieces, so large files
+  get through the tunnel too (Cloudflare takes at most 100 MB a request), and keep a temporary name until they
+  are complete. A file of the same name is never replaced: the new one becomes `photo (1).jpg`.
+
+The panel opens nothing outside those folders: no `..`, drive letters or links that lead out. Every file sent
+either way is logged and shown on the computer's main screen.
 
 ### Macros
 
@@ -221,6 +248,9 @@ is requested; adding a key requires the panel password instead.
 The port is held for StrCu alone (`SO_EXCLUSIVEADDRUSE`), so no other program can listen on 127.0.0.1 at the
 same port and receive this computer's connections, the tunnel's among them.
 
+Browsers let any site open a WebSocket to any address, so the live view's WebSocket accepts only the panel's own
+page (its Origin must match the address): a site open on this computer cannot watch the screen.
+
 ## Command line
 
 ```
@@ -269,9 +299,10 @@ and placeholders as `lang/en.json`.
 
 ## Layout
 
-- `src/sys/` operating system layer (screen, input, windows, UI Automation, power, apps, icons, discovery,
-  child processes)
+- `src/sys/` operating system layer (screen, input, windows, UI Automation, clipboard, File Explorer, power,
+  apps, icons, discovery, child processes)
 - `src/server.rs` + `src/web/` the panel; `src/worker.rs` runs operating system work in order on one thread
+- `src/stream.rs` the live view stream (changed tiles as JPEG pieces); `src/files.rs` files to and from the phone
 - `src/macros/` macros: steps and storage, schedules, the runner and recording
 - `src/app.rs` what runs while StrCu is open (listener, tunnel watcher); `src/tui/` the terminal screens, plain
   functions from state to frames that the terminal draws and `strcu dev preview` turns into HTML
@@ -290,7 +321,8 @@ StrCu is free and open source. If it saves you a phone call home, you can suppor
 
 MIT, see [LICENSE](LICENSE). The software built into strcu.exe and its licenses are listed in
 [THIRD-PARTY-NOTICES.txt](THIRD-PARTY-NOTICES.txt) (made with cargo-about, see `about.toml`), which
-`strcu licenses` also prints. The embedded IBM Plex fonts are under the SIL Open Font License
+`strcu licenses` also prints. The live view's JPEG encoding is based in part on the work of the Independent
+JPEG Group. The embedded IBM Plex fonts are under the SIL Open Font License
 ([src/web/fonts/OFL.txt](src/web/fonts/OFL.txt)). cloudflared, downloaded when remote access is set up, is
 Cloudflare's, under the Apache License 2.0.
 
