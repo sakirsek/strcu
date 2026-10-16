@@ -28,7 +28,8 @@ use crate::i18n::{self, Msg};
 use crate::macros::{self, Act, AppRef, WinOp};
 use crate::pair::{self, Pairing};
 use crate::passkey::{self, Kind, Site};
-use crate::sys::{Rect, apps, clipboard, icons, input, net, power, screen, uia, window};
+use crate::files::{self, Root};
+use crate::sys::{Rect, apps, clipboard, explorer, icons, input, net, power, screen, uia, window};
 use crate::worker::Worker;
 
 /// Icon cache (shell path -> PNG; None if unavailable)
@@ -67,6 +68,8 @@ struct AppState {
     live_at: Arc<Mutex<Option<Instant>>>,
     /// Changes whenever the panel acts: the live view looks at the screen more often for a moment
     kick: Arc<tokio::sync::watch::Sender<u64>>,
+    /// Files arriving from the phone
+    uploads: Arc<files::Uploads>,
 }
 
 impl AppState {
@@ -138,6 +141,7 @@ impl Panel {
             hold: Arc::default(),
             live_at: Arc::default(),
             kick: Arc::new(tokio::sync::watch::Sender::new(0)),
+            uploads: Arc::default(),
         };
         Ok(Panel { state })
     }
@@ -200,6 +204,13 @@ impl Panel {
             .route("/api/type", post(type_text))
             .route("/api/key", post(key))
             .route("/api/clipboard", get(clip_get).post(clip_set))
+            .route("/api/files", get(files_list))
+            .route("/api/files/get", get(files_get))
+            .route("/api/files/selected", get(files_selected))
+            .route(
+                "/api/files/upload",
+                post(files_upload).layer(axum::extract::DefaultBodyLimit::max(files::CHUNK + 4096)),
+            )
             .route("/api/scroll", post(scroll))
             .route("/api/hold", post(hold))
             .route("/api/live", post(live))
@@ -295,6 +306,8 @@ impl LogEntry {
             "ev.device_back",
             "ev.locked",
             "ev.clip_read",
+            "ev.file_sent",
+            "ev.file_received",
             "ev.shutdown",
             "ev.shutdown_cancelled",
             "ev.tunnel_up",
@@ -565,9 +578,10 @@ async fn require_access(State(st): State<AppState>, ConnectInfo(c): ConnectInfo<
     next.run(req).await
 }
 
-/// Anything the panel does (every POST) makes the live view look at the screen more often for a moment.
+/// Anything the panel does (every POST but a file arriving) makes the live view look at the screen more often
+/// for a moment.
 async fn kick_stream(State(st): State<AppState>, req: Request, next: Next) -> Response {
-    let post = req.method() == axum::http::Method::POST;
+    let post = req.method() == axum::http::Method::POST && req.uri().path() != "/api/files/upload";
     let kick = || st.kick.send_modify(|n| *n = n.wrapping_add(1));
     if post {
         kick();
@@ -1171,6 +1185,128 @@ async fn clip_set(State(st): State<AppState>, Json(r): Json<ClipReq>) -> ApiResu
     }
     logged(&st, Msg::new("ev.clip_set").with("n", n), move |_| clipboard::set(&r.text)).await?;
     Ok(Json(json!({ "ok": true, "n": n })))
+}
+
+// ---------- files ----------
+
+/// Runs file system work off the async threads. A path that is not allowed or not there, or a piece of a
+/// file out of order, is the request's fault (4xx), not the server's.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> ApiResult<T> {
+    let r = tokio::task::spawn_blocking(f).await.map_err(|e| anyhow::anyhow!(e))?;
+    r.map_err(|e| {
+        let msg = i18n::from_error(&e);
+        let status = match msg.code {
+            "err.file_path" => StatusCode::FORBIDDEN,
+            "err.file_none" => StatusCode::NOT_FOUND,
+            "err.upload_order" => StatusCode::CONFLICT,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        };
+        ApiError(status, msg)
+    })
+}
+
+#[derive(Deserialize)]
+struct FilesQ {
+    root: Root,
+    #[serde(default)]
+    path: String,
+}
+
+/// A folder under Desktop, Documents, Downloads, Pictures or Videos.
+async fn files_list(Query(q): Query<FilesQ>) -> ApiResult<Json<Value>> {
+    let (entries, cut) = blocking(move || files::list(&files::resolve(q.root, &q.path)?)).await?;
+    Ok(Json(json!({ "entries": entries, "cut": cut })))
+}
+
+/// The files selected in File Explorer, numbered for `files_get`.
+async fn files_selected() -> ApiResult<Json<Value>> {
+    let items = blocking(|| {
+        Ok(explorer::selected()?
+            .iter()
+            .enumerate()
+            .map(|(i, p)| {
+                let m = std::fs::metadata(p).ok();
+                json!({ "i": i, "name": p.file_name().map(|n| n.to_string_lossy()), "dir": m.as_ref().is_none_or(|m| m.is_dir()),
+                        "size": m.map_or(0, |m| m.len()) })
+            })
+            .collect::<Vec<_>>())
+    })
+    .await?;
+    Ok(Json(json!({ "items": items })))
+}
+
+#[derive(Deserialize)]
+struct FileGetQ {
+    root: Option<Root>,
+    #[serde(default)]
+    path: String,
+    /// The n-th file selected in File Explorer, which must still be called `name`
+    sel: Option<usize>,
+    name: Option<String>,
+}
+
+/// A file to the phone, as a download.
+async fn files_get(State(st): State<AppState>, Query(q): Query<FileGetQ>) -> ApiResult<Response> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncReadExt;
+    let path = match (q.root, q.sel) {
+        (Some(root), _) => blocking(move || files::resolve(root, &q.path)).await?,
+        (None, Some(i)) => {
+            let sel = blocking(explorer::selected).await?;
+            let same = sel.get(i).filter(|p| p.file_name().map(|n| n.to_string_lossy()) == q.name.as_deref().map(Into::into));
+            same.cloned().ok_or(ApiError(StatusCode::CONFLICT, Msg::new("err.file_changed")))?
+        }
+        _ => return Err(ApiError(StatusCode::BAD_REQUEST, Msg::new("err.file_none"))),
+    };
+    let not_found = |_| ApiError(StatusCode::NOT_FOUND, Msg::new("err.file_none"));
+    let meta = tokio::fs::metadata(&path).await.map_err(not_found)?;
+    if !meta.is_file() {
+        return Err(ApiError(StatusCode::BAD_REQUEST, Msg::new("files.only_files")));
+    }
+    let file = tokio::fs::File::open(&path).await.map_err(not_found)?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    st.log.add(Msg::new("ev.file_sent").with("name", short(&name)), true);
+    // Read in pieces as the phone takes them, so a large file never sits in memory
+    let body = futures_util::stream::unfold(Some(file), |file| async move {
+        let mut file = file?;
+        let mut buf = vec![0u8; 256 * 1024];
+        match file.read(&mut buf).await {
+            Ok(0) => None,
+            Ok(n) => {
+                buf.truncate(n);
+                Some((Ok(axum::body::Bytes::from(buf)), Some(file)))
+            }
+            Err(e) => Some((Err(e), None)),
+        }
+    })
+    .boxed();
+    let mut r = axum::body::Body::from_stream(body).into_response();
+    let h = r.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("application/octet-stream"));
+    h.insert(header::CONTENT_LENGTH, HeaderValue::from(meta.len()));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    if let Ok(v) = HeaderValue::from_str(&files::disposition(&name)) {
+        h.insert(header::CONTENT_DISPOSITION, v);
+    }
+    Ok(r)
+}
+
+#[derive(Deserialize)]
+struct UploadQ {
+    id: String,
+    name: String,
+    size: u64,
+    offset: u64,
+}
+
+/// A piece of a file from the phone (see `files::Uploads`); the last piece returns the name it was saved under.
+async fn files_upload(State(st): State<AppState>, Query(q): Query<UploadQ>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
+    let up = st.uploads.clone();
+    let saved = blocking(move || up.chunk(&q.id, &q.name, q.size, q.offset, &body)).await?;
+    if let Some(name) = &saved {
+        st.log.add(Msg::new("ev.file_received").with("name", short(name)), true);
+    }
+    Ok(Json(json!({ "ok": true, "saved": saved })))
 }
 
 #[derive(Deserialize)]

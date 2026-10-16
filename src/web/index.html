@@ -260,6 +260,31 @@
   #text { height: 96px; min-height: 96px; }
   .typebtns { display: grid; grid-template-columns: 2fr 3fr; gap: 8px; }
   .clipbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  /* ---- files ---- */
+  .files { display: flex; flex-direction: column; gap: 10px; }
+  .fbtns { display: grid; gap: 8px; }
+  .fbtns .btn { gap: 8px; }
+  .fsel a.fjob { color: var(--fg); text-decoration: none; }
+  .fjobs:empty, .fsel:empty { display: none; }
+  .fjobs, .fsel { display: flex; flex-direction: column; gap: 6px; margin: 0; padding: 0; list-style: none; }
+  .fjob { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 6px 10px; border-radius: 10px; background: var(--panel2); font-size: 13px; }
+  .fjob .fname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .fjob .fmeta { flex: none; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .fjob.ok .fmeta { color: var(--ok); }
+  .fjob.bad .fmeta { color: var(--bad-soft); white-space: normal; text-align: right; }
+  .fjob progress { flex: none; width: 64px; height: 6px; accent-color: var(--acc); }
+  .fjob .x { flex: none; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 8px; background: none; color: var(--muted); }
+  .files .fchips { margin: 0; padding: 0; }
+  .fcrumb { display: flex; flex-wrap: wrap; align-items: center; gap: 2px; min-height: 28px; font-size: 13px; color: var(--muted); }
+  .fcrumb button { min-height: 28px; padding: 0 4px; border: 0; background: none; color: var(--fg2); font: inherit; text-decoration: underline; text-underline-offset: 3px; }
+  .fcrumb span:last-child { color: var(--fg); }
+  .flist { display: flex; flex-direction: column; margin: 0 -14px -12px; padding: 0; list-style: none; }
+  .flist li > * { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 52px; padding: 6px 14px; border: 0; border-top: 1px solid var(--line); background: none; color: var(--fg); font: inherit; text-align: left; text-decoration: none; }
+  .flist .ic { flex: none; width: 22px; height: 22px; color: var(--muted); }
+  .flist .ftext { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+  .flist .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+  .flist .fmeta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+  .flist .fnote { padding: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
   .key.mod[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); color: var(--acc); font-weight: 500; }
   .modrow { display: flex; align-items: center; gap: 8px; }
   .modrow .field { flex: 1; min-width: 0; min-height: 48px; font-family: var(--mono); font-size: 15px; }
@@ -722,6 +747,21 @@
         </div>
         <button type="button" id="logoutBtn" class="btn"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 17l5-5-5-5M15 12H4"/></svg><span id="logoutLbl" data-i18n="more.logout"></span></button>
       </section>
+
+      <h2 class="eyebrow" style="margin-top:4px" data-i18n="files.title"></h2>
+      <section class="card files" data-i18n-label="files.title">
+        <div class="fbtns">
+          <button type="button" id="fileSel" class="btn"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg><span data-i18n="files.selected"></span></button>
+          <label class="btn primary" for="fileUp"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 15V4M7 9l5-5 5 5M5 20h14"/></svg><span data-i18n="files.send"></span></label>
+          <input id="fileUp" type="file" multiple hidden>
+        </div>
+        <ul id="fileSelList" class="fsel" data-i18n-label="files.pick"></ul>
+        <ul id="fileJobs" class="fjobs"></ul>
+        <div id="fileRoots" class="fchips" role="group" data-i18n-label="files.folders"></div>
+        <div id="fileCrumb" class="fcrumb"></div>
+        <ul id="fileList" class="flist"></ul>
+      </section>
+      <p class="note" data-i18n="files.note"></p>
 
       <h2 class="eyebrow" style="margin-top:4px" data-i18n="more.passkeys"></h2>
       <section class="card setlist" data-i18n-label="more.passkeys">
@@ -2353,6 +2393,122 @@ $('#fsType').addEventListener('submit', async e => {
   if (await sendText(inp.value, false)) { liveReset(inp); showFsType(false); }
 });
 
+// ---------- files ----------
+// To the phone: a folder under Desktop, Documents, Downloads, Pictures or Videos, or the file selected in File
+// Explorer; downloaded by the phone's browser. From the phone: into Downloads, in pieces (files.rs).
+const ROOTS = { downloads: 'files.downloads', desktop: 'files.desktop', documents: 'files.documents', pictures: 'files.pictures', videos: 'files.videos' };
+const F = { root: 'downloads', path: [], loaded: false, seq: 0 };
+const ICON_FILE = 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5';
+const ICON_DIR = 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z';
+
+function fmtSize(n) {
+  const u = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return new Intl.NumberFormat(I18N.lang, { maximumFractionDigits: i && n < 10 ? 1 : 0 }).format(n) + ' ' + u[i];
+}
+function fmtDate(secs) {
+  const d = new Date(secs * 1000), now = new Date();
+  const opt = d.toDateString() === now.toDateString() ? { hour: '2-digit', minute: '2-digit' }
+    : d.getFullYear() === now.getFullYear() ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' };
+  return new Intl.DateTimeFormat(I18N.lang, opt).format(d);
+}
+// The phone's browser saves it; the page stays where it is
+function download(url) {
+  const a = h('a', { href: url, download: '' });
+  document.body.append(a); a.click(); a.remove();
+}
+
+function renderRoots() {
+  $('#fileRoots').replaceChildren(...Object.entries(ROOTS).map(([r, k]) => h('button', { type: 'button', 'aria-pressed': String(F.root === r),
+    onclick: () => { F.root = r; F.path = []; renderRoots(); loadFiles(); } }, t(k))));
+}
+function renderCrumb() {
+  const parts = [t(ROOTS[F.root]), ...F.path];
+  $('#fileCrumb').replaceChildren(...parts.flatMap((p, i) => {
+    const last = i === parts.length - 1;
+    const el = last ? h('span', null, p) : h('button', { type: 'button', onclick: () => { F.path = F.path.slice(0, i); loadFiles(); } }, p);
+    return i ? [h('span', { 'aria-hidden': 'true' }, '›'), el] : [el];
+  }));
+}
+async function loadFiles() {
+  const seq = ++F.seq;
+  F.loaded = true;
+  renderRoots(); renderCrumb();
+  try {
+    const r = await api('/api/files?' + new URLSearchParams({ root: F.root, path: F.path.join('/') }));
+    if (seq !== F.seq) return;
+    const rows = r.entries.map(e => {
+      const meta = e.dir ? '' : fmtSize(e.size) + ' · ' + fmtDate(e.modified);
+      const inner = [svgIcon(e.dir ? ICON_DIR : ICON_FILE), h('span', { class: 'ftext' }, h('span', { class: 'fname' }, e.name), meta && h('span', { class: 'fmeta' }, meta))];
+      if (e.dir) return h('li', null, h('button', { type: 'button', 'aria-label': t('files.open_label', { name: e.name }), onclick: () => { F.path.push(e.name); loadFiles(); } }, ...inner));
+      const url = '/api/files/get?' + new URLSearchParams({ root: F.root, path: [...F.path, e.name].join('/') });
+      return h('li', null, h('a', { href: url, download: e.name, 'aria-label': t('files.get_label', { name: e.name }) }, ...inner));
+    });
+    if (!rows.length) rows.push(h('li', null, h('p', { class: 'fnote' }, t('files.empty'))));
+    if (r.cut) rows.push(h('li', null, h('p', { class: 'fnote' }, t('files.cut', { n: r.entries.length }))));
+    $('#fileList').replaceChildren(...rows);
+  } catch (e) {
+    if (seq !== F.seq) return;
+    $('#fileList').replaceChildren(h('li', null, h('p', { class: 'fnote' }, e.message)));
+  }
+}
+
+// The file selected in File Explorer: one is downloaded at once, several are listed to choose from
+$('#fileSel').onclick = async () => {
+  try {
+    const r = await api('/api/files/selected');
+    const files = r.items.filter(i => !i.dir);
+    $('#fileSelList').replaceChildren();
+    if (!r.items.length) { toast(t('files.none_selected'), true); return; }
+    if (!files.length) { toast(t('files.only_files'), true); return; }
+    const url = i => '/api/files/get?' + new URLSearchParams({ sel: i.i, name: i.name });
+    if (files.length === 1) { download(url(files[0])); return; }
+    $('#fileSelList').replaceChildren(...files.map(i => h('li', null, h('a', { class: 'fjob', href: url(i), download: i.name },
+      h('span', { class: 'fname' }, i.name), h('span', { class: 'fmeta' }, fmtSize(i.size))))));
+  } catch (e) { toast(e.message, true); }
+};
+
+// To Downloads on the computer, one file after another, in pieces
+const UP_CHUNK = 4 * 1024 * 1024;   // files::CHUNK
+$('#fileUp').addEventListener('change', async e => {
+  const list = [...e.target.files];
+  e.target.value = '';
+  const jobs = list.map(file => {
+    const meta = h('span', { class: 'fmeta' }, fmtSize(file.size)), bar = h('progress', { max: '1', value: '0' });
+    const ctl = new AbortController();
+    const x = h('button', { type: 'button', class: 'x', 'aria-label': t('common.cancel'), onclick: () => ctl.abort() }, svgIcon(ICON.close, 'ic s'));
+    const row = h('li', { class: 'fjob' }, h('span', { class: 'fname' }, file.name), bar, meta, x);
+    $('#fileJobs').append(row);
+    return { file, row, meta, bar, x, ctl };
+  });
+  for (const j of jobs) await upload(j);
+});
+async function upload(j) {
+  const id = [...crypto.getRandomValues(new Uint8Array(16))].map(b => b.toString(16).padStart(2, '0')).join('');
+  let off = 0;
+  try {
+    do {
+      const piece = j.file.slice(off, off + UP_CHUNK);
+      const q = new URLSearchParams({ id, name: j.file.name, size: j.file.size, offset: off });
+      const r = await fetch('/api/files/upload?' + q, { method: 'POST', body: piece, headers: { 'content-type': 'application/octet-stream' }, signal: j.ctl.signal });
+      const d = (r.headers.get('content-type') || '').includes('json') ? await r.json() : null;
+      if (r.status === 401) { showLogin(); throw authError(); }
+      if (!r.ok) throw new Error(d && d.error ? tm(d.error) : 'HTTP ' + r.status);
+      off += piece.size;
+      j.bar.value = j.file.size ? off / j.file.size : 1;
+      // Saved under another name when one like it was already there
+      if (d.saved) { j.row.classList.add('ok'); j.meta.textContent = d.saved === j.file.name ? t('files.done') : t('files.saved', { name: d.saved }); }
+    } while (off < j.file.size);
+    if (F.root === 'downloads' && !F.path.length) loadFiles();
+  } catch (e) {
+    j.row.classList.add('bad');
+    j.meta.textContent = e.name === 'AbortError' ? t('common.cancel') : e.message;
+  } finally {
+    j.bar.remove(); j.x.remove();
+  }
+}
+
 // ---------- a question with two answers ----------
 
 function ask(text, yes, no) {
@@ -2963,7 +3119,7 @@ function showTab(name) {
   if (name === 'screen') { placeAim(); if (S.shotAt && Date.now() - S.shotAt > 2000) refresh(); }
   if (name === 'windows') renderWl();
   if (name === 'elements') loadElements();
-  if (name === 'more') { loadLog(); loadPasskeys(); status(); }
+  if (name === 'more') { loadLog(); loadPasskeys(); status(); if (!F.loaded) loadFiles(); }
   if (name === 'macros') {
     renderMacros(); loadMacros();
     // Back from choosing a target or recording: the step being edited stays in view

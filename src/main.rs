@@ -3,6 +3,7 @@ mod app;
 mod auth;
 mod config;
 mod download;
+mod files;
 mod i18n;
 mod licenses;
 mod macros;
