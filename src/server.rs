@@ -28,7 +28,7 @@ use crate::i18n::{self, Msg};
 use crate::macros::{self, Act, AppRef, WinOp};
 use crate::pair::{self, Pairing};
 use crate::passkey::{self, Kind, Site};
-use crate::sys::{Rect, apps, icons, input, net, power, screen, uia, window};
+use crate::sys::{Rect, apps, clipboard, icons, input, net, power, screen, uia, window};
 use crate::worker::Worker;
 
 /// Icon cache (shell path -> PNG; None if unavailable)
@@ -199,6 +199,7 @@ impl Panel {
             .route("/api/click", post(click))
             .route("/api/type", post(type_text))
             .route("/api/key", post(key))
+            .route("/api/clipboard", get(clip_get).post(clip_set))
             .route("/api/scroll", post(scroll))
             .route("/api/hold", post(hold))
             .route("/api/live", post(live))
@@ -293,6 +294,7 @@ impl LogEntry {
             "ev.pair_wrong",
             "ev.device_back",
             "ev.locked",
+            "ev.clip_read",
             "ev.shutdown",
             "ev.shutdown_cancelled",
             "ev.tunnel_up",
@@ -1142,6 +1144,33 @@ async fn type_text(State(st): State<AppState>, Json(r): Json<TypeReq>) -> ApiRes
     .await?;
     st.macros.record(step);
     Ok(Json(json!({ "ok": true })))
+}
+
+/// Most of the clipboard's text that goes either way at once.
+const CLIP_MAX: usize = 100_000;
+
+/// The computer's clipboard text. Only on request, never on its own: it may hold a password just copied.
+async fn clip_get(State(st): State<AppState>) -> ApiResult<Json<Value>> {
+    let Some(text) = st.worker.run(|_| clipboard::get()).await? else { return Ok(Json(json!({ "text": null }))) };
+    let n = text.chars().count();
+    let text: String = if n > CLIP_MAX { text.chars().take(CLIP_MAX).collect() } else { text };
+    st.log.add(Msg::new("ev.clip_read").with("n", n.min(CLIP_MAX)), true);
+    Ok(Json(json!({ "text": text, "cut": (n > CLIP_MAX).then_some(CLIP_MAX) })))
+}
+
+#[derive(Deserialize)]
+struct ClipReq {
+    text: String,
+}
+
+/// Puts text from the phone on the computer's clipboard, to paste there with Ctrl+V.
+async fn clip_set(State(st): State<AppState>, Json(r): Json<ClipReq>) -> ApiResult<Json<Value>> {
+    let n = r.text.chars().count();
+    if n > CLIP_MAX {
+        return Err(ApiError(StatusCode::BAD_REQUEST, Msg::new("err.text_too_long").with("max", CLIP_MAX)));
+    }
+    logged(&st, Msg::new("ev.clip_set").with("n", n), move |_| clipboard::set(&r.text)).await?;
+    Ok(Json(json!({ "ok": true, "n": n })))
 }
 
 #[derive(Deserialize)]

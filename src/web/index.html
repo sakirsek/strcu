@@ -259,6 +259,7 @@
   /* ---- keyboard ---- */
   #text { height: 96px; min-height: 96px; }
   .typebtns { display: grid; grid-template-columns: 2fr 3fr; gap: 8px; }
+  .clipbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
   .key.mod[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); color: var(--acc); font-weight: 500; }
   .modrow { display: flex; align-items: center; gap: 8px; }
   .modrow .field { flex: 1; min-width: 0; min-height: 48px; font-family: var(--mono); font-size: 15px; }
@@ -562,6 +563,20 @@
           <button type="button" id="typeBtn" class="btn" data-i18n="common.type"></button>
           <button type="button" id="typeEnterBtn" class="btn primary"><span data-i18n="kb.type_enter"></span><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 5v7a3 3 0 0 1-3 3H5"/><path d="M9 11l-4 4 4 4"/></svg></button>
         </div>
+      </div>
+
+      <div class="group">
+        <h2 class="eyebrow" data-i18n="kb.clip"></h2>
+        <div class="clipbtns">
+          <button type="button" id="clipGet" class="btn" data-i18n="kb.clip_get"></button>
+          <button type="button" id="clipSet" class="btn" data-i18n="kb.clip_set"></button>
+        </div>
+        <div id="clipBox" class="stack" hidden>
+          <div class="reshead"><label class="label" for="clipText" data-i18n="kb.clip_pc"></label><span id="clipCount" class="count"></span></div>
+          <textarea id="clipText" class="field" rows="3" readonly></textarea>
+          <button type="button" id="clipCopy" class="btn primary" data-i18n="kb.clip_copy"></button>
+        </div>
+        <p class="note" data-i18n="kb.clip_note"></p>
       </div>
 
       <div class="group" style="margin-top:4px">
@@ -1820,6 +1835,38 @@ $('#modLetter').addEventListener('input', e => {
   sendKey(withMods(c.toLowerCase()), S.mods.size > 0);
 });
 $('#modForm').addEventListener('submit', e => e.preventDefault());
+
+// ---------- clipboard ----------
+// Only on request, both ways: the computer's clipboard may hold a password just copied.
+$('#clipGet').onclick = async () => {
+  try {
+    const r = await api('/api/clipboard');
+    if (!r.text) { $('#clipBox').hidden = true; toast(t('kb.clip_empty')); return; }
+    $('#clipText').value = r.text;
+    $('#clipCount').textContent = t('kb.count', { n: [...r.text].length });
+    $('#clipBox').hidden = false;
+    if (r.cut) toast(t('kb.clip_cut', { n: r.cut }));
+  } catch (e) { toast(e.message, true); }
+};
+$('#clipSet').onclick = async () => {
+  const text = $('#text').value;
+  if (!text) { toast(t('kb.clip_need_text'), true); $('#text').focus(); return; }
+  try { const r = await api('/api/clipboard', { text }); toast(t('toast.clip_set', { n: r.n })); }
+  catch (e) { toast(e.message, true); }
+};
+// The phone's clipboard API needs HTTPS (through the tunnel); on the home network selecting the text and
+// copying it the older way still works
+$('#clipCopy').onclick = async () => {
+  const ta = $('#clipText');
+  let ok = false;
+  try { if (navigator.clipboard && window.isSecureContext) { await navigator.clipboard.writeText(ta.value); ok = true; } } catch (_) {}
+  if (!ok) {
+    ta.select(); ta.setSelectionRange(0, ta.value.length);
+    try { ok = document.execCommand('copy'); } catch (_) {}
+    ta.blur();
+  }
+  toast(ok ? t('kb.clip_copied') : t('kb.clip_copy_fail'), !ok);
+};
 
 function addRecent(c) {
   S.recent = [c, ...S.recent.filter(x => x !== c)].slice(0, 6);

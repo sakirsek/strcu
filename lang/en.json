@@ -73,6 +73,17 @@
     "one": "{n} character",
     "other": "{n} characters"
   },
+  "kb.clip": "Clipboard",
+  "kb.clip_get": "Get PC clipboard",
+  "kb.clip_set": "Put on PC clipboard",
+  "kb.clip_pc": "On the computer's clipboard",
+  "kb.clip_copy": "Copy to phone",
+  "kb.clip_note": "Put sends the text in the box above; paste it on the computer with Ctrl+V. Get shows the text copied on the computer.",
+  "kb.clip_empty": "There is no text on the computer's clipboard",
+  "kb.clip_cut": "Only the first {n} characters",
+  "kb.clip_need_text": "Write or paste text in the box above first",
+  "kb.clip_copied": "Copied to the phone",
+  "kb.clip_copy_fail": "Could not copy: hold the text to copy it",
   "kb.text_ph": "Typed into the foreground window as if on its keyboard",
   "kb.type_enter": "Type and press Enter",
   "kb.mods": "Modifier keys · held down",
@@ -452,6 +463,10 @@
     "one": "{n} character typed → {where}",
     "other": "{n} characters typed → {where}"
   },
+  "toast.clip_set": {
+    "one": "{n} character on the computer's clipboard",
+    "other": "{n} characters on the computer's clipboard"
+  },
   "toast.typed_enter": {
     "one": "{n} character typed, Enter → {where}",
     "other": "{n} characters typed, Enter → {where}"
@@ -496,6 +511,14 @@
   "ev.dragged": "Dragged",
   "ev.drag_let_go": "Held mouse button let go: the panel went quiet",
   "ev.live_typing": "Typing live (key by key)",
+  "ev.clip_read": {
+    "one": "Clipboard text taken to the phone ({n} character)",
+    "other": "Clipboard text taken to the phone ({n} characters)"
+  },
+  "ev.clip_set": {
+    "one": "Text put on the clipboard ({n} character)",
+    "other": "Text put on the clipboard ({n} characters)"
+  },
   "ev.maximized": "Maximized",
   "ev.front": "Brought to front",
   "ev.closed": "Closed",
@@ -527,6 +550,7 @@
   "err.wrong_password": "Wrong password",
   "err.locked_out": "Too many failed attempts, wait {s} s",
   "err.text_too_long": "Text too long ({max} characters at most)",
+  "err.clip_busy": "The clipboard is open in another program; try again",
   "err.not_held": "The mouse button had already been let go",
   "err.window_gone": "The window no longer exists",
   "err.own_window": "This is StrCu's own window; closing it would close the panel too",

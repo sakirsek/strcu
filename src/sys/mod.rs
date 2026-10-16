@@ -2,6 +2,7 @@
 
 pub mod apps;
 pub mod autostart;
+pub mod clipboard;
 pub mod discover;
 pub mod icons;
 pub mod input;
