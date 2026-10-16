@@ -88,7 +88,7 @@ internet → Wi-Fi → your network → Network profile type → Private.
 
 ## The panel
 
-Six tabs: Screen, Keyboard, Elements, Windows, Macros, More.
+Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
 
 - **Top bar:** the foreground window with its app icon; tap it for the list of open windows. Shows when the
   computer is locked. Next to it, the live view controls (HD / SD / ❚❚) with a dot: green while the image is
@@ -117,9 +117,10 @@ Six tabs: Screen, Keyboard, Elements, Windows, Macros, More.
 - **Elements:** named clickable elements of the foreground window and the taskbar, filterable by name and kind.
 - **Windows:** open windows with their app icons; bring to front, maximize or close. **Open an app** lists the
   Start menu apps (classic and Store) with search and recent apps.
+- **Files:** files to the phone and from it ([below](#files)).
 - **Macros:** the macros, their schedules and last runs ([below](#macros)).
-- **More:** files ([below](#files)), session and sign-out, passkeys, lock and shut down (with a 15 s countdown
-  that can be cancelled), panel language and a log of what was done.
+- **More:** session and sign-out, passkeys, lock and shut down (with a 15 s countdown that can be cancelled),
+  panel language and a log of what was done.
 
 **Full screen:** ⛶ or turn the phone sideways. Pinch to zoom, drag to pan, tap to aim. With Quick on, taps
 and long presses work as above; a quick drag still pans the zoomed image.
@@ -138,7 +139,7 @@ The page loads nothing from outside; its fonts (IBM Plex) are built in.
 
 ### Files
 
-Under More → Files:
+On the Files tab:
 
 - **To the phone:** the Downloads, Desktop, Documents, Pictures and Videos folders (wherever Windows keeps them,
   OneDrive included), folders first and then the newest files; tap a file to download it. **Get selected file**
