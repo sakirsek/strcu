@@ -86,6 +86,31 @@ pub fn drag(from: (i32, i32), to: (i32, i32)) -> Result<()> {
     moved.and(up)
 }
 
+/// Presses the left button at a point and keeps it held: a drag the phone steers with `hold_move` and ends
+/// with `hold_up`.
+pub fn hold_down(x: i32, y: i32) -> Result<()> {
+    move_to(x, y)?;
+    thread::sleep(Duration::from_millis(30));
+    send(&[mouse(MOUSEEVENTF_LEFTDOWN, 0)])
+}
+
+pub fn hold_move(x: i32, y: i32) -> Result<()> {
+    send(&[move_abs(x, y)])
+}
+
+/// Lets go at the point (also if the last move fails).
+pub fn hold_up(x: i32, y: i32) -> Result<()> {
+    let moved = send(&[move_abs(x, y)]);
+    thread::sleep(Duration::from_millis(30));
+    let up = send(&[mouse(MOUSEEVENTF_LEFTUP, 0)]);
+    moved.and(up)
+}
+
+/// Lets go of a held left button wherever the pointer is.
+pub fn let_go() -> Result<()> {
+    send(&[mouse(MOUSEEVENTF_LEFTUP, 0)])
+}
+
 /// A real mouse move (some apps only start dragging on one), in the whole desktop's 0..65535 coordinates.
 fn move_abs(x: i32, y: i32) -> INPUT {
     let vs = super::screen::virtual_screen();

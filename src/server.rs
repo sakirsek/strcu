@@ -61,6 +61,10 @@ struct AppState {
     /// When a turned-away address was last logged
     denied: Arc<Mutex<HashMap<String, Instant>>>,
     macros: Arc<macros::Engine>,
+    /// The left button held from the panel (long press, then drag)
+    hold: Arc<Mutex<Hold>>,
+    /// When the panel last typed live (key by key); one log line per burst
+    live_at: Arc<Mutex<Option<Instant>>>,
 }
 
 impl AppState {
@@ -129,6 +133,8 @@ impl Panel {
             private: Arc::default(),
             denied: Arc::default(),
             macros,
+            hold: Arc::default(),
+            live_at: Arc::default(),
         };
         Ok(Panel { state })
     }
@@ -190,6 +196,8 @@ impl Panel {
             .route("/api/type", post(type_text))
             .route("/api/key", post(key))
             .route("/api/scroll", post(scroll))
+            .route("/api/hold", post(hold))
+            .route("/api/live", post(live))
             .route("/api/elements", get(elements))
             .route("/api/target", get(target))
             .route("/api/windows", get(windows))
@@ -1134,6 +1142,165 @@ async fn scroll(State(st): State<AppState>, Json(r): Json<ScrollReq>) -> ApiResu
     {
         st.macros.record(Act::Scroll { target, notches });
     }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// A left button held down from the panel: pressed on a long press, moved as the finger moves, let go when it
+/// lifts. If the panel goes quiet (the phone lost its connection) it is let go by itself, so it is never left
+/// held. The panel sends a move at least every second while holding.
+#[derive(Default)]
+struct Hold {
+    /// Counts presses: the watchdog of an earlier one leaves a newer one alone
+    seq: u64,
+    on: Option<Held>,
+}
+
+struct Held {
+    /// Where the button went down (for recording)
+    from: Option<macros::Target>,
+    last: Instant,
+}
+
+const HOLD_QUIET: Duration = Duration::from_secs(3);
+
+#[derive(Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum HoldStep {
+    Down,
+    Move,
+    Up,
+}
+
+#[derive(Deserialize)]
+struct HoldReq {
+    #[serde(rename = "do")]
+    step: HoldStep,
+    x: i32,
+    y: i32,
+}
+
+async fn hold(State(st): State<AppState>, Json(r): Json<HoldReq>) -> ApiResult<Json<Value>> {
+    let (x, y) = (r.x, r.y);
+    match r.step {
+        HoldStep::Down => {
+            st.macros.interrupt();
+            let_go(&st).await;
+            let rec = st.macros.recording();
+            let pressed = st
+                .worker
+                .run(move |ctx| {
+                    // Read before the drag changes the screen
+                    let from = rec.then(|| macros::target_at(ctx, x, y));
+                    input::hold_down(x, y)?;
+                    Ok(from)
+                })
+                .await;
+            let from = match pressed {
+                Ok(from) => from,
+                Err(e) => {
+                    st.log.add(Msg::new("ev.dragged"), false);
+                    return Err(e.into());
+                }
+            };
+            let seq = {
+                let mut h = st.hold.lock().unwrap();
+                h.seq += 1;
+                h.on = Some(Held { from, last: Instant::now() });
+                h.seq
+            };
+            tokio::spawn(watch_hold(st.clone(), seq));
+        }
+        HoldStep::Move => {
+            match st.hold.lock().unwrap().on.as_mut() {
+                Some(held) => held.last = Instant::now(),
+                None => return Err(ApiError(StatusCode::CONFLICT, Msg::new("err.not_held"))),
+            }
+            st.worker.run(move |_| input::hold_move(x, y)).await?;
+        }
+        HoldStep::Up => {
+            let Some(held) = st.hold.lock().unwrap().on.take() else {
+                return Err(ApiError(StatusCode::CONFLICT, Msg::new("err.not_held")));
+            };
+            let rec = held.from.is_some();
+            let to = logged(&st, Msg::new("ev.dragged"), move |ctx| {
+                let to = rec.then(|| macros::target_at(ctx, x, y));
+                input::hold_up(x, y)?;
+                Ok(to)
+            })
+            .await?;
+            if let (Some(from), Some(to)) = (held.from, to) {
+                st.macros.record(Act::Drag { from, to });
+            }
+        }
+    }
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Lets go of a button the panel left held (a lost "up").
+async fn let_go(st: &AppState) {
+    if st.hold.lock().unwrap().on.take().is_some() {
+        let r = st.worker.run(|_| input::let_go()).await;
+        st.log.add(Msg::new("ev.drag_let_go"), r.is_ok());
+    }
+}
+
+async fn watch_hold(st: AppState, seq: u64) {
+    loop {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let quiet = {
+            let h = st.hold.lock().unwrap();
+            match &h.on {
+                Some(held) if h.seq == seq => held.last.elapsed() >= HOLD_QUIET,
+                _ => return,
+            }
+        };
+        if quiet {
+            let_go(&st).await;
+            return;
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct LiveReq {
+    /// Backspaces first: what the phone keyboard took back or corrected
+    #[serde(default)]
+    back: u32,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    enter: bool,
+}
+
+/// After this long without live typing, the next key starts a new line in the log.
+const LIVE_GAP: Duration = Duration::from_secs(60);
+
+/// Live typing: the panel sends each key as it is pressed (gathered while the previous request is on its way).
+async fn live(State(st): State<AppState>, Json(r): Json<LiveReq>) -> ApiResult<Json<Value>> {
+    if r.text.chars().count() > 5000 || r.back > 5000 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, Msg::new("err.text_too_long").with("max", 5000)));
+    }
+    st.macros.interrupt();
+    let (back, text, enter) = (r.back, r.text.clone(), r.enter);
+    let done = st
+        .worker
+        .run(move |_| {
+            for _ in 0..back {
+                input::hotkey("backspace")?;
+            }
+            input::type_text(&text)?;
+            if enter {
+                input::hotkey("enter")?;
+            }
+            Ok(())
+        })
+        .await;
+    let first = st.live_at.lock().unwrap().replace(Instant::now()).is_none_or(|t| t.elapsed() > LIVE_GAP);
+    if first || done.is_err() {
+        st.log.add(Msg::new("ev.live_typing"), done.is_ok());
+    }
+    done?;
+    st.macros.record_live(r.back, &r.text, r.enter);
     Ok(Json(json!({ "ok": true })))
 }
 

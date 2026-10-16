@@ -159,7 +159,12 @@
   .view:not(.loaded) { aspect-ratio: 16 / 9; }
   .stage { position: relative; }
   .stage img { display: block; width: 100%; height: auto; }
-  .tap { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: transparent; cursor: crosshair; touch-action: manipulation; }
+  .tap { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: transparent; cursor: crosshair; touch-action: manipulation; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  /* Quick mode: a ring where the finger tapped; filled while held (right-click or drag) */
+  .qmark { position: absolute; z-index: 2; left: 0; top: 0; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; border: 2px solid var(--acc); box-shadow: 0 0 0 1.5px rgba(0,0,0,.6); pointer-events: none; opacity: 0; }
+  .qmark.tap { animation: qtap .45s ease-out; }
+  .qmark.hold { opacity: 1; background: rgba(245,165,36,.2); transform: scale(1.15); }
+  @keyframes qtap { from { opacity: 1; transform: scale(.55); } to { opacity: 0; transform: scale(1.35); } }
   .aim { position: absolute; z-index: 1; width: 26px; height: 26px; transform: translate(-50%, -50%); pointer-events: none; }
   .aim::before { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 2px solid var(--acc); box-shadow: 0 0 0 1.5px rgba(0,0,0,.75), inset 0 0 0 1.5px rgba(0,0,0,.75); }
   .aim::after { content: ''; position: absolute; left: 50%; top: 50%; width: 4px; height: 4px; margin: -2px 0 0 -2px; border-radius: 50%; background: var(--acc); box-shadow: 0 0 0 1px rgba(0,0,0,.8); }
@@ -215,7 +220,7 @@
   .qtype .btn { flex: none; min-width: 76px; }
 
   /* ---- full screen ---- */
-  .fs { position: fixed; inset: 0; z-index: 20; overflow: hidden; background: #000; color: var(--fg); touch-action: none; -webkit-user-select: none; user-select: none; }
+  .fs { position: fixed; inset: 0; z-index: 20; overflow: hidden; background: #000; color: var(--fg); touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   .fsstage { position: absolute; inset: 0; touch-action: none; cursor: crosshair; }
   .fsstage img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; -webkit-user-drag: none; }
   .fsbar { position: absolute; z-index: 3; display: flex; align-items: center; gap: 8px; }
@@ -380,7 +385,45 @@
   .askbox { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 14px; padding: 16px; border-radius: 16px; border: 1px solid var(--line2); background: var(--panel); }
   .askbox p { margin: 0; font-size: 15px; line-height: 1.45; }
 
-  @media (prefers-reduced-motion: reduce) { .livedot.busy, .sq48.spin .ic, .macbar .recdot { animation: none; } }
+  /* ---- tablets (and wide windows) ----
+     Screen fills the whole page: the image takes all the room the controls leave and fits it.
+     The other tabs stay a readable column in the middle. */
+  @media (min-width: 700px) and (min-height: 560px) {
+    #app { max-width: none; }
+    main > .panel:not(#p-screen) { max-width: 760px; margin: 0 auto; }
+    nav.tabs { padding-left: max(6px, calc((100% - 760px) / 2)); padding-right: max(6px, calc((100% - 760px) / 2)); }
+    #p-screen { height: 100%; }
+    #p-screen .view { flex: 1 1 0; min-height: 0; display: flex; justify-content: center; align-items: flex-start; overflow: visible; background: none; box-shadow: none; container-type: size; }
+    #p-screen .view:not(.loaded) { aspect-ratio: auto; }
+    #p-screen .stage { flex: none; width: min(100cqw, calc(100cqh * var(--ar, 1.7778))); aspect-ratio: var(--ar, 1.7778); overflow: hidden; background: #000; box-shadow: 0 0 0 1px var(--line); }
+    #p-screen .stage img { height: 100%; }
+    #p-screen .grid4 { grid-template-columns: repeat(8, minmax(0, 1fr)); }
+  }
+  /* Sideways: tabs move to a rail on the left (the height goes to the image) and the controls sit in one row under it */
+  @media (min-width: 700px) and (min-height: 560px) and (min-aspect-ratio: 5/4) {
+    #app { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); }
+    #app > .top { grid-area: 1 / 2; }
+    #macBar { grid-area: 2 / 2; }
+    #offBanner { grid-area: 3 / 2; }
+    #main { grid-area: 4 / 2; }
+    nav.tabs { grid-area: 1 / 1 / -1 / 2; width: calc(76px + env(safe-area-inset-left)); display: flex; flex-direction: column; gap: 4px; padding: calc(12px + env(safe-area-inset-top)) 6px calc(12px + env(safe-area-inset-bottom)) calc(6px + env(safe-area-inset-left)); border-top: 0; border-right: 1px solid #23272D; }
+    nav.tabs button { flex: none; min-height: 62px; }
+    #p-screen { display: grid; grid-template-columns: minmax(0, 330px) minmax(180px, 1fr) minmax(0, 330px); grid-template-rows: minmax(0, 1fr) auto auto; gap: 8px 10px; }
+    #p-screen .view { grid-area: 1 / 1 / 2 / -1; align-items: center; margin-bottom: 2px; }
+    #p-screen .toolbar { grid-area: 2 / 1; }
+    #p-screen .toolbar .tool { height: 44px; }
+    #p-screen .toolbar .seg button { min-height: 36px; }
+    #p-screen .tstrip { grid-area: 2 / 2 / 4 / 3; height: auto; gap: 14px; padding: 8px 14px 8px 8px; }
+    #p-screen .loupe { width: 88px; height: 88px; border-radius: 12px; }
+    /* The strip is tall here: a long name takes two lines instead of being cut */
+    #p-screen .tname, #p-screen .tkind { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; overflow-wrap: anywhere; }
+    #p-screen .dock { display: contents; }
+    #p-screen .qtype { grid-area: 3 / 1; }
+    #p-screen .qtype .field, #p-screen .qtype .btn { min-height: 52px; }
+    #p-screen .grid4 { grid-area: 2 / 3 / 4 / 4; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  }
+
+  @media (prefers-reduced-motion: reduce) { .livedot.busy, .sq48.spin .ic, .macbar .recdot { animation: none; } .qmark.tap { animation-duration: .01s; } }
 </style>
 </head>
 <body>
@@ -447,6 +490,7 @@
           <img id="shot" class="shot-img" data-i18n-alt="screen.image">
           <button type="button" id="tap" class="tap" data-i18n-label="screen.tap"></button>
           <span id="aim" class="aim" hidden></span>
+          <span class="qmark" aria-hidden="true"></span>
           <div id="bubble" class="bubble" role="group" data-i18n-label="screen.bubble" hidden>
             <span class="grp acts"><button type="button" class="pri" data-act="click" data-i18n="act.click"></button><button type="button" data-act="double" data-i18n="act.double"></button><button type="button" data-act="right" data-i18n="act.right"></button></span>
             <span class="grp acts"><button type="button" data-act="up" data-i18n-label="act.up"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button><button type="button" data-act="down" data-i18n-label="act.down"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button></span>
@@ -707,6 +751,7 @@
   <div id="fsStage" class="fsstage" data-i18n-label="fs.stage">
     <img id="fsImg" class="shot-img" alt="">
   </div>
+  <span class="qmark" aria-hidden="true"></span>
   <div class="fsbar tl">
     <button type="button" id="fsExit" class="fsbtn glass" data-i18n-label="fs.exit"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
   </div>
@@ -865,7 +910,7 @@ function busy(on) { $$('.livedot').forEach(d => d.classList.toggle('busy', on));
 function authError() { const e = new Error(t('err.signin_required')); e.auth = true; return e; }
 
 // Clicking or typing from the panel while a macro runs would mix with its steps: ask to stop it first
-const INPUT_PATHS = new Set(['/api/click', '/api/type', '/api/key', '/api/scroll', '/api/focus', '/api/close', '/api/launch', '/api/lock', '/api/shutdown']);
+const INPUT_PATHS = new Set(['/api/click', '/api/type', '/api/key', '/api/scroll', '/api/live', '/api/hold', '/api/focus', '/api/close', '/api/launch', '/api/lock', '/api/shutdown']);
 
 async function api(path, body) {
   if (INPUT_PATHS.has(path) && S.mac.state.running) {
@@ -1129,6 +1174,8 @@ async function refresh(why) {
     S.scr = s.area; S.shotUrl = s.url; S.shotAt = Date.now();
     $$('.shot-img').forEach(img => { img.src = s.url; });
     $('#view').classList.add('loaded');
+    // On tablets the image box is sized from the shape of the frame (full screen or a window)
+    $('#view').style.setProperty('--ar', (s.area.w / s.area.h).toFixed(4));
     if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
     if (S.aimNext) { const p = S.aimNext; S.aimNext = null; setAim(p); } else placeAim();
     renderLiveDot();
@@ -1171,7 +1218,7 @@ $('#fgBtn').onclick = () => { S.wl = 'open'; store.set('wl', S.wl); showTab('win
 
 function renderQtPlaceholder() {
   const w = S.typeInto || (S.status && S.status.foreground);
-  const ph = w ? t('screen.type_to', { name: w }) : t('screen.type_ph');
+  const ph = S.quick ? (w ? t('screen.live_to', { name: w }) : t('screen.live_ph')) : w ? t('screen.type_to', { name: w }) : t('screen.type_ph');
   $('#qt').placeholder = ph; $('#fsQt').placeholder = ph;
 }
 
@@ -1224,6 +1271,7 @@ $$('[data-view]').forEach(b => b.onclick = () => {
 // ---------- aim, then choose ----------
 
 $('#tap').addEventListener('click', ev => {
+  if (quickOn()) return;   // quick mode reads the touches itself (see quickGestures)
   const b = $('#shot').getBoundingClientRect();
   tapAt((ev.clientX - b.left) / b.width, (ev.clientY - b.top) / b.height);
 });
@@ -1302,6 +1350,7 @@ function renderTarget(state) {
 // A long name is cut in the strip; a tap shows all of it
 $('#tstrip').onclick = $('#fsTarget').onclick = () => {
   if (S.aim && S.target) toast(S.target.name + (S.target.kind ? ' · ' + S.target.kind : ''));
+  else if (!S.aim && quickOn()) toast(t('target.quick_sub'));
 };
 
 async function loadLoupe(p, seq) {
@@ -1309,12 +1358,13 @@ async function loadLoupe(p, seq) {
     const s = await fetchShot({ rx: p.x - LOUPE / 2, ry: p.y - LOUPE / 2, rw: LOUPE, rh: LOUPE, q: 85 });
     if (seq !== S.aimSeq) { URL.revokeObjectURL(s.url); return; }
     const img = $('#loupe'), old = img.src;
-    const k = 54 / LOUPE;
+    // In percent of the magnifier, which is larger on tablets
+    const k = 100 / LOUPE;
     // The region shrinks when clipped at the screen edge; keep the target centred in the magnifier
-    img.style.left = ((s.area.x - (p.x - LOUPE / 2)) * k) + 'px';
-    img.style.top = ((s.area.y - (p.y - LOUPE / 2)) * k) + 'px';
-    img.style.width = (s.area.w * k) + 'px';
-    img.style.height = (s.area.h * k) + 'px';
+    img.style.left = ((s.area.x - (p.x - LOUPE / 2)) * k) + '%';
+    img.style.top = ((s.area.y - (p.y - LOUPE / 2)) * k) + '%';
+    img.style.width = (s.area.w * k) + '%';
+    img.style.height = (s.area.h * k) + '%';
     img.src = s.url;
     if (old.startsWith('blob:')) URL.revokeObjectURL(old);
   } catch (_) {}
@@ -1362,9 +1412,178 @@ async function sendText(text, enter) {
 $('#qtForm').addEventListener('submit', async e => {
   e.preventDefault();
   const inp = $('#qt');
+  if (S.quick) { liveEnter(inp); return; }
   if (!inp.value) { inp.focus(); return; }
   if (await sendText(inp.value, false)) { inp.value = ''; inp.blur(); }
 });
+
+// ---------- quick mode ----------
+
+// Keys typed live and a held drag go out one request at a time, in order. What piles up while one is on its
+// way goes together: typed letters join, drag moves keep only the newest.
+const LQ = { ops: [], busy: false, broken: false, t: 0 };
+function liveSend(op) {
+  const last = LQ.ops[LQ.ops.length - 1];
+  if (last && op.hold === 'move' && last.hold === 'move') LQ.ops[LQ.ops.length - 1] = op;
+  else if (last && op.type && last.type && !last.enter) {
+    const chars = [...last.text], take = Math.min(op.back, chars.length);
+    last.back += op.back - take;
+    last.text = chars.slice(0, chars.length - take).join('') + op.text;
+    last.enter = op.enter;
+  } else LQ.ops.push(op);
+  if (!LQ.busy) pumpLive();
+}
+async function pumpLive() {
+  LQ.busy = true;
+  while (LQ.ops.length) {
+    const op = LQ.ops.shift();
+    try {
+      if (op.type) await api('/api/live', { back: op.back, text: op.text, enter: op.enter });
+      else if (op.key) await api('/api/key', { combo: op.key });
+      else {
+        // After a failed press the rest of that drag is not sent
+        if (op.hold === 'down') LQ.broken = false; else if (LQ.broken) continue;
+        await api('/api/hold', { do: op.hold, x: op.x, y: op.y });
+      }
+    } catch (e) {
+      if (op.hold) LQ.broken = true;
+      // Keys typed after a failure are dropped rather than arriving with a gap
+      LQ.ops = LQ.ops.filter(o => o.hold);
+      if (!e.auth) toast(e.message, true);
+    }
+  }
+  LQ.busy = false;
+  clearTimeout(LQ.t);
+  LQ.t = setTimeout(() => { refresh(); status(); }, 400);
+}
+
+// Live typing: the box only catches keys. Each change is sent as Backspaces for what went away and the new
+// letters, so the phone keyboard's corrections and suggestions come out right on the computer.
+function liveReset(inp) { inp.value = ''; inp._prev = ''; }
+function liveEnter(inp) { liveSend({ type: true, back: 0, text: '', enter: true }); liveReset(inp); }
+const LIVE_KEYS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Tab: 'tab', Delete: 'delete', Escape: 'esc', Home: 'home', End: 'end', PageUp: 'pageup', PageDown: 'pagedown' };
+[$('#qt'), $('#fsQt')].forEach(inp => {
+  inp._prev = '';
+  inp.addEventListener('input', () => {
+    if (!S.quick) return;
+    const prev = [...inp._prev], cur = [...inp.value];
+    let same = 0;
+    while (same < prev.length && same < cur.length && prev[same] === cur[same]) same++;
+    const back = prev.length - same, text = cur.slice(same).join('');
+    inp._prev = inp.value;
+    if (back || text) liveSend({ type: true, back, text, enter: false });
+  });
+  inp.addEventListener('keydown', e => {
+    if (!S.quick || e.isComposing || e.keyCode === 229) return;
+    // Nothing left in the box: Backspace still deletes on the computer
+    if (e.key === 'Backspace' && !inp.value) { e.preventDefault(); liveSend({ type: true, back: 1, text: '', enter: false }); return; }
+    // A hardware keyboard's arrows, Tab, Delete ... and shortcuts go as keys; the box starts over after them
+    let combo = LIVE_KEYS[e.key];
+    if (!combo && (e.ctrlKey || e.altKey || e.metaKey) && e.key.length === 1) combo = e.key.toLowerCase();
+    if (!combo) return;
+    e.preventDefault();
+    const mods = [e.ctrlKey && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift', e.metaKey && 'win'].filter(Boolean);
+    liveSend({ key: [...mods, combo].join('+') });
+    liveReset(inp);
+  });
+});
+
+// Touches on the image in quick mode. Tap: click, after a short wait in case a second tap follows · two taps:
+// double-click · hold still for half a second: lifting right-clicks, moving drags with the left button held.
+const QUICK = { dbl: 250, hold: 500, slop: 10, near: 32 };
+function quickOn() { return S.quick && !S.mac.pick; }
+
+// Point on the computer under the finger; outside the image null, or the nearest edge with `clamp`
+function pcAt(img, e, clamp) {
+  const r = img.getBoundingClientRect();
+  if (!S.scr || !r.width) return null;
+  let fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+  if (clamp) { fx = Math.max(0, Math.min(1, fx)); fy = Math.max(0, Math.min(1, fy)); }
+  else if (!(fx >= 0 && fy >= 0 && fx <= 1 && fy <= 1)) return null;
+  return { x: Math.min(S.scr.x + S.scr.w - 1, Math.round(S.scr.x + fx * S.scr.w)), y: Math.min(S.scr.y + S.scr.h - 1, Math.round(S.scr.y + fy * S.scr.h)) };
+}
+
+function quickGestures(img, host) {
+  let g = null, pend = null;   // the press under way; a tap waiting to see if a second follows
+  const mark = (e, kind) => {
+    const h = host(), m = $('.qmark', h), r = h.getBoundingClientRect();
+    m.style.left = (e.clientX - r.left) + 'px'; m.style.top = (e.clientY - r.top) + 'px';
+    m.className = 'qmark';
+    if (kind) { void m.offsetWidth; m.classList.add(kind); }   // restarts the tap animation
+  };
+  const stopKeep = () => { if (g) clearInterval(g.keep); };
+  return {
+    active: () => !!g,
+    holding: () => !!(g && g.hold),
+    down(e) {
+      const p = pcAt(img(), e);
+      if (!p) return;
+      g = { p, last: p, sx: e.clientX, sy: e.clientY, hold: false, drag: false, second: null };
+      if (pend) {
+        clearTimeout(pend.timer);
+        if (Math.hypot(e.clientX - pend.x, e.clientY - pend.y) < QUICK.near) g.second = pend; else act('click', pend.p);
+        pend = null;
+      }
+      g.timer = setTimeout(() => {
+        if (!g) return;
+        if (g.second) { act('click', g.second.p); g.second = null; }
+        g.hold = true;
+        if (navigator.vibrate) navigator.vibrate(15);
+        mark({ clientX: g.sx, clientY: g.sy }, 'hold');
+      }, QUICK.hold);
+    },
+    // Before the hold starts, moving gives the touch up (the page scrolls, or full screen pans)
+    move(e) {
+      if (!g) return;
+      const moved = Math.hypot(e.clientX - g.sx, e.clientY - g.sy) > QUICK.slop;
+      if (!g.hold) { if (moved) this.cancel(); return; }
+      if (!g.drag && !moved) return;
+      if (!g.drag) {
+        g.drag = true;
+        liveSend({ hold: 'down', ...g.p });
+        // Tells the computer the finger is still there even if it does not move
+        g.keep = setInterval(() => { if (g) liveSend({ hold: 'move', ...g.last }); }, 1000);
+      }
+      g.last = pcAt(img(), e, true) || g.last;
+      liveSend({ hold: 'move', ...g.last });
+      mark(e, 'hold');
+    },
+    up(e) {
+      if (!g) return;
+      clearTimeout(g.timer); stopKeep();
+      const c = g; g = null;
+      if (c.drag) { liveSend({ hold: 'up', ...(pcAt(img(), e, true) || c.last) }); mark(e); toast(t('act.done_drag')); return; }
+      if (c.hold) { mark(e); act('right', c.p); return; }
+      mark(e, 'tap');
+      if (c.second) { act('double', c.second.p); return; }
+      pend = { p: c.p, x: e.clientX, y: e.clientY, timer: setTimeout(() => { const p = pend.p; pend = null; act('click', p); }, QUICK.dbl) };
+    },
+    // The touch was taken away (scrolling, a second finger, leaving the view): a held button is let go
+    cancel() {
+      if (!g) return;
+      clearTimeout(g.timer); stopKeep();
+      if (g.drag) liveSend({ hold: 'up', ...g.last });
+      if (g.second) act('click', g.second.p);
+      if (g.hold) mark({ clientX: g.sx, clientY: g.sy });
+      g = null;
+    },
+  };
+}
+
+const QV = quickGestures(() => $('#shot'), () => $('#view .stage'));
+(() => {
+  const tap = $('#tap');
+  tap.addEventListener('pointerdown', e => { if (quickOn() && e.isPrimary && e.button === 0) { tap.setPointerCapture(e.pointerId); QV.down(e); } });
+  tap.addEventListener('pointermove', e => { if (e.isPrimary) QV.move(e); });
+  tap.addEventListener('pointerup', e => { if (e.isPrimary) QV.up(e); });
+  tap.addEventListener('pointercancel', () => QV.cancel());
+  // Once the hold has started the finger drags on the computer, not the page
+  tap.addEventListener('touchmove', e => { if (QV.holding()) e.preventDefault(); }, { passive: false });
+  tap.addEventListener('contextmenu', e => { if (quickOn()) e.preventDefault(); });
+})();
+const QF = quickGestures(() => $('#fsImg'), () => $('#fs'));
+function quickStop() { QV.cancel(); QF.cancel(); }
+document.addEventListener('visibilitychange', () => { if (document.hidden) quickStop(); });
 
 // ---------- keys ----------
 
@@ -1669,8 +1888,14 @@ function renderSession() {
   $('#sessLeft').textContent = line;
 }
 
-function renderQuick() { $('#quickSw').setAttribute('aria-checked', String(S.quick)); renderTarget(); }
-$('#quickSw').onclick = () => { S.quick = !S.quick; store.set('quick', S.quick); if (S.quick) clearAim(); renderQuick(); };
+function renderQuick() {
+  $('#quickSw').setAttribute('aria-checked', String(S.quick));
+  // Live typing has no Type button: the phone keyboard's Enter presses Enter
+  $$('#qtForm .btn, #fsType .btn').forEach(b => { b.hidden = S.quick; });
+  [$('#qt'), $('#fsQt')].forEach(inp => { liveReset(inp); inp.setAttribute('enterkeyhint', S.quick ? 'enter' : 'send'); });
+  renderQtPlaceholder(); renderTarget();
+}
+$('#quickSw').onclick = () => { S.quick = !S.quick; store.set('quick', S.quick); if (S.quick) clearAim(); else quickStop(); renderQuick(); };
 
 const LOG_SHORT = 5;
 
@@ -1821,6 +2046,7 @@ function enterFs(real) {
 
 function exitFs() {
   if (!S.fs) return;
+  QF.cancel();
   S.fs = false; S.fsAuto = false;
   $('#fs').hidden = true; showFsType(false);
   $('#view .stage').append($('#aim'), $('#bubble'));
@@ -1860,12 +2086,15 @@ LAND.addEventListener('change', () => {
   stage.addEventListener('pointerdown', e => {
     stage.setPointerCapture(e.pointerId);
     P.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (P.size === 1) G = { tap: true, t: Date.now(), sx: e.clientX, sy: e.clientY, x0: Z.x, y0: Z.y };
-    else if (P.size === 2) G = pinch();
+    if (P.size === 1) { G = { tap: true, t: Date.now(), sx: e.clientX, sy: e.clientY, x0: Z.x, y0: Z.y }; if (quickOn() && e.button === 0) QF.down(e); }
+    else if (P.size === 2) { QF.cancel(); G = pinch(); }
   });
   stage.addEventListener('pointermove', e => {
     if (!P.has(e.pointerId) || !G) return;
     P.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    // Held: the finger drags on the computer; a quick move before that pans as usual
+    if (QF.holding()) { QF.move(e); return; }
+    QF.move(e);
     if (G.pinch && P.size >= 2) {
       const [a, b] = [...P.values()];
       const m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
@@ -1881,7 +2110,8 @@ LAND.addEventListener('change', () => {
   const end = e => {
     if (!P.has(e.pointerId)) return;
     P.delete(e.pointerId);
-    if (e.type === 'pointerup' && G && G.tap && !G.pinch && !P.size && Date.now() - G.t < 600) {
+    if (QF.active()) { if (e.type === 'pointerup' && !P.size) QF.up(e); else QF.cancel(); }
+    else if (e.type === 'pointerup' && G && G.tap && !G.pinch && !P.size && Date.now() - G.t < 600 && !quickOn()) {
       const r = $('#fsImg').getBoundingClientRect();
       tapAt((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
     }
@@ -1890,6 +2120,7 @@ LAND.addEventListener('change', () => {
   };
   stage.addEventListener('pointerup', end);
   stage.addEventListener('pointercancel', end);
+  stage.addEventListener('contextmenu', e => e.preventDefault());
   stage.addEventListener('wheel', e => { e.preventDefault(); fsZoom(Z.k * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY); }, { passive: false });
 })();
 
@@ -1902,6 +2133,7 @@ $('#fsKb').onclick = () => showFsType($('#fsType').hidden);
 $('#fsType').addEventListener('submit', async e => {
   e.preventDefault();
   const inp = $('#fsQt');
+  if (S.quick) { liveEnter(inp); return; }
   if (!inp.value) { inp.focus(); return; }
   if (await sendText(inp.value, false)) { inp.value = ''; showFsType(false); }
 });
@@ -2505,6 +2737,7 @@ async function finishRecording(keep) {
 
 function showTab(name) {
   if (S.tab === 'keyboard' && name !== 'keyboard') clearMods();
+  if (name !== 'screen') QV.cancel();
   // Leaving Screen while choosing a target for a macro gives up the choice
   if (S.mac.pick && name !== 'screen') { S.mac.pick = null; renderMacBar(); }
   S.tab = name;

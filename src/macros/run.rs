@@ -660,17 +660,16 @@ impl Engine {
 
     /// Adds what the panel just did. The same key pressed again becomes one step with a count.
     pub fn record(&self, act: Act) {
-        let mut rec = self.rec.lock().unwrap();
-        let Some(r) = rec.as_mut() else { return };
-        if let (Act::Key { combo, .. }, Some(Step { act: Act::Key { combo: last, times }, .. })) = (&act, r.steps.last_mut())
-            && combo == last
-            && *times < 100
-        {
-            *times += 1;
-            return;
+        if let Some(r) = self.rec.lock().unwrap().as_mut() {
+            add_step(&mut r.steps, act);
         }
-        if r.steps.len() < MAX_STEPS {
-            r.steps.push(Step { act, go_on: false });
+    }
+
+    /// Live typing from the panel (each key sent as it is pressed): letters join the text typed just before
+    /// and corrections are taken out of it, so a typed sentence is one step however it was typed.
+    pub fn record_live(&self, back: u32, text: &str, enter: bool) {
+        if let Some(r) = self.rec.lock().unwrap().as_mut() {
+            add_live(&mut r.steps, back, text, enter);
         }
     }
 
@@ -822,6 +821,57 @@ pub fn target_at(ctx: &mut Ctx, x: i32, y: i32) -> Target {
     t
 }
 
+/// Adds a step; the same key pressed again becomes one step with a count.
+fn add_step(steps: &mut Vec<Step>, act: Act) {
+    if let (Act::Key { combo, .. }, Some(Step { act: Act::Key { combo: last, times }, .. })) = (&act, steps.last_mut())
+        && combo == last
+        && *times < 100
+    {
+        *times += 1;
+        return;
+    }
+    if steps.len() < MAX_STEPS {
+        steps.push(Step { act, go_on: false });
+    }
+}
+
+/// `back` Backspaces, then `text`, then Enter if `enter`; see `Engine::record_live`.
+fn add_live(steps: &mut Vec<Step>, back: u32, text: &str, enter: bool) {
+    let mut back = back as usize;
+    if back > 0
+        && let Some(Step { act: Act::Type { text: last, enter: false }, .. }) = steps.last_mut()
+    {
+        let n = last.chars().count();
+        let keep = n.saturating_sub(back);
+        back -= n - keep;
+        *last = last.chars().take(keep).collect();
+        if keep == 0 {
+            steps.pop();
+        }
+    }
+    if back > 0 {
+        for _ in 0..back.min(100) {
+            add_step(steps, Act::Key { combo: "backspace".into(), times: 1 });
+        }
+    }
+    if !text.is_empty() {
+        match steps.last_mut() {
+            Some(Step { act: Act::Type { text: last, enter: false }, .. })
+                if last.chars().count() + text.chars().count() <= MAX_TEXT =>
+            {
+                last.push_str(text)
+            }
+            _ => add_step(steps, Act::Type { text: text.into(), enter: false }),
+        }
+    }
+    if enter {
+        match steps.last_mut() {
+            Some(Step { act: Act::Type { enter: e @ false, .. }, .. }) => *e = true,
+            _ => add_step(steps, Act::Key { combo: "enter".into(), times: 1 }),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -832,5 +882,20 @@ mod tests {
         assert_eq!(point_in(&r, 0.5, 0.5), (110, 55));
         assert_eq!(point_in(&r, 0.0, 1.0), (100, 60));
         assert_eq!(point_in(&r, 2.0, -1.0), (120, 50));
+    }
+
+    #[test]
+    fn live_typing_is_one_step() {
+        let mut steps = Vec::new();
+        for (back, text, enter) in [(0, "Mer", false), (0, "habq", false), (1, "a", false), (0, " dünya", false), (0, "", true)] {
+            add_live(&mut steps, back, text, enter);
+        }
+        assert!(matches!(&steps[..], [Step { act: Act::Type { text, enter: true }, .. }] if text == "Merhaba dünya"));
+        // Taking back more than was typed presses Backspace for the rest; Enter after a key is a key
+        add_live(&mut steps, 0, "ab", false);
+        add_live(&mut steps, 4, "", true);
+        assert_eq!(steps.len(), 3);
+        assert!(matches!(&steps[1].act, Act::Key { combo, times: 2 } if combo == "backspace"));
+        assert!(matches!(&steps[2].act, Act::Key { combo, times: 1 } if combo == "enter"));
     }
 }
