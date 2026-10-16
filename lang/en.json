@@ -113,6 +113,7 @@
   "key.down_label": "Down arrow",
   "key.left_label": "Left arrow",
   "key.right_label": "Right arrow",
+  "strip.label": "Keys for the computer",
   "el.filter_ph": "Filter by name",
   "el.filter_label": "Filter elements by name",
   "el.refresh": "Refresh the list",

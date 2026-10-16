@@ -215,7 +215,16 @@
   .tkind { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tstrip.idle .tname { font-size: 15px; font-weight: 500; color: var(--fg2); }
   .dock { flex: none; display: flex; flex-direction: column; gap: 8px; }
-  .qtype { display: flex; gap: 8px; }
+  .qtype { position: relative; display: flex; gap: 8px; }
+  /* Keys the phone keyboard lacks, over the typing box while it has focus (under it in full screen) */
+  .kstrip { position: absolute; z-index: 6; left: 0; right: 0; bottom: calc(100% + 6px); display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: var(--panel); box-shadow: 0 0 0 1px var(--line2), 0 6px 18px rgba(0,0,0,.55); touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  .kstrip button { flex: 1 1 auto; height: 40px; padding: 0 4px; border: 0; border-radius: 9px; background: transparent; color: var(--fg); font-family: var(--mono); font-size: 13px; white-space: nowrap; }
+  .kstrip .arr { font-size: 17px; }
+  @media (max-width: 359px) { .kstrip button { padding: 0 2px; font-size: 12px; } .kstrip .arr { font-size: 15px; } }
+  .kstrip button:active { background: #2A2F36; }
+  .kstrip button[aria-pressed="true"] { background: var(--acc-soft); color: var(--acc); box-shadow: inset 0 0 0 1px var(--acc); }
+  .kstrip .ksep { flex: none; width: 1px; margin: 7px 1px; background: var(--line2); }
+  .fstype .kstrip { top: calc(100% + 6px); bottom: auto; }
   .qtype .field { flex: 1; min-width: 0; min-height: 48px; text-overflow: ellipsis; }
   .qtype .btn { flex: none; min-width: 76px; }
 
@@ -517,6 +526,19 @@
         <form id="qtForm" class="qtype">
           <input id="qt" class="field" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" data-i18n-label="screen.type_label">
           <button type="submit" class="btn primary" data-i18n="common.type"></button>
+          <div id="kstrip" class="kstrip" role="toolbar" data-i18n-label="strip.label" hidden>
+            <button type="button" data-sk="esc"></button>
+            <button type="button" data-sk="tab"></button>
+            <button type="button" class="arr" data-sk="left" data-i18n-label="key.left_label"></button>
+            <button type="button" class="arr" data-sk="up" data-i18n-label="key.up_label"></button>
+            <button type="button" class="arr" data-sk="down" data-i18n-label="key.down_label"></button>
+            <button type="button" class="arr" data-sk="right" data-i18n-label="key.right_label"></button>
+            <span class="ksep" aria-hidden="true"></span>
+            <button type="button" data-smod="ctrl" aria-pressed="false"></button>
+            <button type="button" data-smod="alt" aria-pressed="false"></button>
+            <button type="button" data-smod="shift" aria-pressed="false"></button>
+            <button type="button" data-smod="win" aria-pressed="false"></button>
+          </div>
         </form>
         <div class="grid4">
           <button type="button" class="key" data-k="enter"></button>
@@ -1515,7 +1537,7 @@ $('#qtForm').addEventListener('submit', async e => {
   const inp = $('#qt');
   if (S.quick) { liveEnter(inp); return; }
   if (!inp.value) { inp.focus(); return; }
-  if (await sendText(inp.value, false)) { inp.value = ''; inp.blur(); }
+  if (await sendText(inp.value, false)) { liveReset(inp); inp.blur(); }
 });
 
 // ---------- quick mode ----------
@@ -1566,13 +1588,18 @@ const LIVE_KEYS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', Arrow
 [$('#qt'), $('#fsQt')].forEach(inp => {
   inp._prev = '';
   inp.addEventListener('input', () => {
-    if (!S.quick) return;
     const prev = [...inp._prev], cur = [...inp.value];
     let same = 0;
     while (same < prev.length && same < cur.length && prev[same] === cur[same]) same++;
     const back = prev.length - same, text = cur.slice(same).join('');
+    // With Ctrl, Alt ... on in the key strip a letter is a shortcut (Ctrl + C ...), not text
+    if (KS.mods.size && !back && [...text].length === 1 && text.trim()) {
+      inp.value = inp._prev;
+      stripKey(text.toLowerCase());
+      return;
+    }
     inp._prev = inp.value;
-    if (back || text) liveSend({ type: true, back, text, enter: false });
+    if (S.quick && (back || text)) liveSend({ type: true, back, text, enter: false });
   });
   inp.addEventListener('keydown', e => {
     if (!S.quick || e.isComposing || e.keyCode === 229) return;
@@ -1587,6 +1614,52 @@ const LIVE_KEYS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', Arrow
     liveSend({ key: [...mods, combo].join('+') });
     liveReset(inp);
   });
+});
+
+// ---------- key strip ----------
+// While the typing box has focus on a touch screen, a strip over it (under it in full screen) offers keys the
+// phone keyboard lacks. Ctrl, Alt, Shift and Win are one-shot: they go with the next key, or with the next
+// letter typed in the box. The box keeps its focus, so the phone keyboard stays open.
+const KS = { mods: new Set(), inp: null, el: $('#kstrip'), touch: null };
+const COARSE = matchMedia('(pointer: coarse)');
+$$('#kstrip button').forEach(b => { b.textContent = prettyCombo(b.dataset.sk || b.dataset.smod); });
+
+function stripShow(inp) {
+  if (!COARSE.matches) return;
+  KS.inp = inp;
+  inp.form.append(KS.el);
+  KS.el.hidden = false;
+}
+function stripHide() { KS.el.hidden = true; KS.inp = null; stripMods(null); }
+// Turns a modifier on or off; null turns them all off
+function stripMods(m) {
+  if (m === null) KS.mods.clear(); else if (KS.mods.has(m)) KS.mods.delete(m); else KS.mods.add(m);
+  $$('#kstrip [data-smod]').forEach(b => b.setAttribute('aria-pressed', String(KS.mods.has(b.dataset.smod))));
+}
+// A key with the modifiers that are on; while typing live it keeps its place among the letters
+function stripKey(k) {
+  const combo = [...MODS.filter(m => KS.mods.has(m)), k].join('+');
+  stripMods(null);
+  if (S.quick && KS.inp) { liveSend({ key: combo }); liveReset(KS.inp); } else sendKey(combo, false);
+}
+function stripPress(b) {
+  if (!b) return;
+  if (b.dataset.smod) stripMods(b.dataset.smod); else stripKey(b.dataset.sk);
+}
+// A tap on the strip must not take the focus from the box (that would close the phone keyboard): the touch
+// is handled here, and lifting the finger on the same button presses it.
+KS.el.addEventListener('touchstart', e => { e.preventDefault(); KS.touch = e.target.closest('button'); }, { passive: false });
+KS.el.addEventListener('touchend', e => {
+  e.preventDefault();
+  const tp = e.changedTouches[0], under = document.elementFromPoint(tp.clientX, tp.clientY);
+  if (KS.touch && under && under.closest('button') === KS.touch) stripPress(KS.touch);
+  KS.touch = null;
+}, { passive: false });
+KS.el.addEventListener('mousedown', e => e.preventDefault());
+KS.el.addEventListener('click', e => stripPress(e.target.closest('button')));
+[$('#qt'), $('#fsQt')].forEach(inp => {
+  inp.addEventListener('focus', () => stripShow(inp));
+  inp.addEventListener('blur', () => { if (KS.inp === inp) stripHide(); });
 });
 
 // Touches on the image in quick mode. Tap: click, after a short wait in case a second tap follows · two taps:
@@ -2230,7 +2303,7 @@ $('#fsType').addEventListener('submit', async e => {
   const inp = $('#fsQt');
   if (S.quick) { liveEnter(inp); return; }
   if (!inp.value) { inp.focus(); return; }
-  if (await sendText(inp.value, false)) { inp.value = ''; showFsType(false); }
+  if (await sendText(inp.value, false)) { liveReset(inp); showFsType(false); }
 });
 
 // ---------- a question with two answers ----------

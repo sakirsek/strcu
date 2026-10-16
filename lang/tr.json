@@ -110,6 +110,7 @@
   "key.down_label": "Aşağı ok",
   "key.left_label": "Sol ok",
   "key.right_label": "Sağ ok",
+  "strip.label": "Bilgisayara gidecek tuşlar",
   "el.filter_ph": "Ada göre süz",
   "el.filter_label": "Öğeleri ada göre süz",
   "el.refresh": "Listeyi yenile",
