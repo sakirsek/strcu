@@ -6,13 +6,15 @@
 
 use std::process::Command;
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Serialize;
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx};
 use windows::Win32::UI::Shell::{
     BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem, SIGDN,
-    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING,
+    SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING, ShellExecuteW,
 };
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::i18n::Msg;
 
@@ -106,9 +108,82 @@ pub fn open_url(url: &str) -> Result<()> {
     Ok(())
 }
 
+/// Opens a file, a folder or a web page the way a double-click would (macros). `check_open` refuses programs
+/// and scripts, so nothing runs that is not already an app.
+pub fn open(path: &str) -> Result<()> {
+    check_open(path)?;
+    let p = HSTRING::from(path.trim());
+    let opened = std::thread::spawn(move || unsafe {
+        let com = CoInitializeEx(None, COINIT_APARTMENTTHREADED).is_ok();
+        let r = ShellExecuteW(None, w!("open"), &p, PCWSTR::null(), PCWSTR::null(), SW_SHOWNORMAL);
+        if com {
+            CoUninitialize();
+        }
+        r.0 as isize > 32
+    })
+    .join()
+    .unwrap_or(false);
+    if !opened {
+        bail!(Msg::new("err.open_failed").with("path", path.trim()));
+    }
+    Ok(())
+}
+
+/// What a macro may open: a web page (http, https), or a file or folder by its full path that is not a
+/// program, a script or a shortcut.
+pub fn check_open(path: &str) -> std::result::Result<(), Msg> {
+    let p = path.trim();
+    if p.len() > 1000 {
+        return Err(Msg::new("err.open_path"));
+    }
+    let lower = p.to_ascii_lowercase();
+    if lower.starts_with("https://") || lower.starts_with("http://") {
+        return Ok(());
+    }
+    let b = p.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && matches!(b[2], b'\\' | b'/');
+    // A colon after the drive would name a hidden stream of the file
+    if !(drive || p.starts_with(r"\\")) || p[2..].contains(':') {
+        return Err(Msg::new("err.open_path"));
+    }
+    // Windows ignores trailing dots and spaces: "app.exe." opens app.exe
+    let name = p.trim_end_matches(['\\', '/', '.', ' ']).rsplit(['\\', '/']).next().unwrap_or_default();
+    match name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()) {
+        Some(ext) if is_program(&ext) => Err(Msg::new("err.open_program").with("ext", ext)),
+        _ => Ok(()),
+    }
+}
+
+fn is_program(ext: &str) -> bool {
+    const KINDS: &[&str] = &[
+        "exe", "com", "bat", "cmd", "ps1", "psm1", "psd1", "vbs", "vbe", "js", "jse", "wsf", "wsh", "msi", "msp", "mst",
+        "scr", "pif", "lnk", "url", "hta", "cpl", "msc", "reg", "jar", "appref-ms", "application", "inf", "scf", "sct",
+        "gadget", "settingcontent-ms", "library-ms", "search-ms",
+    ];
+    let pathext = std::env::var("PATHEXT").unwrap_or_default().to_ascii_lowercase();
+    KINDS.contains(&ext) || pathext.split(';').any(|e| !e.is_empty() && e.trim_start_matches('.') == ext)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::is_app;
+    use super::{check_open, is_app};
+
+    #[test]
+    fn what_macros_may_open() {
+        assert!(check_open("https://example.com/a?b=c").is_ok());
+        assert!(check_open(r"C:\Users\me\Documents\rapor.xlsx").is_ok());
+        assert!(check_open(r"D:\Fotoğraflar").is_ok());
+        assert!(check_open(r"\\nas\paylaşım\liste.pdf").is_ok());
+        assert_eq!(check_open(r"C:\Windows\notepad.exe").unwrap_err().code, "err.open_program");
+        assert_eq!(check_open(r"C:\x\run.BAT").unwrap_err().code, "err.open_program");
+        assert_eq!(check_open(r"C:\x\app.exe. ").unwrap_err().code, "err.open_program");
+        assert_eq!(check_open(r"C:\x\link.lnk").unwrap_err().code, "err.open_program");
+        assert_eq!(check_open(r"C:\x\a.txt:hidden.exe").unwrap_err().code, "err.open_path");
+        assert_eq!(check_open("notepad").unwrap_err().code, "err.open_path");
+        assert_eq!(check_open("ms-settings:display").unwrap_err().code, "err.open_path");
+        assert_eq!(check_open("file:///C:/x/app.exe").unwrap_err().code, "err.open_path");
+        assert_eq!(check_open(r"/e,C:\").unwrap_err().code, "err.open_path");
+    }
 
     #[test]
     fn non_apps_are_filtered_out() {

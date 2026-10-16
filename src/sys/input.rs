@@ -7,13 +7,13 @@
 use std::{thread, time::Duration};
 
 use anyhow::{Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use windows::Win32::UI::Input::KeyboardAndMouse::*;
 use windows::Win32::UI::WindowsAndMessaging::SetCursorPos;
 
 use crate::i18n::Msg;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, clap::ValueEnum)]
 #[serde(rename_all = "lowercase")]
 pub enum Button {
     Left,
@@ -65,6 +65,61 @@ pub fn click(x: i32, y: i32, button: Button, count: u32) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Holds the left button at `from`, moves to `to` in small steps and lets go there. The button is let go even
+/// if a move fails, so it is never left held down.
+pub fn drag(from: (i32, i32), to: (i32, i32)) -> Result<()> {
+    move_to(from.0, from.1)?;
+    thread::sleep(Duration::from_millis(40));
+    send(&[mouse(MOUSEEVENTF_LEFTDOWN, 0)])?;
+    thread::sleep(Duration::from_millis(80));
+    const STEPS: i32 = 12;
+    let moved = (1..=STEPS).try_for_each(|i| {
+        let x = from.0 + (to.0 - from.0) * i / STEPS;
+        let y = from.1 + (to.1 - from.1) * i / STEPS;
+        thread::sleep(Duration::from_millis(20));
+        send(&[move_abs(x, y)])
+    });
+    thread::sleep(Duration::from_millis(80));
+    let up = send(&[mouse(MOUSEEVENTF_LEFTUP, 0)]);
+    moved.and(up)
+}
+
+/// A real mouse move (some apps only start dragging on one), in the whole desktop's 0..65535 coordinates.
+fn move_abs(x: i32, y: i32) -> INPUT {
+    let vs = super::screen::virtual_screen();
+    let scale = |v: i32, origin: i32, size: i32| ((v - origin) as i64 * 65535 / (size - 1).max(1) as i64) as i32;
+    INPUT {
+        r#type: INPUT_MOUSE,
+        Anonymous: INPUT_0 {
+            mi: MOUSEINPUT {
+                dx: scale(x, vs.x, vs.w),
+                dy: scale(y, vs.y, vs.h),
+                mouseData: 0,
+                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+/// Milliseconds since Windows started (wraps after 49.7 days; compare with `wrapping_sub`).
+pub fn tick() -> u32 {
+    unsafe { windows::Win32::System::SystemInformation::GetTickCount() }
+}
+
+/// When the last mouse or keyboard input arrived, on the `tick` clock. Counts input sent by programs too.
+pub fn last_input_tick() -> u32 {
+    let mut li = LASTINPUTINFO { cbSize: size_of::<LASTINPUTINFO>() as u32, dwTime: 0 };
+    let _ = unsafe { GetLastInputInfo(&mut li) };
+    li.dwTime
+}
+
+/// Milliseconds since the last mouse or keyboard input.
+pub fn idle_ms() -> u32 {
+    tick().wrapping_sub(last_input_tick())
 }
 
 /// Positive `notches` scrolls up, negative down. One notch = 120 units.

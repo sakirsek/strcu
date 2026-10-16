@@ -6,7 +6,7 @@ use std::{ffi::c_void, thread, time::Duration};
 
 use anyhow::{Result, bail};
 use serde::Serialize;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, RECT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
 use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
@@ -16,7 +16,7 @@ use windows::Win32::System::Threading::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_MENU;
 use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{BOOL, HSTRING, PWSTR};
+use windows::core::{BOOL, HSTRING, PWSTR, w};
 
 use super::{Rect, input, wide_to_string};
 use crate::i18n::Msg;
@@ -239,6 +239,17 @@ pub fn list() -> Vec<WindowInfo> {
         .collect()
 }
 
+/// The taskbar.
+pub fn taskbar() -> Option<WindowInfo> {
+    let h = unsafe { FindWindowW(w!("Shell_TrayWnd"), None) }.ok()?;
+    Some(info(h))
+}
+
+/// The top-level window at a point of the screen.
+pub fn root_at(x: i32, y: i32) -> isize {
+    unsafe { GetAncestor(WindowFromPoint(POINT { x, y }), GA_ROOT).0 as isize }
+}
+
 pub fn foreground() -> Option<WindowInfo> {
     let h = unsafe { GetForegroundWindow() };
     (!h.is_invalid()).then(|| info(h))
@@ -275,6 +286,12 @@ pub fn focus(h: isize) -> Result<()> {
 pub fn maximize(h: isize) {
     unsafe {
         let _ = ShowWindow(hwnd(h), SW_MAXIMIZE);
+    }
+}
+
+pub fn minimize(h: isize) {
+    unsafe {
+        let _ = ShowWindow(hwnd(h), SW_MINIMIZE);
     }
 }
 

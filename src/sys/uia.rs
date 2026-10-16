@@ -135,6 +135,30 @@ impl Scanner {
         Ok(None)
     }
 
+    /// Elements of a window with this name, as `element_at` names them (any kind, not off screen), with
+    /// their kind. Whether another window covers them is not checked.
+    pub fn find_named(&self, h: isize, name: &str) -> Result<Vec<(&'static str, Rect)>> {
+        let cache = self.auto.create_cache_request()?;
+        for p in [UIProperty::Name, UIProperty::ControlType, UIProperty::BoundingRectangle, UIProperty::IsOffscreen] {
+            cache.add_property(p)?;
+        }
+        let root = self.auto.element_from_handle(Handle::from(h))?;
+        let cond = self.auto.create_true_condition()?;
+        let els: Vec<UIElement> = root.find_all_build_cache(TreeScope::Descendants, &cond, &cache)?;
+        let mut v = Vec::new();
+        for e in els {
+            if e.is_cached_offscreen().unwrap_or(true) || clean_name(&e.get_cached_name().unwrap_or_default()) != name {
+                continue;
+            }
+            let Ok(r) = e.get_cached_bounding_rectangle() else { continue };
+            let rect = Rect::from_ltrb(r.get_left(), r.get_top(), r.get_right(), r.get_bottom());
+            if rect.w > 0 && rect.h > 0 {
+                v.push((e.get_cached_control_type().map(kind_name).unwrap_or("element"), rect));
+            }
+        }
+        Ok(v)
+    }
+
     fn scan_window(&self, h: isize) -> Result<Vec<(String, &'static str, Rect)>> {
         let cache = self.auto.create_cache_request()?;
         for p in [UIProperty::Name, UIProperty::ControlType, UIProperty::BoundingRectangle, UIProperty::IsOffscreen] {

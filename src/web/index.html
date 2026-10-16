@@ -104,9 +104,12 @@
   .live button::after, .seg button::after { content: ''; position: absolute; inset: -6px -1px; }
   main { flex: 1; min-height: 0; overflow-y: auto; padding: 2px 12px 12px; overscroll-behavior: contain; }
   .panel { display: flex; flex-direction: column; gap: 12px; }
-  nav.tabs { flex: none; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 2px; padding: 6px 6px calc(10px + env(safe-area-inset-bottom)); background: var(--nav); border-top: 1px solid #23272D; }
+  nav.tabs { flex: none; display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 2px; padding: 6px 6px calc(10px + env(safe-area-inset-bottom)); background: var(--nav); border-top: 1px solid #23272D; }
   nav.tabs button { min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; border: 0; border-radius: 10px; background: transparent; color: var(--muted); font-size: 11.5px; font-weight: 500; }
   nav.tabs button[aria-current="page"] { color: var(--acc); font-weight: 600; }
+  nav.tabs button { min-width: 0; padding: 0 1px; }
+  nav.tabs button span { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  @media (max-width: 360px) { nav.tabs button { font-size: 10.5px; } }
 
   /* ---- shared parts ---- */
   .card { padding: 12px 14px; background: var(--panel); border: 1px solid var(--line); border-radius: 16px; }
@@ -171,6 +174,9 @@
   .bubble button .ic { width: 18px; height: 18px; stroke-width: 2.2; }
   .bubble button.pri { background: var(--acc); color: var(--acc-ink); }
   .bubble button.x { color: var(--muted); }
+  /* Choosing a target for a macro: only Choose and the cross */
+  .bubble.picking .acts, .bubble:not(.picking) #pickBtn { display: none; }
+  .bubble.picking .grp:last-child { padding-left: 0; border-left: 0; }
   .toolbar { flex: none; display: flex; align-items: center; gap: 8px; }
   .toolbar .seg { flex: 1; }
   .toolbar .seg button { min-height: 32px; }
@@ -327,7 +333,54 @@
   ol.log li.err .a { color: var(--bad-soft); }
   ol.log li.err .m { stroke: var(--bad-soft); }
 
-  @media (prefers-reduced-motion: reduce) { .livedot.busy, .sq48.spin .ic { animation: none; } }
+  /* ---- macros ---- */
+  .macbar { flex: none; display: flex; align-items: center; gap: 10px; margin: 0 12px 8px; padding: 6px 6px 6px 12px; border-radius: 14px; border: 1px solid var(--acc); background: var(--panel); }
+  .macbar[data-mode="rec"] { border-color: var(--bad-line); background: var(--bad-bg); }
+  .mbtext { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+  .macbar .btn { flex: none; min-height: 40px; padding: 0 12px; font-size: 14px; }
+  .recdot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--bad); }
+  .macbar .recdot { animation: pulse 1.2s ease-in-out infinite; }
+  .macbar[data-mode="run"] .recdot, .macbar[data-mode="pick"] .recdot { background: var(--acc); }
+  .macbar[data-mode="pick"] .recdot { animation: none; }
+  .macs .appic { color: var(--fg2); }
+  .macs .appic.on { color: var(--acc); }
+  .macs .appic .ic { width: 20px; height: 20px; }
+  .rowsub.bad { color: var(--bad-soft); }
+  .medhead { display: flex; gap: 8px; }
+  .medhead .field { flex: 1; min-width: 0; min-height: 48px; font-weight: 600; }
+  .medhead .ic { width: 20px; height: 20px; }
+  ul.msteps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+  .mstep { border: 1px solid var(--line); border-radius: 14px; background: var(--panel); }
+  .mstep.open { border-color: var(--line2); }
+  .mshead { width: 100%; min-height: 52px; display: flex; align-items: center; gap: 10px; padding: 8px 12px 8px 8px; border: 0; border-radius: 14px; background: transparent; color: var(--fg); text-align: left; }
+  .mnum { flex: none; min-width: 20px; font-family: var(--mono); font-size: 12px; color: var(--muted); text-align: right; }
+  .mshead > .ic { width: 18px; height: 18px; stroke: var(--fg2); }
+  .stext { flex: 1; min-width: 0; font-size: 14px; line-height: 1.35; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; }
+  .msbody { display: flex; flex-direction: column; gap: 10px; padding: 12px; border-top: 1px solid var(--line); }
+  .mfld { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+  .mfld .field { min-height: 46px; }
+  .mrow { display: flex; gap: 8px; align-items: flex-end; }
+  .mrow > * { flex: 1; min-width: 0; }
+  .mchk { display: flex; align-items: center; gap: 10px; min-height: 40px; font-size: 14px; color: var(--fg2); }
+  .mchk input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--acc); }
+  .mtrow { display: flex; align-items: center; gap: 8px; }
+  .mtname { flex: 1; min-width: 0; font-size: 14px; overflow-wrap: anywhere; }
+  .mtools { display: flex; gap: 6px; }
+  .mtools .btn { flex: 1; min-width: 0; min-height: 42px; padding: 0 6px; font-size: 14px; }
+  .mtools .ic { width: 18px; height: 18px; }
+  .days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; }
+  .days button { min-height: 40px; padding: 0; border: 1px solid var(--line2); border-radius: 10px; background: transparent; color: var(--fg2); font-size: 13px; overflow: hidden; text-overflow: ellipsis; }
+  .days button[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); color: var(--acc); font-weight: 600; }
+  .selwrap.wide { flex: 1; min-width: 0; }
+  .selwrap.wide select { width: 100%; max-width: none; min-height: 46px; }
+  .madd .chips button { font-family: inherit; }
+  ol.log .tw { flex: none; font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; }
+  .mshot { display: block; width: 100%; border-radius: 10px; box-shadow: 0 0 0 1px var(--line); }
+  .ask { position: fixed; inset: 0; z-index: 40; display: flex; align-items: flex-end; justify-content: center; padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); background: rgba(0,0,0,.6); }
+  .askbox { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 14px; padding: 16px; border-radius: 16px; border: 1px solid var(--line2); background: var(--panel); }
+  .askbox p { margin: 0; font-size: 15px; line-height: 1.45; }
+
+  @media (prefers-reduced-motion: reduce) { .livedot.busy, .sq48.spin .ic, .macbar .recdot { animation: none; } }
 </style>
 </head>
 <body>
@@ -383,6 +436,7 @@
       <button type="button" data-live="off" data-i18n-label="live.off"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg></button>
     </div>
   </header>
+  <div id="macBar" class="macbar" role="status" hidden><span class="recdot" aria-hidden="true"></span><span id="macBarText" class="mbtext"></span><button type="button" id="macBarAlt" class="btn" hidden></button><button type="button" id="macBarMain" class="btn"></button></div>
   <div id="offBanner" class="offbanner" role="alert" hidden><span id="offLeft"></span><button type="button" id="offCancel" class="btn" data-i18n="off.cancel"></button></div>
 
   <main id="main">
@@ -394,9 +448,9 @@
           <button type="button" id="tap" class="tap" data-i18n-label="screen.tap"></button>
           <span id="aim" class="aim" hidden></span>
           <div id="bubble" class="bubble" role="group" data-i18n-label="screen.bubble" hidden>
-            <span class="grp"><button type="button" class="pri" data-act="click" data-i18n="act.click"></button><button type="button" data-act="double" data-i18n="act.double"></button><button type="button" data-act="right" data-i18n="act.right"></button></span>
-            <span class="grp"><button type="button" data-act="up" data-i18n-label="act.up"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button><button type="button" data-act="down" data-i18n-label="act.down"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button></span>
-            <span class="grp"><button type="button" id="clearAim" class="x" data-i18n-label="act.clear"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>
+            <span class="grp acts"><button type="button" class="pri" data-act="click" data-i18n="act.click"></button><button type="button" data-act="double" data-i18n="act.double"></button><button type="button" data-act="right" data-i18n="act.right"></button></span>
+            <span class="grp acts"><button type="button" data-act="up" data-i18n-label="act.up"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button><button type="button" data-act="down" data-i18n-label="act.down"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button></span>
+            <span class="grp"><button type="button" id="pickBtn" class="pri" data-i18n="mac.pick"></button><button type="button" id="clearAim" class="x" data-i18n-label="act.clear"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></span>
           </div>
         </div>
       </div>
@@ -563,6 +617,20 @@
       </div>
     </section>
 
+    <!-- MACROS -->
+    <section class="panel" id="p-macros" hidden>
+      <div id="macHome" class="stack">
+        <h2 class="eyebrow" data-i18n="mac.list"></h2>
+        <ul id="macList" class="rows macs"></ul>
+        <div class="two">
+          <button type="button" id="macNew" class="btn"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg><span data-i18n="mac.new"></span></button>
+          <button type="button" id="macRec" class="btn"><span class="recdot" aria-hidden="true"></span><span data-i18n="mac.rec_start"></span></button>
+        </div>
+        <p class="note" data-i18n="mac.note"></p>
+      </div>
+      <div id="macEdit" class="stack" hidden></div>
+    </section>
+
     <!-- MORE -->
     <section class="panel" id="p-more" hidden>
       <h2 class="eyebrow" data-i18n="more.session"></h2>
@@ -629,6 +697,7 @@
     <button type="button" data-tab="keyboard"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14h9"/></svg><span data-i18n="tab.keyboard"></span></button>
     <button type="button" data-tab="elements"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01"/></svg><span data-i18n="tab.elements"></span></button>
     <button type="button" data-tab="windows"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="8" width="13" height="11" rx="1.5"/><path d="M8 8V6.5A1.5 1.5 0 0 1 9.5 5h10A1.5 1.5 0 0 1 21 6.5v8a1.5 1.5 0 0 1-1.5 1.5H16"/></svg><span data-i18n="tab.windows"></span></button>
+    <button type="button" data-tab="macros"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h11M4 11h7M4 16h5"/><path d="M14 13.5v7l6-3.5z"/></svg><span data-i18n="tab.macros"></span></button>
     <button type="button" data-tab="more" data-i18n-label="tab.more_label"><svg class="ic dots" viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="1.7"/><circle cx="12" cy="12" r="1.7"/><circle cx="19" cy="12" r="1.7"/></svg><span data-i18n="tab.more"></span></button>
   </nav>
 </div>
@@ -664,6 +733,8 @@
     <button type="submit" class="btn primary" data-i18n="common.type"></button>
   </form>
 </div>
+
+<div id="ask" class="ask" hidden><div class="askbox" role="alertdialog" aria-modal="true" aria-labelledby="askText"><p id="askText"></p><div class="two"><button type="button" id="askNo" class="btn"></button><button type="button" id="askYes" class="btn primary"></button></div></div></div>
 
 <div id="toast" role="status" aria-live="polite"></div>
 
@@ -728,6 +799,8 @@ const S = {
   mods: new Set(),      // modifier keys selected on Keyboard (one-shot)
   typeInto: '',         // name of the box picked with Type on Elements
   fs: false, fsAuto: false, fsReal: false,
+  // Macros: the list, the one being edited (a copy; saved with Save), what runs or records now, a target being picked
+  mac: { list: null, now: '', state: { running: null, recording: null }, edit: null, dirty: false, open: -1, adding: false, pick: null, polled: 0 },
 };
 
 const LOUPE = 96;       // area shown in the target strip magnifier (physical pixels)
@@ -748,6 +821,15 @@ const ICON = {
   close: 'M6 6l12 12M18 6L6 18',
   lock: 'M7 11h10a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2zM8 11V8a4 4 0 0 1 8 0v3',
   check: 'M5 12l5 5 9-10',
+  play: 'M8 5v14l11-7z',
+  stop: 'M7 7h10v10H7z',
+  clock: 'M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',
+  back: 'M15 5l-7 7 7 7',
+  up: 'M6 15l6-6 6 6',
+  down: 'M6 9l6 6 6-6',
+  copy: 'M9 9h10v10H9zM5 15V5h10',
+  trash: 'M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3',
+  plus: 'M12 5v14M5 12h14',
   finger: 'M12 10a2 2 0 0 0-2 2c0 1.02-.1 2.51-.26 4M14 13.12c0 2.38 0 6.38-1 8.88M17.29 21.02c.12-.6.43-2.3.5-3.02M2 12a10 10 0 0 1 18-6M2 16h.01M21.8 16c.2-2 .131-5.354 0-6M5 19.5C5.5 18 6 15 6 12a6 6 0 0 1 .34-2M8.65 22c.21-.66.45-1.32.57-2M9 6.8a6 6 0 0 1 9 5.2v2',
 };
 
@@ -782,7 +864,15 @@ function busy(on) { $$('.livedot').forEach(d => d.classList.toggle('busy', on));
 
 function authError() { const e = new Error(t('err.signin_required')); e.auth = true; return e; }
 
+// Clicking or typing from the panel while a macro runs would mix with its steps: ask to stop it first
+const INPUT_PATHS = new Set(['/api/click', '/api/type', '/api/key', '/api/scroll', '/api/focus', '/api/close', '/api/launch', '/api/lock', '/api/shutdown']);
+
 async function api(path, body) {
+  if (INPUT_PATHS.has(path) && S.mac.state.running) {
+    if (!(await ask(t('mac.ask_stop', { name: S.mac.state.running.name }), t('mac.ask_stop_yes')))) throw new Error(t('mac.not_done'));
+    try { await api('/api/macros/stop', {}); } catch (_) {}
+    S.mac.state.running = null; renderMacBar();
+  }
   const opt = body === undefined ? {} : { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) };
   const r = await fetch(path, opt);
   const data = (r.headers.get('content-type') || '').includes('json') ? await r.json() : null;
@@ -1142,7 +1232,7 @@ $('#tap').addEventListener('click', ev => {
 function tapAt(fx, fy) {
   if (!S.scr || !(fx >= 0 && fy >= 0 && fx <= 1 && fy <= 1)) return;
   const p = { x: Math.min(S.scr.x + S.scr.w - 1, Math.round(S.scr.x + fx * S.scr.w)), y: Math.min(S.scr.y + S.scr.h - 1, Math.round(S.scr.y + fy * S.scr.h)) };
-  if (S.quick) act('click', p); else setAim(p);
+  if (S.quick && !S.mac.pick) act('click', p); else setAim(p);
 }
 
 // The crosshair and bar follow where the image currently is (it may be zoomed in full screen)
@@ -1816,10 +1906,607 @@ $('#fsType').addEventListener('submit', async e => {
   if (await sendText(inp.value, false)) { inp.value = ''; showFsType(false); }
 });
 
+// ---------- a question with two answers ----------
+
+function ask(text, yes, no) {
+  return new Promise(res => {
+    $('#askText').textContent = text;
+    $('#askYes').textContent = yes; $('#askNo').textContent = no || t('common.cancel');
+    $('#ask').hidden = false; $('#askYes').focus();
+    const done = v => { $('#ask').hidden = true; $('#askYes').onclick = $('#askNo').onclick = null; res(v); };
+    $('#askYes').onclick = () => done(true); $('#askNo').onclick = () => done(false);
+  });
+}
+
+// ---------- macros ----------
+
+const DAYS = [1, 2, 3, 4, 5, 6, 7];
+// Short day names in the panel's language, Monday first (1 January 2024 was a Monday)
+const DAY_NAMES = DAYS.map(d => new Intl.DateTimeFormat(I18N.lang, { weekday: 'short' }).format(new Date(2024, 0, d)));
+const STEP_ICON = {
+  click: 'M5 3l14 7-6 2-2 6z', scroll: 'M12 4v16M8 8l4-4 4 4M8 16l4 4 4-4', drag: 'M5 9l-3 3 3 3M19 9l3 3-3 3M2 12h20M9 5l3-3 3 3M15 19l-3 3-3-3M12 2v20',
+  type: 'M4 7V5h16v2M9 19h6M12 5v14', key: 'M4 6h16a1.5 1.5 0 0 1 1.5 1.5v9A1.5 1.5 0 0 1 20 18H4a1.5 1.5 0 0 1-1.5-1.5v-9A1.5 1.5 0 0 1 4 6zM7 14h10',
+  launch: 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z', open: 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z',
+  window: 'M3 5h18v14H3zM3 9h18', wait: ICON.clock, wait_window: ICON.clock, wait_element: ICON.clock,
+  repeat: 'M17 2l4 4-4 4M3 11V9a3 3 0 0 1 3-3h15M7 22l-4-4 4-4M21 13v2a3 3 0 0 1-3 3H3', run_macro: ICON.play,
+  lock: ICON.lock, shutdown: 'M12 3v8M6.4 6.6a8 8 0 1 0 11.2 0',
+};
+// The step types offered by "Add a step", in groups
+const STEP_KINDS = [
+  ['mac.g_mouse', [['click', 'mac.k_click'], ['double', 'mac.k_double'], ['right', 'mac.k_right'], ['scroll', 'mac.k_scroll'], ['drag', 'mac.k_drag']]],
+  ['mac.g_keys', [['type', 'mac.k_type'], ['key', 'mac.k_key']]],
+  ['mac.g_apps', [['launch', 'mac.k_launch'], ['open', 'mac.k_open'], ['window', 'mac.k_window']]],
+  ['mac.g_wait', [['wait', 'mac.k_wait'], ['wait_window', 'mac.k_wait_window'], ['wait_element', 'mac.k_wait_element']]],
+  ['mac.g_flow', [['repeat', 'mac.k_repeat'], ['run_macro', 'mac.k_run_macro']]],
+  ['mac.g_system', [['lock', 'mac.k_lock'], ['shutdown', 'mac.k_shutdown']]],
+];
+const WIN_OP = { front: 'mac.s_front', maximize: 'mac.s_maximize', minimize: 'mac.s_minimize', close: 'mac.s_close' };
+const PICK_TEXT = { one: 'mac.pick_one', from: 'mac.pick_from', to: 'mac.pick_to', element: 'mac.pick_element' };
+const lastOnly = s => s && (s.do === 'lock' || s.do === 'shutdown');
+const clone = o => JSON.parse(JSON.stringify(o));
+
+function appText(a) { return !a ? '…' : a.taskbar ? t('mac.taskbar') : a.name || a.title || a.process; }
+
+function targetText(g) {
+  if (!g) return '…';
+  const app = g.app ? appText(g.app) : '';
+  if (g.by_name && g.name) return app ? t('mac.t_named_in', { name: g.name, app }) : t('mac.t_named', { name: g.name });
+  if (g.app && g.rel) return t('mac.t_point_in', { app, x: g.rel[0], y: g.rel[1] });
+  return t('mac.t_point', { x: g.x, y: g.y });
+}
+
+function macName(id) { const m = (S.mac.list || []).find(x => x.id === id); return m ? m.name : '…'; }
+
+// One line for a step: "Click “Save” · Excel", "Wait 2 s" ...
+function stepText(s) {
+  switch (s.do) {
+    case 'click': return t(s.button === 'right' ? 'mac.s_right' : s.count === 2 ? 'mac.s_double' : 'mac.s_click', { target: targetText(s.target) });
+    case 'scroll': return t(s.notches > 0 ? 'mac.s_scroll_up' : 'mac.s_scroll_down', { n: Math.abs(s.notches), target: targetText(s.target) });
+    case 'drag': return t('mac.s_drag', { from: targetText(s.from), to: targetText(s.to) });
+    case 'type': return t(s.enter ? 'mac.s_type_enter' : 'mac.s_type', { text: s.text || '…' });
+    case 'key': return t(s.times > 1 ? 'mac.s_key_n' : 'mac.s_key', { combo: s.combo || '…', n: s.times });
+    case 'launch': return t('mac.s_launch', { name: s.name || '…' });
+    case 'open': return t('mac.s_open', { path: s.path || '…' });
+    case 'window': return t(WIN_OP[s.op] || 'mac.s_front', { app: appText(s.app) });
+    case 'wait': return t('mac.s_wait', { s: (+s.secs).toLocaleString(I18N.lang) });
+    case 'wait_window': return t('mac.s_wait_window', { app: appText(s.app), s: s.timeout });
+    case 'wait_element': return t('mac.s_wait_element', { name: (s.target && s.target.name) || '…', s: s.timeout });
+    case 'repeat': return t(s.back === 1 ? 'mac.s_repeat_1' : 'mac.s_repeat', { back: s.back, n: s.times });
+    case 'run_macro': return t('mac.s_run_macro', { name: macName(s.id) });
+    case 'lock': return t('mac.s_lock');
+    case 'shutdown': return t('mac.s_shutdown');
+  }
+  return s.do;
+}
+
+// "today 09:00", "tomorrow 09:00", "17 Oct 14:30" from "YYYY-MM-DD HH:MM" (the computer's time)
+function fmtWhen(k) {
+  if (!k) return '';
+  const day = k.slice(0, 10), time = k.slice(11, 16), today = (S.mac.now || '').slice(0, 10);
+  const diff = today ? Math.round((new Date(day + 'T12:00') - new Date(today + 'T12:00')) / 864e5) : NaN;
+  if (diff === 0) return t('mac.today', { time });
+  if (diff === 1) return t('mac.tomorrow', { time });
+  if (diff === -1) return t('mac.yesterday', { time });
+  return new Date(day + 'T12:00').toLocaleDateString(I18N.lang, { day: 'numeric', month: 'short' }) + ' ' + time;
+}
+
+function daysText(days) {
+  const d = [...days].sort().join();
+  if (d === '1,2,3,4,5,6,7') return t('mac.every_day');
+  if (d === '1,2,3,4,5') return t('mac.weekdays');
+  if (d === '6,7') return t('mac.weekend');
+  return days.map(x => DAY_NAMES[x - 1]).join(', ');
+}
+
+function schedText(s) {
+  if (!s) return t('mac.manual');
+  const what = s.kind === 'weekly' ? daysText(s.days) + ' ' + s.time
+    : s.kind === 'once' ? t('mac.s_once', { when: fmtWhen(s.at.replace('T', ' ')) })
+    : t('mac.s_every', { n: s.minutes, from: s.from, to: s.to }) + (s.days.length < 7 ? ' · ' + daysText(s.days) : '');
+  return s.on ? what : t('mac.sched_off', { what });
+}
+
+function lastText(r) {
+  if (!r) return t('mac.never');
+  const when = fmtWhen(r.at.slice(0, 16));
+  return r.result === 'ok' ? t('mac.last_ok', { when }) : r.result === 'failed' ? t('mac.last_failed', { when, n: r.step })
+    : r.result === 'skipped' ? t('mac.last_skipped', { when }) : t('mac.last_stopped', { when });
+}
+
+function runText(r) {
+  const how = t(r.how === 'schedule' ? 'mac.how_schedule' : 'mac.how_manual');
+  if (r.result === 'ok') return t('mac.r_ok', { how, s: r.secs });
+  if (r.result === 'failed') return t('mac.r_failed', { n: r.step, reason: r.reason, how });
+  if (r.result === 'skipped') return t('mac.r_skipped', { reason: r.reason });
+  return t('mac.r_stopped', { n: r.step, reason: r.reason });
+}
+
+// The edited macro survives a reload (a language change, or the page reopened during a recording)
+function persistDraft() { store.set('macEdit', S.mac.edit ? { edit: S.mac.edit, dirty: S.mac.dirty } : null); }
+
+async function loadMacros() {
+  try {
+    const r = await api('/api/macros');
+    S.mac.list = r.macros; S.mac.now = r.now; S.mac.state = r.state;
+    // The open macro follows the saved one (its history, next start) unless it has changes
+    const d = S.mac.edit;
+    if (d && d.id && !S.mac.dirty && !S.mac.pick) { S.mac.edit = r.macros.find(x => x.id === d.id) || null; persistDraft(); }
+    renderMacBar();
+    if (S.tab === 'macros') renderMacros();
+  } catch (e) { if (S.tab === 'macros') toast(e.message, true); }
+}
+
+// What runs or records now: often while something does, every 10 s otherwise (a scheduled start)
+async function pollMac() {
+  S.mac.polled = Date.now();
+  try {
+    const was = S.mac.state.running;
+    S.mac.state = await api('/api/macros/state');
+    renderMacBar();
+    const now = S.mac.state.running;
+    if (was && !now) macFinished(was);
+    // Redrawn only when another macro starts, so a list under the finger does not change
+    else if (S.tab === 'macros' && (was && was.id) !== (now && now.id)) { if (S.mac.edit) renderRunBtn(); else renderMacHome(); }
+  } catch (_) {}
+}
+setInterval(() => {
+  if (document.hidden || $('#app').hidden) return;
+  const st = S.mac.state;
+  if (st.running || st.recording != null || Date.now() - S.mac.polled > 10000) pollMac();
+}, 1500);
+
+async function macFinished(was) {
+  await loadMacros();
+  const m = (S.mac.list || []).find(x => x.id === was.id), r = m && m.runs && m.runs[0];
+  if (r && r.result === 'ok') toast(t('ev.mac_done', { name: m.name }));
+  else if (r && r.result === 'failed') toast(t('ev.mac_failed', { name: m.name, n: r.step, reason: r.reason }), true);
+  else if (r) toast(t('ev.mac_stopped', { name: m.name, reason: r.reason }), true);
+  after(300);
+}
+
+// The strip under the header: recording, running or choosing a target
+function renderMacBar() {
+  const st = S.mac.state, bar = $('#macBar'), main = $('#macBarMain'), alt = $('#macBarAlt');
+  const mode = S.mac.pick ? 'pick' : st.running ? 'run' : st.recording != null ? 'rec' : '';
+  $('#bubble').classList.toggle('picking', !!S.mac.pick);
+  bar.hidden = !mode; bar.dataset.mode = mode;
+  alt.hidden = mode !== 'rec';
+  if (mode === 'pick') { $('#macBarText').textContent = t(PICK_TEXT[S.mac.pick.which]); main.textContent = t('common.cancel'); main.className = 'btn'; }
+  if (mode === 'run') { $('#macBarText').textContent = t('mac.bar_run', { name: st.running.name, step: st.running.step, total: st.running.total }); main.textContent = t('mac.stop'); main.className = 'btn danger'; }
+  if (mode === 'rec') { $('#macBarText').textContent = t('mac.bar_rec', { n: st.recording }); main.textContent = t('mac.rec_done'); main.className = 'btn primary'; alt.textContent = t('common.cancel'); }
+}
+$('#macBarMain').onclick = () => {
+  const mode = $('#macBar').dataset.mode;
+  if (mode === 'pick') { S.mac.pick = null; clearAim(); renderMacBar(); exitFs(); showTab('macros'); }
+  else if (mode === 'run') stopMacro();
+  else if (mode === 'rec') finishRecording(true);
+};
+$('#macBarAlt').onclick = () => finishRecording(false);
+
+function renderMacros() { if (S.mac.edit) renderEditor(); else renderMacHome(); }
+
+function renderMacHome() {
+  $('#macHome').hidden = false; $('#macEdit').hidden = true;
+  const list = S.mac.list;
+  if (!list) { $('#macList').replaceChildren(h('li', { class: 'empty' }, t('common.loading'))); return; }
+  $('#macList').replaceChildren(...(list.length ? list.map(macRow) : [h('li', { class: 'empty' }, t('mac.none'))]));
+}
+
+function macRow(m) {
+  const running = S.mac.state.running && S.mac.state.running.id === m.id, last = m.runs && m.runs[0];
+  return h('li', {},
+    h('button', { type: 'button', class: 'rowmain', onclick: () => openEditor(m) },
+      h('span', { class: 'appic' + (m.schedule && m.schedule.on ? ' on' : ''), 'aria-hidden': 'true' }, svgIcon(m.schedule && m.schedule.on ? ICON.clock : STEP_ICON.repeat)),
+      h('span', { class: 'rowtext' },
+        h('span', { class: 'rowname' }, m.name),
+        h('span', { class: 'rowsub' }, schedText(m.schedule) + ' · ' + t('mac.n_steps', { n: m.steps.length })),
+        h('span', { class: 'rowsub' + (last && last.result !== 'ok' ? ' bad' : '') }, lastText(last)))),
+    h('button', { type: 'button', class: 'rowact', 'aria-label': running ? t('mac.stop') : t('mac.run_label', { name: m.name }), onclick: () => running ? stopMacro() : runMacro(m.id) },
+      svgIcon(running ? ICON.stop : ICON.play)));
+}
+
+function openEditor(m) {
+  S.mac.edit = clone(m); S.mac.dirty = !m.id; S.mac.open = -1; S.mac.adding = false;
+  persistDraft(); renderMacros(); $('#main').scrollTop = 0;
+}
+$('#macNew').onclick = () => openEditor({ id: null, name: t('mac.default_name', { n: (S.mac.list || []).length + 1 }), steps: [], schedule: null, runs: [] });
+$('#macRec').onclick = () => startRecording(false);
+
+async function closeEditor() {
+  if (S.mac.dirty && !(await ask(t('mac.discard'), t('mac.discard_yes')))) return;
+  S.mac.edit = null; S.mac.dirty = false; S.mac.open = -1; S.mac.adding = false;
+  persistDraft(); renderMacros(); $('#main').scrollTop = 0;
+}
+
+// A change in the editor: text fields update only their step's line, so the field keeps its focus
+function changed(i, rebuild) {
+  S.mac.dirty = true; persistDraft();
+  if (rebuild) { renderEditor(); return; }
+  const line = i >= 0 && $('#mst' + i + ' .stext');
+  if (line) line.textContent = stepText(S.mac.edit.steps[i]);
+  const save = $('#macSaveBtn');
+  if (save) save.disabled = false;
+}
+
+function renderRunBtn() {
+  const b = $('#macRunBtn'), d = S.mac.edit;
+  if (!b || !d) return;
+  const running = !!(S.mac.state.running && d.id && S.mac.state.running.id === d.id);
+  b.replaceChildren(svgIcon(running ? ICON.stop : ICON.play, 'ic s'), h('span', {}, running ? t('mac.stop') : t('mac.run')));
+  b.onclick = () => running ? stopMacro() : runEdited();
+}
+
+function renderEditor() {
+  const d = S.mac.edit, box = $('#macEdit');
+  $('#macHome').hidden = true; box.hidden = false;
+  box.replaceChildren(...[
+    h('div', { class: 'medhead' },
+      h('button', { type: 'button', class: 'sq48', 'aria-label': t('mac.back'), onclick: closeEditor }, svgIcon(ICON.back)),
+      h('input', { class: 'field', id: 'macName', value: d.name, maxlength: '60', autocomplete: 'off', placeholder: t('mac.name'), 'aria-label': t('mac.name'),
+        oninput: e => { d.name = e.target.value; changed(-1); } })),
+    h('div', { class: 'two' },
+      h('button', { type: 'button', class: 'btn', id: 'macRunBtn' }),
+      h('button', { type: 'button', class: 'btn primary', id: 'macSaveBtn', disabled: !S.mac.dirty && !!d.id, onclick: saveMacro }, t('mac.save'))),
+    h('h2', { class: 'eyebrow' }, t('mac.when')),
+    schedCard(d),
+    h('h2', { class: 'eyebrow' }, t('mac.steps', { n: d.steps.length })),
+    d.steps.length ? h('ul', { class: 'msteps' }, d.steps.map(stepItem)) : h('p', { class: 'note' }, t('mac.no_steps')),
+    h('div', { class: 'two' },
+      h('button', { type: 'button', class: 'btn', 'aria-expanded': String(S.mac.adding), onclick: () => { S.mac.adding = !S.mac.adding; renderEditor(); } },
+        svgIcon(ICON.plus, 'ic s'), h('span', {}, t('mac.add'))),
+      h('button', { type: 'button', class: 'btn', onclick: () => startRecording(true) }, h('span', { class: 'recdot', 'aria-hidden': 'true' }), h('span', {}, t('mac.rec_here')))),
+    S.mac.adding ? adder() : null,
+    d.id ? h('h2', { class: 'eyebrow' }, t('mac.history')) : null,
+    d.id ? runsList(d) : null,
+    d.shot ? shotBox(d) : null,
+    d.id ? h('button', { type: 'button', class: 'btn danger', onclick: e => deleteMacro(e.currentTarget, d) }, h('span', { class: 'lbl' }, t('mac.delete'))) : null,
+  ].filter(Boolean));
+  renderRunBtn();
+}
+
+// ----- form parts -----
+
+function fld(label, input) { return h('label', { class: 'mfld' }, h('span', { class: 'label' }, label), input); }
+function num(v, min, max, step, on) {
+  return h('input', { class: 'field', type: 'number', inputmode: step < 1 ? 'decimal' : 'numeric', min: String(min), max: String(max), step: String(step), value: String(v),
+    oninput: e => { const x = parseFloat(e.target.value); if (Number.isFinite(x)) on(Math.min(max, Math.max(min, x))); } });
+}
+function segc(opts, cur, on) {
+  return h('div', { class: 'seg', role: 'group' }, opts.map(([v, label]) => h('button', { type: 'button', 'aria-pressed': String(v === cur), onclick: () => on(v) }, label)));
+}
+function chk(label, v, on) { return h('label', { class: 'mchk' }, h('input', { type: 'checkbox', checked: !!v, onchange: e => on(e.target.checked) }), h('span', {}, label)); }
+function selBox(sel) { return h('span', { class: 'selwrap wide' }, sel, svgIcon(ICON.down)); }
+
+function newSched(k) {
+  const p = n => String(n).padStart(2, '0');
+  if (k === 'weekly') return { on: true, kind: 'weekly', days: [1, 2, 3, 4, 5], time: '09:00' };
+  if (k === 'once') { const d = new Date(Date.now() + 3600e3); return { on: true, kind: 'once', at: d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) + ' ' + p(d.getHours()) + ':00' }; }
+  return { on: true, kind: 'every', minutes: 30, from: '09:00', to: '18:00', days: [1, 2, 3, 4, 5] };
+}
+
+function schedCard(d) {
+  const s = d.schedule, kind = s ? s.kind : 'none';
+  const dayPick = days => h('div', { class: 'days', role: 'group', 'aria-label': t('mac.days') }, DAYS.map(n =>
+    h('button', { type: 'button', 'aria-pressed': String(days.includes(n)), onclick: () => {
+      const k = days.indexOf(n); if (k >= 0) days.splice(k, 1); else days.push(n);
+      days.sort(); changed(-1, true);
+    } }, DAY_NAMES[n - 1])));
+  const time = (v, on) => h('input', { class: 'field', type: 'time', value: v, oninput: e => { if (e.target.value) { on(e.target.value); changed(-1); } } });
+  let body;
+  if (!s) body = [h('p', { class: 'note' }, t('mac.manual_note'))];
+  else if (s.kind === 'weekly') body = [dayPick(s.days), fld(t('mac.at_time'), time(s.time, v => { s.time = v; }))];
+  else if (s.kind === 'once') body = [fld(t('mac.at_date'), h('input', { class: 'field', type: 'datetime-local', value: s.at.replace(' ', 'T'),
+    oninput: e => { if (e.target.value) { s.at = e.target.value.replace('T', ' '); changed(-1); } } }))];
+  else body = [
+    fld(t('mac.every_min'), num(s.minutes, 1, 1440, 1, v => { s.minutes = Math.round(v); changed(-1); })),
+    h('div', { class: 'mrow' }, fld(t('mac.from'), time(s.from, v => { s.from = v; })), fld(t('mac.to'), time(s.to, v => { s.to = v; }))),
+    dayPick(s.days)];
+  // The next start is worked out by the computer once the schedule is saved
+  const note = !S.mac.dirty && d.id ? (d.next ? t('mac.next', { when: fmtWhen(d.next) }) : t('mac.no_next')) : t('mac.pc_time');
+  return h('section', { class: 'card stack' },
+    segc([['none', t('mac.manual')], ['weekly', t('mac.k_weekly')], ['once', t('mac.k_once')], ['every', t('mac.k_every')]], kind,
+      k => { if (k !== kind) { d.schedule = k === 'none' ? null : newSched(k); changed(-1, true); } }),
+    ...body,
+    s ? chk(t('mac.sched_on'), s.on, v => { s.on = v; changed(-1); }) : null,
+    s ? h('p', { class: 'note' }, note) : null);
+}
+
+function stepItem(s, i) {
+  const open = S.mac.open === i;
+  return h('li', { class: 'mstep' + (open ? ' open' : ''), id: 'mst' + i },
+    h('button', { type: 'button', class: 'mshead', 'aria-expanded': String(open), onclick: () => {
+      S.mac.open = open ? -1 : i; S.mac.adding = false; renderEditor();
+      if (!open) $('#mst' + i).scrollIntoView({ block: 'nearest' });
+    } },
+      h('span', { class: 'mnum' }, String(i + 1)),
+      svgIcon(STEP_ICON[s.do] || ICON.play),
+      h('span', { class: 'stext' }, stepText(s)),
+      s.go_on ? h('span', { class: 'badge' }, t('mac.go_on_badge')) : null),
+    open ? h('div', { class: 'msbody' }, stepForm(s, i), stepTools(s, i)) : null);
+}
+
+// Where a click lands: shown as text, chosen again on Screen; found by name or by position
+function targetBox(s, key, i, label, needName) {
+  const g = s[key];
+  const which = needName ? 'element' : key === 'from' || key === 'to' ? key : 'one';
+  return h('div', { class: 'mfld' },
+    label ? h('span', { class: 'label' }, label) : null,
+    h('div', { class: 'mtrow' }, h('span', { class: 'mtname' }, targetText(g)),
+      h('button', { type: 'button', class: 'btn sm', onclick: () => pickTarget(n => { s[key] = needName ? { ...n, by_name: true } : n; S.mac.open = i; changed(i, true); }, which) }, t('mac.repick'))),
+    g && g.name && g.app && !needName ? chk(t('mac.by_name', { name: g.name }), g.by_name, v => { g.by_name = v; changed(i, true); }) : null,
+    needName ? null : h('p', { class: 'note' }, g && g.by_name && g.name ? t('mac.by_name_note') : t('mac.by_pos_note')));
+}
+
+function appSelect(s, on) {
+  const sel = h('select', { class: 'field', 'aria-label': t('mac.f_app') });
+  const fill = list => {
+    const known = list.some(a => a.id === s.id);
+    sel.replaceChildren(h('option', { value: '' }, t('mac.choose_app')),
+      ...(s.id && !known ? [h('option', { value: s.id }, s.name || s.id)] : []),
+      ...list.map(a => h('option', { value: a.id }, a.name)));
+    sel.value = s.id || '';
+  };
+  sel.onchange = () => { const a = (S.apps || []).find(x => x.id === sel.value); if (a) on(a); };
+  fill(S.apps || []);
+  if (!S.apps) api('/api/apps').then(l => { S.apps = l; fill(l); }).catch(() => {});
+  return selBox(sel);
+}
+
+function winSelect(cur, on) {
+  const sel = h('select', { class: 'field', 'aria-label': t('mac.f_window') });
+  const label = a => a.title && a.title !== a.name ? a.name + ' — ' + a.title : appText(a);
+  let list = [];
+  const fill = () => {
+    sel.replaceChildren(h('option', { value: '' }, t('mac.choose_window')),
+      ...(cur ? [h('option', { value: 'cur' }, label(cur))] : []),
+      ...list.map((a, k) => h('option', { value: String(k) }, label(a))));
+    sel.value = cur ? 'cur' : '';
+  };
+  sel.onchange = () => { if (/^\d+$/.test(sel.value)) on(list[+sel.value]); };
+  fill();
+  api('/api/windows').then(ws => {
+    list = ws.filter(w => !w.own).map(w => ({ process: w.process, name: w.app || w.title, title: w.title }));
+    fill();
+  }).catch(() => {});
+  return selBox(sel);
+}
+
+function macSelect(s, on) {
+  const others = (S.mac.list || []).filter(m => m.id !== S.mac.edit.id);
+  const sel = h('select', { class: 'field', 'aria-label': t('mac.f_macro') },
+    h('option', { value: '' }, t('mac.choose_macro')), others.map(m => h('option', { value: m.id }, m.name)));
+  sel.value = s.id || '';
+  sel.onchange = () => { if (sel.value) on(sel.value); };
+  return selBox(sel);
+}
+
+function stepForm(s, i) {
+  const set = (k, v, rebuild) => { s[k] = v; changed(i, rebuild); };
+  const goOn = ['lock', 'shutdown', 'repeat'].includes(s.do) ? null : chk(t('mac.go_on'), s.go_on, v => set('go_on', v, true));
+  const timeout = () => fld(t('mac.f_timeout'), num(s.timeout, 1, 600, 1, v => set('timeout', Math.round(v))));
+  switch (s.do) {
+    case 'click': return [
+      segc([['click', t('mac.k_click')], ['double', t('mac.k_double')], ['right', t('mac.k_right')]], s.button === 'right' ? 'right' : s.count === 2 ? 'double' : 'click',
+        v => { s.button = v === 'right' ? 'right' : 'left'; s.count = v === 'double' ? 2 : 1; changed(i, true); }),
+      targetBox(s, 'target', i), goOn];
+    case 'scroll': return [
+      h('div', { class: 'mrow' },
+        segc([[1, t('mac.up')], [-1, t('mac.down')]], Math.sign(s.notches), v => set('notches', v * Math.abs(s.notches), true)),
+        fld(t('mac.f_notches'), num(Math.abs(s.notches), 1, 30, 1, v => set('notches', Math.sign(s.notches) * Math.round(v))))),
+      targetBox(s, 'target', i), goOn];
+    case 'drag': return [targetBox(s, 'from', i, t('mac.drag_from')), targetBox(s, 'to', i, t('mac.drag_to')), goOn];
+    case 'type': return [
+      fld(t('mac.f_text'), h('textarea', { class: 'field', rows: '3', spellcheck: 'false', autocomplete: 'off', oninput: e => set('text', e.target.value) }, s.text)),
+      chk(t('mac.f_enter'), s.enter, v => set('enter', v)),
+      h('p', { class: 'note' }, t('mac.f_vars', { date: '{' + t('mac.tok_date') + '}', time: '{' + t('mac.tok_time') + '}' })), goOn];
+    case 'key': return [
+      h('div', { class: 'mrow' },
+        fld(t('mac.f_combo'), h('input', { class: 'field mono', value: s.combo, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false',
+          oninput: e => set('combo', e.target.value.trim().toLowerCase().replace(/\s*\+\s*/g, '+')) })),
+        fld(t('mac.f_times'), num(s.times, 1, 100, 1, v => set('times', Math.round(v))))),
+      h('p', { class: 'note' }, t('mac.f_combo_note')), goOn];
+    case 'launch': return [fld(t('mac.f_app'), appSelect(s, a => { s.id = a.id; s.name = a.name; changed(i); })), goOn];
+    case 'open': return [
+      fld(t('mac.f_path'), h('input', { class: 'field', value: s.path, autocomplete: 'off', autocapitalize: 'off', spellcheck: 'false', oninput: e => set('path', e.target.value) })),
+      h('p', { class: 'note' }, t('mac.f_path_note')), goOn];
+    case 'window': return [
+      fld(t('mac.f_window'), winSelect(s.app, a => set('app', a))),
+      segc([['front', t('mac.op_front')], ['maximize', t('mac.op_maximize')], ['minimize', t('mac.op_minimize')], ['close', t('mac.op_close')]], s.op, v => set('op', v, true)), goOn];
+    case 'wait': return [fld(t('mac.f_secs'), num(s.secs, 0.1, 3600, 0.1, v => set('secs', Math.round(v * 10) / 10))), goOn];
+    case 'wait_window': return [fld(t('mac.f_window'), winSelect(s.app, a => set('app', a))), timeout(), goOn];
+    case 'wait_element': return [targetBox(s, 'target', i, null, true), timeout(), goOn];
+    case 'repeat': return [h('div', { class: 'mrow' },
+      fld(t('mac.f_back'), num(s.back, 1, Math.max(1, i), 1, v => set('back', Math.round(v)))),
+      fld(t('mac.f_rounds'), num(s.times, 2, 1000, 1, v => set('times', Math.round(v)))))];
+    case 'run_macro': return [fld(t('mac.f_macro'), macSelect(s, v => set('id', v))), goOn];
+    case 'lock': case 'shutdown': return [h('p', { class: 'note' }, t('mac.last_only'))];
+  }
+  return [];
+}
+
+function stepTools(s, i) {
+  const d = S.mac.edit, n = d.steps.length, fixed = lastOnly(s);
+  const move = k => { const j = i + k; [d.steps[i], d.steps[j]] = [d.steps[j], d.steps[i]]; S.mac.open = j; changed(-1, true); };
+  const canTry = !['repeat', 'run_macro', 'lock', 'shutdown'].includes(s.do);
+  return h('div', { class: 'mtools' },
+    h('button', { type: 'button', class: 'btn', 'aria-label': t('mac.move_up'), disabled: i === 0 || fixed, onclick: () => move(-1) }, svgIcon(ICON.up)),
+    h('button', { type: 'button', class: 'btn', 'aria-label': t('mac.move_down'), disabled: i === n - 1 || fixed || lastOnly(d.steps[i + 1]), onclick: () => move(1) }, svgIcon(ICON.down)),
+    h('button', { type: 'button', class: 'btn', 'aria-label': t('mac.copy'), disabled: fixed, onclick: () => { d.steps.splice(i + 1, 0, clone(s)); S.mac.open = i + 1; changed(-1, true); } }, svgIcon(ICON.copy)),
+    canTry ? h('button', { type: 'button', class: 'btn', onclick: e => tryStep(e.currentTarget, s) }, t('mac.try')) : null,
+    h('button', { type: 'button', class: 'btn danger', 'aria-label': t('mac.remove'), onclick: () => { d.steps.splice(i, 1); S.mac.open = -1; changed(-1, true); } }, svgIcon(ICON.trash)));
+}
+
+function adder() {
+  return h('section', { class: 'card stack madd' }, STEP_KINDS.map(([group, items]) => h('div', { class: 'group' },
+    h('h3', { class: 'eyebrow' }, t(group)),
+    h('div', { class: 'chips' }, items.map(([k, key]) => h('button', { type: 'button', onclick: () => addStep(k) }, t(key)))))));
+}
+
+// A new step goes after the open one (or at the end); lock and shut down always last
+function addStep(kind) {
+  const d = S.mac.edit;
+  const at = S.mac.open >= 0 ? S.mac.open + 1 : d.steps.length - (lastOnly(d.steps[d.steps.length - 1]) ? 1 : 0);
+  const put = s => {
+    if (lastOnly(s) && lastOnly(d.steps[d.steps.length - 1])) d.steps.pop();
+    const pos = lastOnly(s) ? d.steps.length : Math.min(at, d.steps.length);
+    d.steps.splice(pos, 0, s); S.mac.open = pos; S.mac.adding = false; changed(-1, true);
+  };
+  switch (kind) {
+    case 'click': case 'double': case 'right':
+      return pickTarget(g => put({ do: 'click', target: g, button: kind === 'right' ? 'right' : 'left', count: kind === 'double' ? 2 : 1 }));
+    case 'scroll': return pickTarget(g => put({ do: 'scroll', target: g, notches: -5 }));
+    case 'drag': return pickTarget(a => pickTarget(b => put({ do: 'drag', from: a, to: b }), 'to'), 'from');
+    case 'wait_element': return pickTarget(g => put({ do: 'wait_element', target: { ...g, by_name: true }, timeout: 30 }), 'element');
+    case 'type': return put({ do: 'type', text: '', enter: false });
+    case 'key': return put({ do: 'key', combo: 'enter', times: 1 });
+    case 'launch': return put({ do: 'launch', id: '', name: '' });
+    case 'open': return put({ do: 'open', path: '' });
+    case 'window': return put({ do: 'window', app: null, op: 'front' });
+    case 'wait': return put({ do: 'wait', secs: 2 });
+    case 'wait_window': return put({ do: 'wait_window', app: null, timeout: 30 });
+    case 'repeat': return put({ do: 'repeat', back: Math.max(1, at), times: 2 });
+    case 'run_macro': return put({ do: 'run_macro', id: '' });
+    case 'lock': case 'shutdown': return put({ do: kind });
+  }
+}
+
+function runsList(d) {
+  if (!d.runs || !d.runs.length) return h('p', { class: 'note' }, t('mac.never'));
+  return h('ol', { class: 'log' }, d.runs.map(r => h('li', { class: r.result === 'ok' ? '' : 'err' },
+    h('span', { class: 'tw' }, fmtWhen(r.at.slice(0, 16))),
+    h('span', { class: 'a' }, runText(r)),
+    svgIcon(r.result === 'ok' ? ICON.check : ICON.close, 'ic m', r.result === 'ok' ? t('more.log_ok') : t('more.log_err')))));
+}
+
+function shotBox(d) {
+  const box = h('div', { class: 'stack' });
+  const btn = h('button', { type: 'button', class: 'btn', onclick: () => {
+    btn.remove();
+    box.append(h('img', { class: 'mshot', alt: t('mac.shot'), src: '/api/macros/shot?id=' + encodeURIComponent(d.id) + '&t=' + Date.now() }));
+  } }, t('mac.shot'));
+  box.append(btn);
+  return box;
+}
+
+// Missing choices are caught here, with the step opened; the computer checks the rest when saving
+function draftProblem(d) {
+  if (!d.name.trim()) return { i: -1, msg: t('err.mac_name') };
+  for (const [i, s] of d.steps.entries()) {
+    const n = i + 1;
+    if ((s.do === 'window' || s.do === 'wait_window') && !s.app) return { i, msg: t('mac.need_app', { n }) };
+    if (s.do === 'launch' && !s.id) return { i, msg: t('mac.need_app', { n }) };
+    if (s.do === 'run_macro' && !s.id) return { i, msg: t('mac.need_macro', { n }) };
+    if (s.do === 'type' && !s.text && !s.enter) return { i, msg: t('err.mac_step', { n, msg: { code: 'err.mac_no_text' } }) };
+    if (s.do === 'open' && !s.path.trim()) return { i, msg: t('err.mac_step', { n, msg: { code: 'err.open_path' } }) };
+  }
+  return null;
+}
+
+async function saveMacro() {
+  const d = S.mac.edit, bad = draftProblem(d);
+  if (bad) { S.mac.open = bad.i; renderEditor(); toast(bad.msg, true); return false; }
+  try {
+    const m = await api('/api/macros/save', { id: d.id, name: d.name, steps: d.steps, schedule: d.schedule });
+    S.mac.edit = { ...m, shot: d.shot }; S.mac.dirty = false; persistDraft();
+    toast(t('mac.saved'));
+    await loadMacros();
+    return true;
+  } catch (e) { toast(e.message, true); return false; }
+}
+
+async function deleteMacro(btn, d) {
+  if (!arm(btn, t('common.sure'))) return;
+  try {
+    await api('/api/macros/delete', { id: d.id });
+    toast(t('toast.deleted', { name: d.name }));
+    S.mac.edit = null; S.mac.dirty = false; persistDraft();
+    loadMacros();
+  } catch (e) { toast(e.message, true); }
+}
+
+async function runMacro(id) {
+  try { await api('/api/macros/run', { id }); } catch (e) { toast(e.message, true); return; }
+  toast(t('mac.started', { name: macName(id) }));
+  await pollMac();
+  showTab('screen');   // to watch it
+}
+async function runEdited() {
+  if ((S.mac.dirty || !S.mac.edit.id) && !(await saveMacro())) return;
+  runMacro(S.mac.edit.id);
+}
+async function stopMacro() {
+  try { await api('/api/macros/stop', {}); } catch (e) { toast(e.message, true); }
+  pollMac();
+}
+
+async function tryStep(btn, s) {
+  btn.disabled = true;
+  try { await api('/api/macros/try', s); toast(t('mac.tried')); after(); }
+  catch (e) { toast(e.message, true); }
+  finally { btn.disabled = false; }
+}
+
+// ----- choosing a target on Screen -----
+
+// Screen opens with Choose in the aim bar instead of the actions; `done` gets the target
+function pickTarget(done, which) {
+  S.mac.pick = { done, which: which || 'one' };
+  S.mac.adding = false;
+  showTab('screen'); clearAim(); renderMacBar();
+}
+$('#pickBtn').onclick = async () => {
+  const pk = S.mac.pick, p = S.aim;
+  if (!pk || !p) return;
+  try {
+    const g = await api('/api/macros/target?x=' + p.x + '&y=' + p.y);
+    if (pk.which === 'element' && !g.name) { toast(t('mac.need_name'), true); return; }
+    S.mac.pick = null; clearAim();
+    pk.done(g);
+    // A drag asks for its second point next
+    if (!S.mac.pick) { exitFs(); showTab('macros'); }
+    renderMacBar();
+  } catch (e) { toast(e.message, true); }
+};
+
+// ----- recording -----
+
+// What is done in the panel becomes steps: of a new macro, or of the open one after its open step
+async function startRecording(into) {
+  try { await api('/api/macros/record', {}); } catch (e) { toast(e.message, true); return; }
+  const d = S.mac.edit;
+  store.set('macRec', into && d ? { at: S.mac.open >= 0 ? S.mac.open + 1 : d.steps.length } : null);
+  persistDraft();
+  S.mac.state.recording = 0; renderMacBar();
+  showTab('screen');
+  toast(t('mac.rec_started'));
+}
+
+async function finishRecording(keep) {
+  let steps;
+  try { steps = (await api('/api/macros/record/stop', {})).steps || []; } catch (e) { toast(e.message, true); return; }
+  S.mac.state.recording = null; renderMacBar();
+  const into = store.get('macRec', null); store.set('macRec', null);
+  if (!keep) { toast(t('mac.rec_cancelled')); return; }
+  if (!steps.length) { toast(t('mac.rec_empty'), true); return; }
+  const d = S.mac.edit;
+  if (into && d) d.steps.splice(Math.min(into.at, d.steps.length), 0, ...steps);
+  else S.mac.edit = { id: null, name: t('mac.default_name', { n: (S.mac.list || []).length + 1 }), steps, schedule: null, runs: [] };
+  S.mac.dirty = true; S.mac.open = -1; S.mac.adding = false; persistDraft();
+  exitFs(); showTab('macros');
+  toast(t('mac.rec_added', { n: steps.length }));
+}
+
+{
+  const saved = store.get('macEdit', null);
+  if (saved && saved.edit) { S.mac.edit = saved.edit; S.mac.dirty = !!saved.dirty; }
+}
+
 // ---------- tabs ----------
 
 function showTab(name) {
   if (S.tab === 'keyboard' && name !== 'keyboard') clearMods();
+  // Leaving Screen while choosing a target for a macro gives up the choice
+  if (S.mac.pick && name !== 'screen') { S.mac.pick = null; renderMacBar(); }
   S.tab = name;
   $$('.panel').forEach(p => { p.hidden = p.id !== 'p-' + name; });
   $$('#tabs [data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'));
@@ -1828,6 +2515,12 @@ function showTab(name) {
   if (name === 'windows') renderWl();
   if (name === 'elements') loadElements();
   if (name === 'more') { loadLog(); loadPasskeys(); status(); }
+  if (name === 'macros') {
+    renderMacros(); loadMacros();
+    // Back from choosing a target or recording: the step being edited stays in view
+    const open = S.mac.edit && $('#mst' + S.mac.open);
+    if (open) open.scrollIntoView({ block: 'center' });
+  }
 }
 $$('#tabs [data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 
@@ -1836,7 +2529,7 @@ $$('#tabs [data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 function start() {
   showApp(); renderView(); renderQuick(); renderRecent(); renderMods(); renderLive(); renderSession(); renderTarget();
   showTab(S.tab);
-  refresh('urgent'); startLive(); status();
+  refresh('urgent'); startLive(); status(); pollMac();
   if (LAND.matches && S.tab === 'screen') enterFs(false);
 }
 

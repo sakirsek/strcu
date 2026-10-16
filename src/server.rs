@@ -25,6 +25,7 @@ use serde_json::{Value, json};
 use crate::access::{AccessConfig, Verifier};
 use crate::auth::{self, Auth, Check};
 use crate::i18n::{self, Msg};
+use crate::macros::{self, Act, AppRef, WinOp};
 use crate::pair::{self, Pairing};
 use crate::passkey::{self, Kind, Site};
 use crate::sys::{Rect, apps, icons, input, net, power, screen, uia, window};
@@ -59,6 +60,7 @@ struct AppState {
     private: PrivateCache,
     /// When a turned-away address was last logged
     denied: Arc<Mutex<HashMap<String, Instant>>>,
+    macros: Arc<macros::Engine>,
 }
 
 impl AppState {
@@ -68,7 +70,7 @@ impl AppState {
 }
 
 /// Time to cancel after a shutdown is confirmed.
-const SHUTDOWN_SECS: u32 = 15;
+pub(crate) const SHUTDOWN_SECS: u32 = 15;
 
 /// The panel's state, shared by every listener.
 pub struct Panel {
@@ -110,12 +112,15 @@ impl Panel {
     /// Needs the panel password to be set.
     pub fn new() -> Result<Panel> {
         let cfg = crate::config::load();
+        let (worker, log, shutdown_at) = (Worker::spawn(), Arc::new(ActionLog::new()), Arc::new(Mutex::new(None)));
+        let macros = macros::Engine::new(worker.clone(), log.clone(), shutdown_at.clone());
+        macros.start_scheduler();
         let state = AppState {
-            worker: Worker::spawn(),
+            worker,
             auth: Arc::new(Auth::from_config()?),
-            log: Arc::new(ActionLog::new()),
+            log,
             access: Arc::new(RwLock::new(cfg.access.map(|a| Arc::new(Verifier::new(a))))),
-            shutdown_at: Arc::new(Mutex::new(None)),
+            shutdown_at,
             icons: Arc::default(),
             apps: Arc::default(),
             passkeys: Arc::new(passkey::Store::load()),
@@ -123,6 +128,7 @@ impl Panel {
             tunnel_pid: Arc::default(),
             private: Arc::default(),
             denied: Arc::default(),
+            macros,
         };
         Ok(Panel { state })
     }
@@ -202,6 +208,17 @@ impl Panel {
             .route("/api/passkey/register/start", post(passkey_register_start))
             .route("/api/passkey/register", post(passkey_register))
             .route("/api/passkey/delete", post(passkey_delete))
+            .route("/api/macros", get(macros_list))
+            .route("/api/macros/state", get(macros_state))
+            .route("/api/macros/save", post(macro_save))
+            .route("/api/macros/delete", post(macro_delete))
+            .route("/api/macros/run", post(macro_run))
+            .route("/api/macros/stop", post(macro_stop))
+            .route("/api/macros/try", post(macro_try))
+            .route("/api/macros/target", get(macro_target))
+            .route("/api/macros/shot", get(macro_shot))
+            .route("/api/macros/record", post(macro_record))
+            .route("/api/macros/record/stop", post(macro_record_stop))
             .route_layer(middleware::from_fn_with_state(state.clone(), require_session));
         Router::new()
             .route("/", get(index))
@@ -268,6 +285,9 @@ impl LogEntry {
             "ev.tunnel_up",
             "ev.tunnel_down",
             "ev.tunnel_failed",
+            "ev.mac_scheduled",
+            "ev.mac_failed",
+            "ev.mac_skipped",
         ];
         CODES.contains(&self.msg.code)
     }
@@ -1030,12 +1050,19 @@ async fn click(State(st): State<AppState>, Json(r): Json<ClickReq>) -> ApiResult
         Some(l) if !l.is_empty() => Msg::new("ev.labeled").with("action", verb).with("label", short(l)),
         _ => verb,
     };
-    logged(&st, desc, move |ctx| {
+    st.macros.interrupt();
+    let rec = st.macros.recording();
+    let target = logged(&st, desc, move |ctx| {
+        // Read before the click changes the screen
+        let target = rec.then(|| macros::target_at(ctx, r.x, r.y));
         input::click(r.x, r.y, button, count)?;
         ctx.note_click(r.x, r.y);
-        Ok(())
+        Ok(target)
     })
     .await?;
+    if let Some(target) = target {
+        st.macros.record(Act::Click { target, button, count });
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1056,6 +1083,8 @@ async fn type_text(State(st): State<AppState>, Json(r): Json<TypeReq>) -> ApiRes
         (_, true) => Msg::new("ev.typed_enter").with("n", n),
         _ => Msg::new("ev.typed").with("n", n),
     };
+    st.macros.interrupt();
+    let step = if n == 0 { Act::Key { combo: "enter".into(), times: 1 } } else { Act::Type { text: r.text.clone(), enter: r.enter } };
     logged(&st, desc, move |_| {
         input::type_text(&r.text)?;
         if r.enter {
@@ -1064,6 +1093,7 @@ async fn type_text(State(st): State<AppState>, Json(r): Json<TypeReq>) -> ApiRes
         Ok(())
     })
     .await?;
+    st.macros.record(step);
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1074,7 +1104,10 @@ struct KeyReq {
 
 async fn key(State(st): State<AppState>, Json(r): Json<KeyReq>) -> ApiResult<Json<Value>> {
     let desc = Msg::new("ev.key").with("combo", &r.combo);
+    st.macros.interrupt();
+    let combo = r.combo.clone();
     logged(&st, desc, move |_| input::hotkey(&r.combo)).await?;
+    st.macros.record(Act::Key { combo, times: 1 });
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1087,7 +1120,20 @@ struct ScrollReq {
 
 async fn scroll(State(st): State<AppState>, Json(r): Json<ScrollReq>) -> ApiResult<Json<Value>> {
     let desc = Msg::new(if r.notches > 0 { "ev.scroll_up" } else { "ev.scroll_down" });
-    logged(&st, desc, move |_| input::scroll(r.x, r.y, r.notches.clamp(-30, 30))).await?;
+    st.macros.interrupt();
+    let rec = st.macros.recording();
+    let notches = r.notches.clamp(-30, 30);
+    let target = logged(&st, desc, move |ctx| {
+        let target = rec.then(|| macros::target_at(ctx, r.x, r.y));
+        input::scroll(r.x, r.y, notches)?;
+        Ok(target)
+    })
+    .await?;
+    if let Some(target) = target
+        && notches != 0
+    {
+        st.macros.record(Act::Scroll { target, notches });
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1110,14 +1156,20 @@ async fn focus(State(st): State<AppState>, Json(r): Json<FocusReq>) -> ApiResult
     let title = window::info(window::hwnd(r.hwnd)).title;
     let verb = Msg::new(if r.maximize { "ev.maximized" } else { "ev.front" });
     let desc = if title.is_empty() { verb } else { Msg::new("ev.titled").with("action", verb).with("title", short(&title)) };
-    logged(&st, desc, move |_| {
+    st.macros.interrupt();
+    let rec = st.macros.recording();
+    let app = logged(&st, desc, move |_| {
+        let app = rec.then(|| window::list().into_iter().find(|w| w.hwnd == r.hwnd).map(|w| AppRef::of(&w))).flatten();
         window::focus(r.hwnd)?;
         if r.maximize {
             window::maximize(r.hwnd);
         }
-        Ok(())
+        Ok(app)
     })
     .await?;
+    if let Some(app) = app {
+        st.macros.record(Act::Window { app, op: if r.maximize { WinOp::Maximize } else { WinOp::Front } });
+    }
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1137,7 +1189,9 @@ async fn close_window(State(st): State<AppState>, Json(r): Json<CloseReq>) -> Ap
         return Err(ApiError(StatusCode::FORBIDDEN, Msg::new("err.own_window")));
     }
     let desc = Msg::new("ev.titled").with("action", Msg::new("ev.closed")).with("title", short(&w.title));
+    st.macros.interrupt();
     logged(&st, desc, move |_| window::close(r.hwnd)).await?;
+    st.macros.record(Act::Window { app: AppRef::of(&w), op: WinOp::Close });
     Ok(Json(json!({ "ok": true })))
 }
 
@@ -1222,21 +1276,33 @@ struct LaunchReq {
 }
 
 async fn launch(State(st): State<AppState>, Json(r): Json<LaunchReq>) -> ApiResult<Json<Value>> {
+    st.macros.interrupt();
+    // The windows open before, to tell the app's new window when recording
+    let before = match st.macros.recording() {
+        true => Some(st.worker.run(|_| Ok(window::list().into_iter().map(|w| w.hwnd).collect::<Vec<_>>())).await?),
+        false => None,
+    };
     let res = tokio::task::spawn_blocking(move || apps::launch(&r.id)).await.map_err(anyhow::Error::from)?;
     let desc = match &res {
         Ok(a) => Msg::new("ev.opened").with("name", &a.name),
         Err(e) => Msg::new("ev.open_failed").with("reason", i18n::from_error(e)),
     };
     st.log.add(desc, res.is_ok());
-    Ok(Json(json!({ "ok": true, "name": res?.name })))
+    let app = res?;
+    if let Some(before) = before {
+        st.macros.record_launch(app.id.clone(), app.name.clone(), before);
+    }
+    Ok(Json(json!({ "ok": true, "name": app.name })))
 }
 
 async fn lock(State(st): State<AppState>) -> ApiResult<Json<Value>> {
+    st.macros.interrupt();
     logged(&st, Msg::new("ev.locked"), |_| power::lock()).await?;
     Ok(Json(json!({ "ok": true })))
 }
 
 async fn shutdown(State(st): State<AppState>) -> ApiResult<Json<Value>> {
+    st.macros.interrupt();
     logged(&st, Msg::new("ev.shutdown").with("s", SHUTDOWN_SECS), |_| power::shutdown(SHUTDOWN_SECS)).await?;
     *st.shutdown_at.lock().unwrap() = Some(Instant::now() + Duration::from_secs(SHUTDOWN_SECS.into()));
     Ok(Json(json!({ "seconds": SHUTDOWN_SECS })))
@@ -1251,6 +1317,76 @@ async fn cancel_shutdown(State(st): State<AppState>) -> ApiResult<Json<Value>> {
 
 async fn log(State(st): State<AppState>) -> Json<Vec<LogEntry>> {
     Json(st.log.recent.lock().unwrap().iter().take(50).cloned().collect())
+}
+
+// ---------- macros ----------
+
+fn mac_error(m: Msg) -> ApiError {
+    ApiError(StatusCode::BAD_REQUEST, m)
+}
+
+async fn macros_list(State(st): State<AppState>) -> Json<Value> {
+    Json(st.macros.list_json())
+}
+
+async fn macros_state(State(st): State<AppState>) -> Json<Value> {
+    Json(st.macros.state())
+}
+
+async fn macro_save(State(st): State<AppState>, Json(d): Json<macros::Draft>) -> ApiResult<Json<macros::Macro>> {
+    let m = st.macros.save(d).map_err(mac_error)?;
+    st.log.add(Msg::new("ev.mac_saved").with("name", &m.name), true);
+    Ok(Json(m))
+}
+
+#[derive(Deserialize)]
+struct MacroReq {
+    id: String,
+}
+
+async fn macro_delete(State(st): State<AppState>, Json(r): Json<MacroReq>) -> ApiResult<Json<Value>> {
+    let name = st.macros.delete(&r.id).map_err(mac_error)?;
+    st.log.add(Msg::new("ev.mac_deleted").with("name", name), true);
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn macro_run(State(st): State<AppState>, Json(r): Json<MacroReq>) -> ApiResult<Json<Value>> {
+    st.macros.run(&r.id).map_err(mac_error)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+async fn macro_stop(State(st): State<AppState>) -> Json<Value> {
+    Json(json!({ "stopped": st.macros.stop() }))
+}
+
+/// "Try" in the editor: runs a single step now.
+async fn macro_try(State(st): State<AppState>, Json(step): Json<macros::Step>) -> ApiResult<Json<Value>> {
+    st.macros.try_step(step).await.map_err(mac_error)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// The target a click step gets when aimed at this point on Screen.
+async fn macro_target(State(st): State<AppState>, Query(p): Query<PointQ>) -> ApiResult<Json<macros::Target>> {
+    Ok(Json(st.worker.run(move |ctx| Ok(macros::target_at(ctx, p.x, p.y))).await?))
+}
+
+async fn macro_shot(State(st): State<AppState>, Query(r): Query<MacroReq>) -> ApiResult<Response> {
+    let Some(jpg) = st.macros.shot(&r.id) else { return Err(ApiError(StatusCode::NOT_FOUND, Msg::new("err.mac_no_shot"))) };
+    let mut res = jpg.into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/jpeg"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(res)
+}
+
+async fn macro_record(State(st): State<AppState>) -> ApiResult<Json<Value>> {
+    st.macros.rec_start().map_err(mac_error)?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+/// Ends the recording; the panel puts the steps into the macro being edited.
+async fn macro_record_stop(State(st): State<AppState>) -> Json<Value> {
+    Json(json!({ "steps": st.macros.rec_finish() }))
 }
 
 #[cfg(test)]
