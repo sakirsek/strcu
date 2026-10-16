@@ -10,11 +10,16 @@ program, click there". It is a single exe that serves a web panel; the phone nee
 </p>
 
 - **See the screen live** and tap to aim a crosshair; then click, double-click, right-click, scroll or type.
+  Or switch on **Quick**: a tap clicks, two taps double-click, a long press right-clicks or drags, and what you
+  type goes to the computer key by key.
 - **Keyboard:** type text into the foreground window, send shortcuts (Ctrl / Alt / Shift / Win held for the next
   key), F1–F12.
 - **Know what you are about to click.** Windows' own accessibility data (UI Automation) names the element under
   the crosshair and lists everything clickable in the window. No AI, no GPU, no extra install.
 - **Windows and apps:** bring a window to the front, maximize or close it; open any app from the Start menu.
+- **Macros:** record what you do in the panel or build the steps yourself (clicks, keys, text, apps, windows,
+  waits, repeats), then run them by hand or on a schedule.
+- **Phone first, tablets too:** on a tablet the screen image fills the page and every control stays in view.
 - **On your home Wi-Fi** out of the box, and **from anywhere** through a free Cloudflare Tunnel if you want.
 - **Sign in** with a password, pair a phone once with a QR code, or use a passkey (fingerprint / Face ID).
 - English and Turkish.
@@ -79,12 +84,19 @@ internet → Wi-Fi → your network → Network profile type → Private.
 
 ## The panel
 
-Five tabs: Screen, Keyboard, Elements, Windows, More.
+Six tabs: Screen, Keyboard, Elements, Windows, Macros, More.
 
 - **Top bar:** the foreground window with its app icon; tap it for the list of open windows. Shows when the
-  computer is locked. Next to it, the live view controls (HD / SD / ❚❚).
+  computer is locked. Next to it, the live view controls (HD / SD / ❚❚) with a dot: green while the image is
+  live, red when it is paused or lagging.
 - **Screen:** a tap aims the crosshair; a bar with Click / Double / Right, ↑ / ↓ (scroll) and ✕ appears next to
   it. Below the image, a magnifier and the element's name. A typing box and eight common keys sit underneath.
+- **Quick** (the switch under the image) skips the crosshair. A tap clicks, a quarter of a second later in case
+  a second tap follows; two taps double-click. Hold a finger still for half a second: lifting it right-clicks,
+  moving it drags with the left button held. If the phone loses its connection mid-drag, StrCu lets go of the
+  button by itself after three seconds. The typing box then sends each key as it is pressed: the phone
+  keyboard's corrections and suggestions come out right on the computer, Enter presses Enter, and Backspace
+  still deletes when the box is empty.
 - **Live view:** SD scales the long side to 1280 pixels, HD sends full resolution. The image refreshes every
   2.5 s while the Screen tab is open; ❚❚ freezes it.
 - **Keyboard:** a text box (types into the foreground window), modifier keys held for the next key, common keys,
@@ -92,20 +104,63 @@ Five tabs: Screen, Keyboard, Elements, Windows, More.
 - **Elements:** named clickable elements of the foreground window and the taskbar, filterable by name and kind.
 - **Windows:** open windows with their app icons; bring to front, maximize or close. **Open an app** lists the
   Start menu apps (classic and Store) with search and recent apps.
+- **Macros:** the macros, their schedules and last runs ([below](#macros)).
 - **More:** session and sign-out, passkeys, lock and shut down (with a 15 s countdown that can be cancelled),
   panel language and a log of what was done.
 
-**Full screen:** ⛶ or turn the phone sideways. Pinch to zoom, drag to pan, tap to aim.
+**Full screen:** ⛶ or turn the phone sideways. Pinch to zoom, drag to pan, tap to aim. With Quick on, taps
+and long presses work as above; a quick drag still pans the zoomed image.
 
 <img src="docs/fullscreen.png" alt="The panel in full screen on a phone held sideways, with the crosshair on a file and the click bar" width="640">
 
+**Tablets** (and wide browser windows): the Screen tab fills the page and the image takes all the room the
+controls leave. Held sideways, the tabs move to a rail on the left and the controls sit in one row under the
+image: view and Quick, the typing box, the element under the crosshair with a larger magnifier, and the keys.
+Held upright, the image spans the full width with the controls at the bottom. The other tabs stay a readable
+column in the middle.
+
+<img src="docs/tablet.png" alt="The panel on a tablet held sideways: tabs in a rail on the left, the screen image filling the page with the crosshair and click bar on a file, and one row of controls under it" width="720">
+
 The page loads nothing from outside; its fonts (IBM Plex) are built in.
 
-**What it cannot do:**
+### Macros
+
+<img src="docs/macros.png" alt="The Macros tab on a phone: the list of macros with their schedules and last runs, a macro set to run on weekdays at 09:00, its steps and recent runs, and the Screen tab while recording with Quick on" width="100%">
+
+A macro is a list of steps that StrCu runs in order on the computer:
+
+- **Mouse:** click, double-click or right-click, scroll, or drag from one element to another.
+- **Keyboard:** type text (`{date}` and `{time}` are filled in when it runs), press a key or shortcut a number
+  of times.
+- **Apps and windows:** open a Start menu app, a file, a folder or a web page; bring an app's window to the
+  front, maximize, minimize or close it.
+- **Waits:** a number of seconds, until an app's window opens, or until an element appears.
+- **Flow:** repeat the steps before it a number of times, or run another macro.
+- **As the last step:** lock the computer or shut it down.
+
+An element is found again the way a person would find it: its app's window comes to the front, then the
+element is looked up by its name (the one nearest to where it was, if there are several); without a name, the
+same point in the window is used. Such a step is set on the live screen: aim at the element and tap
+**Choose**. Each step can be tried on its own, and a step can be set to let the macro go on if it fails.
+
+**Start recording** turns what you do in the panel into steps: taps and drags, keys, text (typed live it
+becomes one step, corrections left out), apps opened (with a wait for their window), windows brought to the
+front, maximized or closed. A red bar shows how many steps there are; **Done** adds them to a macro, where they
+can be edited.
+
+**When:** by hand, on chosen days at a time, once at a date and time, or every so many minutes between two
+times on chosen days. Schedules use the computer's clock and run on the computer, so the phone can be off.
+A scheduled start is skipped and logged when the computer is locked, someone is using it at that moment, or
+another macro is running or being recorded. A run stops as soon as someone uses the mouse or keyboard at the
+computer or uses the panel; a step that fails stops it too, and a screenshot of that moment is kept with the
+macro. Each macro lists its last runs. Macros are kept in `%LOCALAPPDATA%\strcu\macros.json`.
+
+### What it cannot do
 
 - Unlock the computer. A locked computer shows as locked; locking works, unlocking needs someone at the desk.
 - Click or type into windows that run as administrator (often Task Manager and installers): Windows does not
   let a normal program do that. The same goes for the UAC prompt.
+- Run a macro while the computer is locked: Windows shows nothing to click until someone unlocks it.
 
 ## Remote access (optional)
 
@@ -217,6 +272,7 @@ and placeholders as `lang/en.json`.
 - `src/sys/` operating system layer (screen, input, windows, UI Automation, power, apps, icons, discovery,
   child processes)
 - `src/server.rs` + `src/web/` the panel; `src/worker.rs` runs operating system work in order on one thread
+- `src/macros/` macros: steps and storage, schedules, the runner and recording
 - `src/app.rs` what runs while StrCu is open (listener, tunnel watcher); `src/tui/` the terminal screens, plain
   functions from state to frames that the terminal draws and `strcu dev preview` turns into HTML
 - `src/auth.rs` sign-in, `src/pair.rs` paired phones, `src/passkey.rs` passkeys, `src/access.rs` Cloudflare
