@@ -141,6 +141,8 @@ The page loads nothing from outside; its fonts (IBM Plex) are built in.
 
 On the Files tab:
 
+<img src="docs/files.png" alt="The Files tab on a phone: buttons to get the file selected in File Explorer and to send files from the phone, the folder chips, and the Downloads folder with its subfolders and newest files" width="320">
+
 - **To the phone:** the Downloads, Desktop, Documents, Pictures and Videos folders (wherever Windows keeps them,
   OneDrive included), folders first and then the newest files; tap a file to download it. **Get selected file**
   downloads what is selected in File Explorer on the computer; with several selected, a list to choose from.

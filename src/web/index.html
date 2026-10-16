@@ -2413,7 +2413,7 @@ function fmtSize(n) {
 }
 function fmtDate(secs) {
   const d = new Date(secs * 1000), now = new Date();
-  const opt = d.toDateString() === now.toDateString() ? { hour: '2-digit', minute: '2-digit' }
+  const opt = d.toDateString() === now.toDateString() ? { hour: 'numeric', minute: '2-digit' }
     : d.getFullYear() === now.getFullYear() ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' };
   return new Intl.DateTimeFormat(I18N.lang, opt).format(d);
 }
