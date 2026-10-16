@@ -65,6 +65,8 @@ struct AppState {
     hold: Arc<Mutex<Hold>>,
     /// When the panel last typed live (key by key); one log line per burst
     live_at: Arc<Mutex<Option<Instant>>>,
+    /// Changes whenever the panel acts: the live view looks at the screen more often for a moment
+    kick: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 impl AppState {
@@ -135,6 +137,7 @@ impl Panel {
             macros,
             hold: Arc::default(),
             live_at: Arc::default(),
+            kick: Arc::new(tokio::sync::watch::Sender::new(0)),
         };
         Ok(Panel { state })
     }
@@ -192,6 +195,7 @@ impl Panel {
         let api = Router::new()
             .route("/api/status", get(status))
             .route("/api/shot", get(shot))
+            .route("/api/stream", get(stream))
             .route("/api/click", post(click))
             .route("/api/type", post(type_text))
             .route("/api/key", post(key))
@@ -227,6 +231,7 @@ impl Panel {
             .route("/api/macros/shot", get(macro_shot))
             .route("/api/macros/record", post(macro_record))
             .route("/api/macros/record/stop", post(macro_record_stop))
+            .route_layer(middleware::from_fn_with_state(state.clone(), kick_stream))
             .route_layer(middleware::from_fn_with_state(state.clone(), require_session));
         Router::new()
             .route("/", get(index))
@@ -558,6 +563,20 @@ async fn require_access(State(st): State<AppState>, ConnectInfo(c): ConnectInfo<
     next.run(req).await
 }
 
+/// Anything the panel does (every POST) makes the live view look at the screen more often for a moment.
+async fn kick_stream(State(st): State<AppState>, req: Request, next: Next) -> Response {
+    let post = req.method() == axum::http::Method::POST;
+    let kick = || st.kick.send_modify(|n| *n = n.wrapping_add(1));
+    if post {
+        kick();
+    }
+    let r = next.run(req).await;
+    if post {
+        kick();
+    }
+    r
+}
+
 // ---------- session ----------
 
 /// Tests in debug builds can ask for sign-in from this computer too, to go through the sign-in screens.
@@ -880,6 +899,9 @@ fn page_lang(h: &HeaderMap) -> &'static i18n::Lang {
 
 /// The page, with the texts of its language embedded: no extra request and no flash of untranslated text.
 async fn index(headers: HeaderMap) -> Response {
+    // The live view's WebSocket: `'self'` covers ws:/wss: only in newer browsers, so the address is named
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or_default();
+    let host = if host.chars().all(|c| c.is_ascii_alphanumeric() || ".-:[]".contains(c)) { host } else { "" };
     let chosen = chosen_lang(&headers);
     let lang = page_lang(&headers);
     let langs: Vec<Value> = i18n::all().iter().map(|l| json!({ "code": l.code, "name": l.name })).collect();
@@ -899,12 +921,14 @@ async fn index(headers: HeaderMap) -> Response {
     h.insert(header::VARY, HeaderValue::from_static("Accept-Language, Cookie"));
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
-    h.insert(
-        "content-security-policy",
-        HeaderValue::from_static(
-            "default-src 'self'; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'",
-        ),
+    let ws = if host.is_empty() { String::new() } else { format!(" ws://{host} wss://{host}") };
+    let csp = format!(
+        "default-src 'self'; connect-src 'self'{ws}; img-src 'self' blob:; style-src 'self' 'unsafe-inline'; \
+         script-src 'self' 'unsafe-inline'"
     );
+    if let Ok(v) = HeaderValue::from_str(&csp) {
+        h.insert("content-security-policy", v);
+    }
     r
 }
 
@@ -988,6 +1012,24 @@ struct ShotQ {
     rh: Option<i32>,
 }
 
+/// The live view as a stream (see `stream`). Browsers do not apply the same-origin rule to WebSockets, so a
+/// site open on this computer could otherwise watch the screen: only the panel's own page may connect.
+async fn stream(State(st): State<AppState>, headers: HeaderMap, ws: axum::extract::ws::WebSocketUpgrade) -> Response {
+    let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
+    let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
+    let same = match (origin, host) {
+        (Some(o), Some(h)) => {
+            o.strip_prefix("http://").or_else(|| o.strip_prefix("https://")).is_some_and(|o| o.eq_ignore_ascii_case(h))
+        }
+        _ => false,
+    };
+    if !same {
+        return StatusCode::FORBIDDEN.into_response();
+    }
+    let kick = st.kick.subscribe();
+    ws.max_message_size(4096).on_upgrade(move |sock| crate::stream::run(sock, kick))
+}
+
 async fn shot(State(st): State<AppState>, Query(q): Query<ShotQ>) -> ApiResult<Response> {
     let max = q.max.unwrap_or(1280).clamp(320, 4096);
     let quality = q.q.unwrap_or(75).clamp(30, 95);
@@ -1001,10 +1043,7 @@ async fn shot(State(st): State<AppState>, Query(q): Query<ShotQ>) -> ApiResult<R
                     .map(|r| (r, "region")),
                 _ => None,
             };
-            // A window covering the screen extends past its edges; take the intersection
-            let window = || {
-                window::foreground().filter(|w| !w.minimized).and_then(|w| w.rect.intersect(&screen_rect))
-            };
+            let window = crate::stream::window_area;
             let (area, view) = region
                 .or_else(|| (q.view.as_deref() == Some("window")).then(window).flatten().map(|r| (r, "window")))
                 .unwrap_or((screen_rect, "screen"));

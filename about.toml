@@ -16,6 +16,7 @@ accepted = [
     "0BSD",
     "Unlicense",
     "CDLA-Permissive-2.0",
+    "IJG",
 ]
 # StrCu itself (publish = false) is not third-party; leaving it out also keeps the order the same on every machine
 private = { ignore = true }

@@ -3,20 +3,22 @@
 //! Even if two requests arrive at once, their clicks never interleave; UI Automation's COM objects also
 //! always stay on the same thread.
 
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
-use image::{Rgba, RgbaImage};
+use image::RgbaImage;
 
 use crate::sys::{Rect, screen, uia};
 
 type Job = Box<dyn FnOnce(&mut Ctx) + Send>;
 
+/// Where the panel or a macro last clicked, and when; screenshots mark it for a while.
+static LAST_CLICK: Mutex<Option<(i32, i32, Instant)>> = Mutex::new(None);
+
 pub struct Ctx {
     scanner: Option<uia::Scanner>,
-    last_click: Option<(i32, i32, Instant)>,
 }
 
 impl Ctx {
@@ -28,31 +30,36 @@ impl Ctx {
     }
 
     pub fn note_click(&mut self, x: i32, y: i32) {
-        self.last_click = Some((x, y, Instant::now()));
+        *LAST_CLICK.lock().unwrap() = Some((x, y, Instant::now()));
     }
 
-    /// Image of part of the screen; if there was a click in the last 10 seconds, that point is marked with
-    /// a red ring.
+    /// Image of part of the screen, with the last click marked (see `mark_click`).
     pub fn shot(&mut self, area: Rect) -> Result<RgbaImage> {
         let mut img = screen::capture(area)?;
-        if let Some((x, y, t)) = self.last_click
-            && t.elapsed() < Duration::from_secs(10)
-        {
-            ring(&mut img, x - area.x, y - area.y, 22, 5);
-        }
+        mark_click(&mut img, area, screen::Order::Rgba);
         Ok(img)
     }
 }
 
-fn ring(img: &mut RgbaImage, cx: i32, cy: i32, r: i32, thick: i32) {
-    let (w, h) = (img.width() as i32, img.height() as i32);
+/// If there was a click in the last 10 seconds, marks that point with a red ring on `px`, a picture of `area`.
+pub fn mark_click(px: &mut [u8], area: Rect, order: screen::Order) {
+    let Some((x, y, t)) = *LAST_CLICK.lock().unwrap() else { return };
+    if t.elapsed() >= Duration::from_secs(10) {
+        return;
+    }
+    let red = match order {
+        screen::Order::Rgba => [255, 40, 40, 255],
+        screen::Order::Bgra => [40, 40, 255, 255],
+    };
+    let (cx, cy, r, thick) = (x - area.x, y - area.y, 22, 5);
     for dy in -(r + thick)..=(r + thick) {
         for dx in -(r + thick)..=(r + thick) {
             let d2 = dx * dx + dy * dy;
             if d2 >= r * r && d2 <= (r + thick) * (r + thick) {
                 let (x, y) = (cx + dx, cy + dy);
-                if x >= 0 && y >= 0 && x < w && y < h {
-                    img.put_pixel(x as u32, y as u32, Rgba([255, 40, 40, 255]));
+                if x >= 0 && y >= 0 && x < area.w && y < area.h {
+                    let i = (y as usize * area.w as usize + x as usize) * 4;
+                    px[i..i + 4].copy_from_slice(&red);
                 }
             }
         }
@@ -70,7 +77,7 @@ impl Worker {
         thread::Builder::new()
             .name("os-worker".into())
             .spawn(move || {
-                let mut ctx = Ctx { scanner: None, last_click: None };
+                let mut ctx = Ctx { scanner: None };
                 for job in rx {
                     job(&mut ctx);
                 }

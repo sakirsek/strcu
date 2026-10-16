@@ -158,7 +158,7 @@
   .view { position: relative; flex: none; overflow: hidden; background: #000; box-shadow: 0 0 0 1px var(--line); }
   .view:not(.loaded) { aspect-ratio: 16 / 9; }
   .stage { position: relative; }
-  .stage img { display: block; width: 100%; height: auto; }
+  .stage .shot-img { display: block; width: 100%; height: auto; }
   .tap { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; padding: 0; border: 0; background: transparent; cursor: crosshair; touch-action: manipulation; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   /* Quick mode: a ring where the finger tapped; filled while held (right-click or drag) */
   .qmark { position: absolute; z-index: 2; left: 0; top: 0; width: 36px; height: 36px; margin: -18px 0 0 -18px; border-radius: 50%; border: 2px solid var(--acc); box-shadow: 0 0 0 1.5px rgba(0,0,0,.6); pointer-events: none; opacity: 0; }
@@ -222,7 +222,7 @@
   /* ---- full screen ---- */
   .fs { position: fixed; inset: 0; z-index: 20; overflow: hidden; background: #000; color: var(--fg); touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
   .fsstage { position: absolute; inset: 0; touch-action: none; cursor: crosshair; }
-  .fsstage img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; -webkit-user-drag: none; }
+  .fsstage .shot-img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; -webkit-user-drag: none; }
   .fsbar { position: absolute; z-index: 3; display: flex; align-items: center; gap: 8px; }
   .fsbar.tl { left: calc(12px + env(safe-area-inset-left)); top: 10px; }
   .fsbar.tr { right: calc(12px + env(safe-area-inset-right)); top: 10px; }
@@ -396,7 +396,7 @@
     #p-screen .view { flex: 1 1 0; min-height: 0; display: flex; justify-content: center; align-items: flex-start; overflow: visible; background: none; box-shadow: none; container-type: size; }
     #p-screen .view:not(.loaded) { aspect-ratio: auto; }
     #p-screen .stage { flex: none; width: min(100cqw, calc(100cqh * var(--ar, 1.7778))); aspect-ratio: var(--ar, 1.7778); overflow: hidden; background: #000; box-shadow: 0 0 0 1px var(--line); }
-    #p-screen .stage img { height: 100%; }
+    #p-screen .stage .shot-img { height: 100%; }
     #p-screen .grid4 { grid-template-columns: repeat(8, minmax(0, 1fr)); }
   }
   /* Sideways: tabs move to a rail on the left (the height goes to the image) and the controls sit in one row under it */
@@ -487,7 +487,7 @@
     <section class="panel" id="p-screen">
       <div class="view" id="view">
         <div class="stage">
-          <img id="shot" class="shot-img" data-i18n-alt="screen.image">
+          <canvas id="shot" class="shot-img" width="0" height="0" role="img" data-i18n-label="screen.image"></canvas>
           <button type="button" id="tap" class="tap" data-i18n-label="screen.tap"></button>
           <span id="aim" class="aim" hidden></span>
           <span class="qmark" aria-hidden="true"></span>
@@ -749,7 +749,7 @@
 <!-- FULL SCREEN: when the phone turns sideways or with ⛶ -->
 <div id="fs" class="fs" hidden>
   <div id="fsStage" class="fsstage" data-i18n-label="fs.stage">
-    <img id="fsImg" class="shot-img" alt="">
+    <canvas id="fsImg" class="shot-img" width="0" height="0" aria-hidden="true"></canvas>
   </div>
   <span class="qmark" aria-hidden="true"></span>
   <div class="fsbar tl">
@@ -815,7 +815,6 @@ function applyI18n() {
   $$('[data-i18n]').forEach(el => { el.textContent = t(el.dataset.i18n); });
   $$('[data-i18n-ph]').forEach(el => { el.placeholder = t(el.dataset.i18nPh); });
   $$('[data-i18n-label]').forEach(el => el.setAttribute('aria-label', t(el.dataset.i18nLabel)));
-  $$('[data-i18n-alt]').forEach(el => { el.alt = t(el.dataset.i18nAlt); });
   $$('[data-k], [data-mod]').forEach(b => { if (!b.textContent.trim() && !b.children.length) b.textContent = prettyCombo(b.dataset.k || b.dataset.mod); });
 }
 applyI18n();
@@ -828,7 +827,7 @@ const store = {
 
 const S = {
   scr: null,            // area covered by the last screenshot (physical pixels)
-  shotUrl: '', shotAt: 0,
+  shotAt: 0,
   view: store.get('view', 'screen'),
   // Live view: 'hd' | 'sd' | 'off'. HD is not remembered; the page starts with SD (or paused) so a
   // forgotten HD view does not eat mobile data.
@@ -931,7 +930,39 @@ async function fetchShot(params, signal) {
   if (r.status === 401) { showLogin(); throw authError(); }
   if (!r.ok) throw new Error(t('err.shot'));
   const n = k => +r.headers.get('x-screen-' + k);
-  return { area: { x: n('x'), y: n('y'), w: n('w'), h: n('h') }, url: URL.createObjectURL(await r.blob()) };
+  return { area: { x: n('x'), y: n('y'), w: n('w'), h: n('h') }, blob: await r.blob() };
+}
+
+// A picture ready to draw: a JPEG from the computer (or, in tests, any image)
+async function decodePic(blob) {
+  if (window.createImageBitmap) { try { return await createImageBitmap(blob); } catch (_) {} }
+  const url = URL.createObjectURL(blob), img = new Image();
+  img.src = url;
+  try { await img.decode(); } finally { URL.revokeObjectURL(url); }
+  return img;
+}
+
+// Draws pieces into the screen picture (both canvases: the Screen tab's and full screen's). `w`×`h` is the
+// picture's size, `area` the part of the screen it shows; a new size starts a new picture.
+function paint(area, w, h, parts) {
+  let resized = false;
+  for (const c of $$('.shot-img')) {
+    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; resized = true; }
+    const g = c.getContext('2d');
+    for (const p of parts) g.drawImage(p.pic, p.x, p.y, p.w, p.h);
+  }
+  const a = S.scr, moved = !a || a.x !== area.x || a.y !== area.y || a.w !== area.w || a.h !== area.h;
+  S.scr = area; S.shotAt = Date.now();
+  $('#view').classList.add('loaded');
+  // On tablets the image box is sized from the shape of the frame (full screen or a window)
+  $('#view').style.setProperty('--ar', (area.w / area.h).toFixed(4));
+  if (resized || moved) {
+    // Full screen fits a picture of another shape again (the view changed between full screen and window)
+    const c = $('#fsImg');
+    if (S.fs && Math.abs(c.width / c.height - Z.bw / Z.bh) > 0.01) fsLayout(true); else placeAim();
+  }
+  if (S.aimNext) { const p = S.aimNext; S.aimNext = null; setAim(p); }
+  renderLiveDot();
 }
 
 // Show the result of an action: refresh the screen (unless paused) and the foreground window
@@ -1156,6 +1187,7 @@ function onScreen() { return S.tab === 'screen' || S.fs; }
 //   'urgent' startup, quality or view changed; a new request follows as soon as the running one ends
 //   (none)   a single frame after an action (to show the result); not taken while paused, the image stays frozen
 async function refresh(why) {
+  if (streamOn()) return;
   if (!why && (S.mode === 'off' || !onScreen())) return;
   if (why === 'live' && !onScreen()) return;
   if (S.refreshing) { if (why === 'urgent') S.again = true; return; }
@@ -1164,21 +1196,16 @@ async function refresh(why) {
   const view = S.view;
   try {
     const s = await fetchShot({ ...(QUALITY[S.mode] || QUALITY.sd), view }, ctl && ctl.signal);
-    // If cancelled, or the view changed while the request was in flight, the frame is not shown (a new one is requested)
-    if ((ctl && ctl.signal.aborted) || view !== S.view) {
-      URL.revokeObjectURL(s.url);
+    const pic = await decodePic(s.blob);
+    // If cancelled, or the view changed while the request was in flight, the frame is not shown (a new one is
+    // requested); nor once the stream has taken over
+    if ((ctl && ctl.signal.aborted) || view !== S.view || streamOn()) {
       if (view !== S.view) S.again = true;
       return;
     }
-    const old = S.shotUrl;
-    S.scr = s.area; S.shotUrl = s.url; S.shotAt = Date.now();
-    $$('.shot-img').forEach(img => { img.src = s.url; });
-    $('#view').classList.add('loaded');
-    // On tablets the image box is sized from the shape of the frame (full screen or a window)
-    $('#view').style.setProperty('--ar', (s.area.w / s.area.h).toFixed(4));
-    if (old) setTimeout(() => URL.revokeObjectURL(old), 2000);
-    if (S.aimNext) { const p = S.aimNext; S.aimNext = null; setAim(p); } else placeAim();
-    renderLiveDot();
+    const w = pic.naturalWidth || pic.width, h = pic.naturalHeight || pic.height;
+    paint(s.area, w, h, [{ x: 0, y: 0, w, h, pic }]);
+    if (pic.close) pic.close();
     if (why) status();
   } catch (e) {
     S.aimNext = null;
@@ -1236,36 +1263,111 @@ function renderLive() {
   $$('[data-live]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.live === S.mode)));
   renderLiveDot();
 }
-// While the screen is hidden (another tab) no frames are taken; only the foreground window is tracked
+// While live the picture comes as a stream; the foreground window is followed every 2.5 s. Without the
+// stream, frames are fetched on the same timer. While the screen is hidden (another tab) no frames are taken.
 function startLive() {
   clearInterval(S.timer);
+  if (S.mode === 'off') streamStop();
+  else if (LV.ws) streamCfg();    // HD ↔ SD: a whole new picture in the new quality
+  else streamStart();
   S.timer = S.mode === 'off' ? null : setInterval(() => {
     if (document.hidden || $('#app').hidden) return;
-    if (onScreen()) refresh('live'); else status();
+    if (onScreen() && !streamOn()) refresh('live'); else status();
   }, 2500);
   renderLive();
 }
-function stopLive() { clearInterval(S.timer); S.timer = null; }
+function stopLive() { clearInterval(S.timer); S.timer = null; streamStop(); }
+
+// ---------- live view stream ----------
+// The computer sends only what changed on the screen (see stream.rs); each frame is acknowledged once drawn,
+// so a slow network gets fewer frames instead of a growing delay. If the connection cannot be made three
+// times in a row (an old browser, a proxy in the way), frames are fetched every 2.5 s as before.
+const LV = { ws: null, open: false, fails: 0, poll: typeof WebSocket !== 'function', chain: Promise.resolve(), retry: 0 };
+
+function streamOn() { return !!LV.ws; }
+
+function streamStart() {
+  if (LV.poll || LV.ws || S.mode === 'off' || $('#app').hidden) return;
+  clearTimeout(LV.retry);
+  const ws = new WebSocket((location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/api/stream');
+  ws.binaryType = 'arraybuffer';
+  LV.ws = ws; LV.open = false;
+  ws.onopen = () => { LV.open = true; LV.fails = 0; streamCfg(); streamVisible(); };
+  ws.onmessage = e => {
+    if (typeof e.data !== 'string') { LV.chain = LV.chain.then(() => streamFrame(ws, e.data)); return; }
+    // "same": the picture is the screen as it is now
+    if (e.data.includes('"same"')) { S.shotAt = Date.now(); renderLiveDot(); }
+  };
+  ws.onclose = () => {
+    if (LV.ws !== ws) return;
+    const opened = LV.open;
+    LV.ws = null; LV.open = false;
+    if (!opened && ++LV.fails >= 3) { LV.poll = true; startLive(); return; }
+    // Turned away before opening: if the session has ended, this shows the sign-in screen
+    if (!opened) status();
+    if (S.mode !== 'off' && !$('#app').hidden) LV.retry = setTimeout(streamStart, opened ? 500 : 2000);
+  };
+}
+function streamStop() {
+  clearTimeout(LV.retry);
+  const ws = LV.ws;
+  LV.ws = null; LV.open = false;
+  if (ws) ws.close();
+}
+function streamSend(m) { if (LV.open && LV.ws.readyState === 1) LV.ws.send(JSON.stringify(m)); }
+function streamCfg() { streamSend({ t: 'cfg', q: S.mode, view: S.view }); }
+// Frames only while the picture is in view; the connection stays, so coming back needs no whole new picture
+function streamVisible() {
+  if (LV.ws) streamSend({ t: onScreen() && !document.hidden ? 'go' : 'pause' });
+  else if (!document.hidden && S.timer) streamStart();
+}
+// A new picture after the view changed (or to aim at something outside the current one)
+function newPicture() { if (streamOn()) streamCfg(); else refresh('urgent'); }
+
+async function streamFrame(ws, buf) {
+  try {
+    const n = new DataView(buf).getUint32(0, true);
+    const hd = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, n)));
+    let off = 4 + n;
+    const parts = hd.r.map(([x, y, w, h, len]) => {
+      const p = { x, y, w, h, blob: new Blob([new Uint8Array(buf, off, len)], { type: 'image/jpeg' }) };
+      off += len;
+      return p;
+    });
+    const pics = await Promise.all(parts.map(p => decodePic(p.blob)));
+    if (ws === LV.ws) paint(hd.area, hd.w, hd.h, parts.map((p, i) => ({ ...p, pic: pics[i] })));
+    pics.forEach(p => { if (p.close) p.close(); });
+  } catch (_) {
+    // A piece that cannot be drawn leaves the picture incomplete: ask for all of it again
+    streamSend({ t: 'key' });
+  } finally {
+    if (ws === LV.ws && ws.readyState === 1) ws.send('{"t":"ack"}');
+  }
+}
 
 // When pausing, the last frame (HD if it was HD) stays in place: the live frame in flight is cancelled.
 // Switching HD ↔ SD does not wait for a frame in the old quality either.
 $$('[data-live]').forEach(b => b.onclick = () => {
   if (S.mode === b.dataset.live) return;
   S.mode = b.dataset.live; store.set('live', S.mode !== 'off');
-  startLive();
   if (S.liveReq) S.liveReq.abort();
+  startLive();
   if (S.mode === 'off') S.again = false;
-  else refresh('urgent');
+  else if (!streamOn()) refresh('urgent');
 });
 // A fresh frame on returning to the panel; when paused the image stays as it is
-document.addEventListener('visibilitychange', () => { if (!document.hidden && !$('#app').hidden) { refresh(); status(); } });
+document.addEventListener('visibilitychange', () => {
+  if ($('#app').hidden) return;
+  if (S.mode !== 'off') streamVisible();
+  if (!document.hidden) { refresh(); status(); }
+});
 
 function renderView() {
   $$('[data-view]').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.view === S.view)));
 }
 $$('[data-view]').forEach(b => b.onclick = () => {
   if (S.view === b.dataset.view) return;
-  S.view = b.dataset.view; store.set('view', S.view); renderView(); refresh('urgent');
+  S.view = b.dataset.view; store.set('view', S.view); renderView(); newPicture();
 });
 
 // ---------- aim, then choose ----------
@@ -1314,7 +1416,6 @@ function placeBubble(ax, ay, W, H) {
   bub.classList.toggle('above', above); bub.classList.toggle('below', !above);
 }
 window.addEventListener('resize', () => { if (S.fs) fsLayout(false); else placeAim(); });
-$('#shot').addEventListener('load', () => { if (!S.fs) placeAim(); });
 
 function setAim(p) {
   S.aim = p; S.target = null; S.typeInto = ''; renderQtPlaceholder();
@@ -1356,7 +1457,7 @@ $('#tstrip').onclick = $('#fsTarget').onclick = () => {
 async function loadLoupe(p, seq) {
   try {
     const s = await fetchShot({ rx: p.x - LOUPE / 2, ry: p.y - LOUPE / 2, rw: LOUPE, rh: LOUPE, q: 85 });
-    if (seq !== S.aimSeq) { URL.revokeObjectURL(s.url); return; }
+    if (seq !== S.aimSeq) return;
     const img = $('#loupe'), old = img.src;
     // In percent of the magnifier, which is larger on tablets
     const k = 100 / LOUPE;
@@ -1365,7 +1466,7 @@ async function loadLoupe(p, seq) {
     img.style.top = ((s.area.y - (p.y - LOUPE / 2)) * k) + '%';
     img.style.width = (s.area.w * k) + '%';
     img.style.height = (s.area.h * k) + '%';
-    img.src = s.url;
+    img.src = URL.createObjectURL(s.blob);
     if (old.startsWith('blob:')) URL.revokeObjectURL(old);
   } catch (_) {}
 }
@@ -1737,7 +1838,7 @@ function aimAt(it) {
   if (a && p.x >= a.x && p.y >= a.y && p.x < a.x + a.w && p.y < a.y + a.h) { setAim(p); return; }
   // Outside the image (e.g. the taskbar in the window view): switch to the whole screen and aim on the new frame
   S.view = 'screen'; store.set('view', S.view); renderView();
-  S.aimNext = p; refresh('urgent');
+  S.aimNext = p; newPicture();
 }
 
 async function clickElement(it, quiet) {
@@ -1997,7 +2098,7 @@ const ZMAX = 8;
 function fsLayout(reset) {
   const fs = $('#fs'), img = $('#fsImg');
   const W = fs.clientWidth, H = fs.clientHeight;
-  const nw = img.naturalWidth || (S.scr && S.scr.w) || 16, nh = img.naturalHeight || (S.scr && S.scr.h) || 9;
+  const nw = img.width || (S.scr && S.scr.w) || 16, nh = img.height || (S.scr && S.scr.h) || 9;
   const s = Math.min(W / nw, H / nh), bw = nw * s, bh = nh * s;
   if (reset || !Z.bw) { Z.k = 1; }
   else {
@@ -2031,9 +2132,8 @@ function enterFs(real) {
   S.fs = true; S.fsAuto = !real;
   $('#fs').hidden = false;
   $('#fs').append($('#aim'), $('#bubble'));
-  if (S.shotUrl) $('#fsImg').src = S.shotUrl;
   fsLayout(true);
-  renderTarget(); renderLiveDot();
+  renderTarget(); renderLiveDot(); streamVisible();
   if (real) {
     S.fsReal = true;
     const el = document.documentElement;
@@ -2050,6 +2150,7 @@ function exitFs() {
   S.fs = false; S.fsAuto = false;
   $('#fs').hidden = true; showFsType(false);
   $('#view .stage').append($('#aim'), $('#bubble'));
+  streamVisible();
   if (S.fsReal) {
     S.fsReal = false;
     try { screen.orientation.unlock(); } catch (_) {}
@@ -2061,12 +2162,6 @@ function exitFs() {
 $('#fsBtn').onclick = () => enterFs(true);
 $('#fsExit').onclick = exitFs;
 document.addEventListener('fullscreenchange', () => { if (!document.fullscreenElement && S.fs && S.fsReal) { S.fsReal = false; exitFs(); } });
-$('#fsImg').addEventListener('load', () => {
-  if (!S.fs) return;
-  // If the view changed (full screen ↔ window) the image is fitted again
-  const img = $('#fsImg'), r = img.naturalWidth / img.naturalHeight;
-  if (Math.abs(r - Z.bw / Z.bh) > 0.01) fsLayout(true); else placeAim();
-});
 
 // Turning the phone sideways switches Screen to full screen; holding it upright switches back
 const LAND = matchMedia('(orientation: landscape) and (max-height: 500px) and (pointer: coarse)');
@@ -2741,6 +2836,7 @@ function showTab(name) {
   // Leaving Screen while choosing a target for a macro gives up the choice
   if (S.mac.pick && name !== 'screen') { S.mac.pick = null; renderMacBar(); }
   S.tab = name;
+  if (S.mode !== 'off') streamVisible();
   $$('.panel').forEach(p => { p.hidden = p.id !== 'p-' + name; });
   $$('#tabs [data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'));
   $('#main').scrollTop = 0;
@@ -2760,6 +2856,7 @@ $$('#tabs [data-tab]').forEach(b => b.onclick = () => showTab(b.dataset.tab));
 // ---------- startup ----------
 
 function start() {
+  LV.fails = 0; LV.poll = typeof WebSocket !== 'function';
   showApp(); renderView(); renderQuick(); renderRecent(); renderMods(); renderLive(); renderSession(); renderTarget();
   showTab(S.tab);
   refresh('urgent'); startLive(); status(); pollMac();

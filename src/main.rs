@@ -9,6 +9,7 @@ mod macros;
 mod pair;
 mod passkey;
 mod server;
+mod stream;
 mod sys;
 mod tui;
 mod tunnel;

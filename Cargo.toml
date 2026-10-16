@@ -10,14 +10,16 @@ publish = false
 [dependencies]
 anyhow = "1"
 argon2 = "0.5"
-axum = "0.8"
+axum = { version = "0.8", features = ["ws"] }
 base64 = "0.22"
 clap = { version = "4.6", features = ["derive"] }
 # Terminal interface: raw keys, colours, alternate screen
 crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = "0.3"
 getrandom = "0.3"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# JPEG for the live view: about three times faster than image's own encoder
+jpeg-encoder = { version = "0.6", features = ["simd"] }
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 # Passkey (fingerprint / face sign-in) signatures (ES256); jsonwebtoken already builds the same version
 p256 = "0.13"
