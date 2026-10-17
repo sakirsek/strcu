@@ -95,14 +95,13 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
   live, red when it is paused or lagging.
 - **Screen:** a tap aims the crosshair; a bar with Click / Double / Right, ↑ / ↓ (scroll) and ✕ appears next to
   it. Below the image, a magnifier and the element's name. A typing box and eight common keys sit underneath.
-  While the box has focus on a touch screen, a strip over it adds the keys the phone keyboard lacks: Esc, Tab,
-  the arrows and Ctrl / Alt / Shift / Win, which go with the next key or the next letter typed (Ctrl + C ...).
 - **Quick** (the switch under the image) skips the crosshair. A tap clicks, a quarter of a second later in case
   a second tap follows; two taps double-click. Hold a finger still for half a second: lifting it right-clicks,
   moving it drags with the left button held. If the phone loses its connection mid-drag, StrCu lets go of the
-  button by itself after three seconds. The typing box then sends each key as it is pressed: the phone
-  keyboard's corrections and suggestions come out right on the computer, Enter presses Enter, and Backspace
-  still deletes when the box is empty.
+  button by itself after three seconds. The typing box gives way to a keyboard button (next to the switch): it
+  opens the phone keyboard, and each key goes to the computer as it is pressed. The keyboard's corrections and
+  suggestions come out right on the computer, and Enter presses Enter. A hardware keyboard (a tablet's) needs
+  no button: its keys, shortcuts included, go straight to the computer.
 - **Live view:** SD scales the long side to 1280 pixels, HD sends full resolution. The computer looks at the
   screen several times a second and sends only the parts that changed, as JPEG pieces, and nothing while the
   screen is still. While something keeps changing (scrolling, a video) the pieces are a little softer, and they
@@ -123,15 +122,16 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
   panel language and a log of what was done.
 
 **Full screen:** ⛶ or turn the phone sideways. Pinch to zoom, drag to pan, tap to aim. With Quick on, taps
-and long presses work as above; a quick drag still pans the zoomed image.
+and long presses work as above, a quick drag still pans the zoomed image, and the keyboard button opens the
+phone keyboard.
 
 <img src="docs/fullscreen.png" alt="The panel in full screen on a phone held sideways, with the crosshair on a file and the click bar" width="640">
 
 **Tablets** (and wide browser windows): the Screen tab fills the page and the image takes all the room the
 controls leave. Held sideways, the tabs move to a rail on the left and the controls sit in one row under the
-image: view and Quick, the typing box, the element under the crosshair with a larger magnifier, and the keys.
-Held upright, the image spans the full width with the controls at the bottom. The other tabs stay a readable
-column in the middle.
+image: view and Quick, the typing box (with Quick on, the keyboard button), the element under the crosshair
+with a larger magnifier, and the keys. Held upright, the image spans the full width with the controls at the
+bottom. The other tabs stay a readable column in the middle.
 
 <img src="docs/tablet.png" alt="The panel on a tablet held sideways: tabs in a rail on the left, the screen image filling the page with the crosshair and click bar on a file, and one row of controls under it" width="720">
 

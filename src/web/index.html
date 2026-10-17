@@ -194,6 +194,7 @@
   .tool[aria-checked="true"] { color: var(--fg); }
   .tool[aria-checked="true"] .knob { background: var(--acc); box-shadow: none; }
   .tool[aria-checked="true"] .knob::after { transform: translateX(12px); background: var(--acc-ink); }
+  .tool[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); color: var(--acc); }
   /* Target strip: fixed height, so the buttons below do not move when aiming */
   /* On very narrow phones (320 px) keep the view buttons and the foreground window name from being cut */
   @media (max-width: 340px) {
@@ -217,17 +218,11 @@
   .tstrip.idle .tname { font-size: 15px; font-weight: 500; color: var(--fg2); }
   .dock { flex: none; display: flex; flex-direction: column; gap: 8px; }
   .qtype { position: relative; display: flex; gap: 8px; }
-  /* Keys the phone keyboard lacks, over the typing box while it has focus (under it in full screen) */
-  .kstrip { position: absolute; z-index: 6; left: 0; right: 0; bottom: calc(100% + 6px); display: flex; gap: 2px; padding: 3px; border-radius: 12px; background: var(--panel); box-shadow: 0 0 0 1px var(--line2), 0 6px 18px rgba(0,0,0,.55); touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
-  .kstrip button { flex: 1 1 auto; height: 40px; padding: 0 4px; border: 0; border-radius: 9px; background: transparent; color: var(--fg); font-family: var(--mono); font-size: 13px; white-space: nowrap; }
-  .kstrip .arr { font-size: 17px; }
-  @media (max-width: 359px) { .kstrip button { padding: 0 2px; font-size: 12px; } .kstrip .arr { font-size: 15px; } }
-  .kstrip button:active { background: #2A2F36; }
-  .kstrip button[aria-pressed="true"] { background: var(--acc-soft); color: var(--acc); box-shadow: inset 0 0 0 1px var(--acc); }
-  .kstrip .ksep { flex: none; width: 1px; margin: 7px 1px; background: var(--line2); }
-  .fstype .kstrip { top: calc(100% + 6px); bottom: auto; }
   .qtype .field { flex: 1; min-width: 0; min-height: 48px; text-overflow: ellipsis; }
   .qtype .btn { flex: none; min-width: 76px; }
+  /* Quick mode: the phone keyboard types into a box nobody sees, which only catches the keys */
+  .qkey { position: fixed; left: 0; top: 0; width: 1px; height: 1px; overflow: hidden; opacity: 0; pointer-events: none; }
+  .qkey input { width: 1px; height: 1px; padding: 0; border: 0; font-size: 16px; }
 
   /* ---- full screen ---- */
   .fs { position: fixed; inset: 0; z-index: 20; overflow: hidden; background: #000; color: var(--fg); touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
@@ -448,6 +443,8 @@
     #p-screen { display: grid; grid-template-columns: minmax(0, 330px) minmax(180px, 1fr) minmax(0, 330px); grid-template-rows: minmax(0, 1fr) auto auto; gap: 8px 10px; }
     #p-screen .view { grid-area: 1 / 1 / 2 / -1; align-items: center; margin-bottom: 2px; }
     #p-screen .toolbar { grid-area: 2 / 1; }
+    /* With Quick on there is no typing box under the view buttons */
+    #p-screen.qmode .toolbar { grid-area: 2 / 1 / 4 / 2; }
     #p-screen .toolbar .tool { height: 44px; }
     #p-screen .toolbar .seg button { min-height: 36px; }
     #p-screen .tstrip { grid-area: 2 / 2 / 4 / 3; height: auto; gap: 14px; padding: 8px 14px 8px 8px; }
@@ -542,6 +539,7 @@
           <button type="button" data-view="window" data-i18n="screen.window" data-i18n-label="screen.window_label"></button>
         </div>
         <button type="button" id="quickSw" class="tool" role="switch" aria-checked="false" data-i18n-label="screen.quick_label"><span data-i18n="screen.quick"></span><span class="knob" aria-hidden="true"></span></button>
+        <button type="button" id="kbBtn" class="tool sq" aria-pressed="false" data-i18n-label="screen.kb" hidden><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14h9"/></svg></button>
         <button type="button" id="fsBtn" class="tool sq" data-i18n-label="screen.fullscreen"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
       </div>
 
@@ -554,19 +552,6 @@
         <form id="qtForm" class="qtype">
           <input id="qt" class="field" type="text" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" enterkeyhint="send" data-i18n-label="screen.type_label">
           <button type="submit" class="btn primary" data-i18n="common.type"></button>
-          <div id="kstrip" class="kstrip" role="toolbar" data-i18n-label="strip.label" hidden>
-            <button type="button" data-sk="esc"></button>
-            <button type="button" data-sk="tab"></button>
-            <button type="button" class="arr" data-sk="left" data-i18n-label="key.left_label"></button>
-            <button type="button" class="arr" data-sk="up" data-i18n-label="key.up_label"></button>
-            <button type="button" class="arr" data-sk="down" data-i18n-label="key.down_label"></button>
-            <button type="button" class="arr" data-sk="right" data-i18n-label="key.right_label"></button>
-            <span class="ksep" aria-hidden="true"></span>
-            <button type="button" data-smod="ctrl" aria-pressed="false"></button>
-            <button type="button" data-smod="alt" aria-pressed="false"></button>
-            <button type="button" data-smod="shift" aria-pressed="false"></button>
-            <button type="button" data-smod="win" aria-pressed="false"></button>
-          </div>
         </form>
         <div class="grid4">
           <button type="button" class="key" data-k="enter"></button>
@@ -859,6 +844,8 @@
     <button type="submit" class="btn primary" data-i18n="common.type"></button>
   </form>
 </div>
+
+<form id="qkForm" class="qkey"><input id="qk" type="text" tabindex="-1" autocomplete="off" autocapitalize="off" enterkeyhint="enter" data-i18n-label="screen.kb"></form>
 
 <div id="ask" class="ask" hidden><div class="askbox" role="alertdialog" aria-modal="true" aria-labelledby="askText"><p id="askText"></p><div class="two"><button type="button" id="askNo" class="btn"></button><button type="button" id="askYes" class="btn primary"></button></div></div></div>
 
@@ -1326,7 +1313,7 @@ $('#fgBtn').onclick = () => { S.wl = 'open'; store.set('wl', S.wl); showTab('win
 
 function renderQtPlaceholder() {
   const w = S.typeInto || (S.status && S.status.foreground);
-  const ph = S.quick ? (w ? t('screen.live_to', { name: w }) : t('screen.live_ph')) : w ? t('screen.type_to', { name: w }) : t('screen.type_ph');
+  const ph = w ? t('screen.type_to', { name: w }) : t('screen.type_ph');
   $('#qt').placeholder = ph; $('#fsQt').placeholder = ph;
 }
 
@@ -1594,7 +1581,6 @@ async function sendText(text, enter) {
 $('#qtForm').addEventListener('submit', async e => {
   e.preventDefault();
   const inp = $('#qt');
-  if (S.quick) { liveEnter(inp); return; }
   if (!inp.value) { inp.focus(); return; }
   if (await sendText(inp.value, false)) { liveReset(inp); inp.blur(); }
 });
@@ -1639,86 +1625,96 @@ async function pumpLive() {
   LQ.t = setTimeout(() => { refresh(); status(); }, 400);
 }
 
-// Live typing: the box only catches keys. Each change is sent as Backspaces for what went away and the new
-// letters, so the phone keyboard's corrections and suggestions come out right on the computer.
+// Live typing: in quick mode the keyboard button opens the phone keyboard on a box nobody sees, which only
+// catches keys. Each change is sent as Backspaces for what went away and the new letters, so the phone
+// keyboard's corrections and suggestions come out right on the computer.
+const QK = $('#qk');
+QK._prev = '';
 function liveReset(inp) { inp.value = ''; inp._prev = ''; }
 function liveEnter(inp) { liveSend({ type: true, back: 0, text: '', enter: true }); liveReset(inp); }
-const LIVE_KEYS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Tab: 'tab', Delete: 'delete', Escape: 'esc', Home: 'home', End: 'end', PageUp: 'pageup', PageDown: 'pagedown' };
-[$('#qt'), $('#fsQt')].forEach(inp => {
-  inp._prev = '';
-  inp.addEventListener('input', () => {
-    const prev = [...inp._prev], cur = [...inp.value];
-    let same = 0;
-    while (same < prev.length && same < cur.length && prev[same] === cur[same]) same++;
-    const back = prev.length - same, text = cur.slice(same).join('');
-    // With Ctrl, Alt ... on in the key strip a letter is a shortcut (Ctrl + C ...), not text
-    if (KS.mods.size && !back && [...text].length === 1 && text.trim()) {
-      inp.value = inp._prev;
-      stripKey(text.toLowerCase());
-      return;
-    }
-    inp._prev = inp.value;
-    if (S.quick && (back || text)) liveSend({ type: true, back, text, enter: false });
-  });
-  inp.addEventListener('keydown', e => {
-    if (!S.quick || e.isComposing || e.keyCode === 229) return;
-    // Nothing left in the box: Backspace still deletes on the computer
-    if (e.key === 'Backspace' && !inp.value) { e.preventDefault(); liveSend({ type: true, back: 1, text: '', enter: false }); return; }
-    // A hardware keyboard's arrows, Tab, Delete ... and shortcuts go as keys; the box starts over after them
-    let combo = LIVE_KEYS[e.key];
-    if (!combo && (e.ctrlKey || e.altKey || e.metaKey) && e.key.length === 1) combo = e.key.toLowerCase();
-    if (!combo) return;
-    e.preventDefault();
-    const mods = [e.ctrlKey && 'ctrl', e.altKey && 'alt', e.shiftKey && 'shift', e.metaKey && 'win'].filter(Boolean);
-    liveSend({ key: [...mods, combo].join('+') });
-    liveReset(inp);
-  });
+const LIVE_KEYS = { ArrowLeft: 'left', ArrowRight: 'right', ArrowUp: 'up', ArrowDown: 'down', Tab: 'tab', Delete: 'delete', Insert: 'insert', Escape: 'esc', Home: 'home', End: 'end', PageUp: 'pageup', PageDown: 'pagedown' };
+// Apple keyboards type characters such as @ with Option: there Option and a key is text, not a shortcut
+const APPLE = /Mac|iP(hone|ad|od)/.test(navigator.platform);
+// A key that is not text, as a combo for the computer (arrows, Tab, F5, Ctrl+C, Shift+Enter ...); null for text
+function keyCombo(e) {
+  // AltGr (Ctrl and Alt together on Windows) types characters such as @ on many layouts
+  const altGr = e.getModifierState && e.getModifierState('AltGraph');
+  const ctrl = e.ctrlKey && !altGr, alt = e.altKey && !altGr, mod = ctrl || e.metaKey || (alt && !APPLE);
+  let k = LIVE_KEYS[e.key] || (/^F([1-9]|1\d|2[0-4])$/.test(e.key) ? e.key.toLowerCase() : '');
+  if (!k && e.key === 'Enter' && (mod || alt || e.shiftKey)) k = 'enter';
+  if (!k && e.key === 'Backspace' && (mod || alt)) k = 'backspace';
+  // With Ctrl ... the key's place on the keyboard counts, so Ctrl+Shift+S is S and not the shifted character
+  if (!k && mod) k = /^(Key[A-Z]|Digit\d)$/.test(e.code) ? e.code.slice(-1).toLowerCase() : e.key === ' ' ? 'space' : [...e.key].length === 1 ? e.key.toLowerCase() : '';
+  if (!k) return null;
+  return [ctrl && 'ctrl', alt && 'alt', e.shiftKey && 'shift', e.metaKey && 'win'].filter(Boolean).concat(k).join('+');
+}
+QK.addEventListener('input', () => {
+  const prev = [...QK._prev], cur = [...QK.value];
+  let same = 0;
+  while (same < prev.length && same < cur.length && prev[same] === cur[same]) same++;
+  const back = prev.length - same, text = cur.slice(same).join('');
+  QK._prev = QK.value;
+  if (S.quick && (back || text)) liveSend({ type: true, back, text, enter: false });
+});
+QK.addEventListener('keydown', e => {
+  if (!S.quick || e.isComposing || e.keyCode === 229) return;
+  // Nothing left in the box: Backspace still deletes on the computer
+  if (e.key === 'Backspace' && !QK.value) { e.preventDefault(); liveSend({ type: true, back: 1, text: '', enter: false }); return; }
+  // Arrows, Tab, Delete ... and shortcuts go as keys; the box starts over after them
+  const combo = keyCombo(e);
+  if (!combo) return;
+  e.preventDefault();
+  liveSend({ key: combo });
+  liveReset(QK);
+});
+// The phone keyboard's Enter
+$('#qkForm').addEventListener('submit', e => { e.preventDefault(); liveEnter(QK); });
+
+// A hardware keyboard (a tablet's, a laptop's) needs no box: in quick mode its keys go straight to the computer
+// while Screen is showing and no text field has the focus
+document.addEventListener('keydown', e => {
+  if (!S.quick || !onScreen() || e.defaultPrevented || e.isComposing || e.keyCode === 229) return;
+  if ($('#app').hidden || !$('#ask').hidden || (e.target.closest && e.target.closest('input, textarea, select, [contenteditable]'))) return;
+  const combo = keyCombo(e);
+  const op = combo ? { key: combo }
+    : e.key === 'Enter' ? { type: true, back: 0, text: '', enter: true }
+    : e.key === 'Backspace' ? { type: true, back: 1, text: '', enter: false }
+    : [...e.key].length === 1 ? { type: true, back: 0, text: e.key, enter: false } : null;
+  if (!op) return;
+  e.preventDefault();
+  liveSend(op);
 });
 
-// ---------- key strip ----------
-// While the typing box has focus on a touch screen, a strip over it (under it in full screen) offers keys the
-// phone keyboard lacks. Ctrl, Alt, Shift and Win are one-shot: they go with the next key, or with the next
-// letter typed in the box. The box keeps its focus, so the phone keyboard stays open.
-const KS = { mods: new Set(), inp: null, el: $('#kstrip'), touch: null };
-const COARSE = matchMedia('(pointer: coarse)');
-$$('#kstrip button').forEach(b => { b.textContent = prettyCombo(b.dataset.sk || b.dataset.smod); });
-
-function stripShow(inp) {
-  if (!COARSE.matches) return;
-  KS.inp = inp;
-  inp.form.append(KS.el);
-  KS.el.hidden = false;
+// The keyboard button (on Screen, and ⌨ in full screen) opens and closes the phone keyboard
+const KB = { was: null, full: 0, shown: false };
+function openKeys() { QK.focus({ preventScroll: true }); }
+function closeKeys() { if (document.activeElement === QK) QK.blur(); }
+function renderKeys() {
+  const on = document.activeElement === QK;
+  $('#kbBtn').setAttribute('aria-pressed', String(on));
+  if (S.quick) $('#fsKb').setAttribute('aria-expanded', String(on));
 }
-function stripHide() { KS.el.hidden = true; KS.inp = null; stripMods(null); }
-// Turns a modifier on or off; null turns them all off
-function stripMods(m) {
-  if (m === null) KS.mods.clear(); else if (KS.mods.has(m)) KS.mods.delete(m); else KS.mods.add(m);
-  $$('#kstrip [data-smod]').forEach(b => b.setAttribute('aria-pressed', String(KS.mods.has(b.dataset.smod))));
+function toggleKeys() {
+  const was = KB.was ?? document.activeElement === QK;
+  KB.was = null;
+  if (was) closeKeys(); else openKeys();
 }
-// A key with the modifiers that are on; while typing live it keeps its place among the letters
-function stripKey(k) {
-  const combo = [...MODS.filter(m => KS.mods.has(m)), k].join('+');
-  stripMods(null);
-  if (S.quick && KS.inp) { liveSend({ key: combo }); liveReset(KS.inp); } else sendKey(combo, false);
-}
-function stripPress(b) {
-  if (!b) return;
-  if (b.dataset.smod) stripMods(b.dataset.smod); else stripKey(b.dataset.sk);
-}
-// A tap on the strip must not take the focus from the box (that would close the phone keyboard): the touch
-// is handled here, and lifting the finger on the same button presses it.
-KS.el.addEventListener('touchstart', e => { e.preventDefault(); KS.touch = e.target.closest('button'); }, { passive: false });
-KS.el.addEventListener('touchend', e => {
-  e.preventDefault();
-  const tp = e.changedTouches[0], under = document.elementFromPoint(tp.clientX, tp.clientY);
-  if (KS.touch && under && under.closest('button') === KS.touch) stripPress(KS.touch);
-  KS.touch = null;
-}, { passive: false });
-KS.el.addEventListener('mousedown', e => e.preventDefault());
-KS.el.addEventListener('click', e => stripPress(e.target.closest('button')));
-[$('#qt'), $('#fsQt')].forEach(inp => {
-  inp.addEventListener('focus', () => stripShow(inp));
-  inp.addEventListener('blur', () => { if (KS.inp === inp) stripHide(); });
+[$('#kbBtn'), $('#fsKb')].forEach(b => {
+  // Whether it was open before this tap: on some phones the tap itself takes the focus away first
+  b.addEventListener('pointerdown', () => { KB.was = document.activeElement === QK; });
+  b.addEventListener('mousedown', e => { if (S.quick) e.preventDefault(); });
+});
+$('#kbBtn').onclick = toggleKeys;
+// The visible height at full size, the same when zoomed in
+const vvh = () => visualViewport.height * visualViewport.scale;
+QK.addEventListener('focus', () => { KB.full = window.visualViewport ? vvh() : 0; KB.shown = false; renderKeys(); });
+QK.addEventListener('blur', renderKeys);
+// Android can hide the keyboard (the back gesture) and leave the box focused: the box then lets go as well, so
+// the next tap on the button opens the keyboard again
+if (window.visualViewport) visualViewport.addEventListener('resize', () => {
+  if (document.activeElement !== QK) return;
+  if (vvh() < KB.full - 120) KB.shown = true;
+  else if (KB.shown && vvh() > KB.full - 60) QK.blur();
 });
 
 // Touches on the image in quick mode. Tap: click, after a short wait in case a second tap follows · two taps:
@@ -2015,11 +2011,11 @@ async function clickElement(it, quiet) {
   } catch (e) { toast(e.message, true); }
 }
 
-// Text field: click the field on the computer and open the typing box on Screen on the phone.
-// Focus must happen inside the tap, otherwise the phone does not open its keyboard.
+// Text field: click the field on the computer and open the typing box on Screen on the phone (with Quick on,
+// the phone keyboard). Focus must happen inside the tap, otherwise the phone does not open its keyboard.
 function typeInto(it) {
   showTab('screen');
-  $('#qt').focus();
+  if (S.quick) openKeys(); else $('#qt').focus();
   S.typeInto = it.name; renderQtPlaceholder();
   clickElement(it, true);
 }
@@ -2155,9 +2151,12 @@ function renderSession() {
 
 function renderQuick() {
   $('#quickSw').setAttribute('aria-checked', String(S.quick));
-  // Live typing has no Type button: the phone keyboard's Enter presses Enter
-  $$('#qtForm .btn, #fsType .btn').forEach(b => { b.hidden = S.quick; });
-  [$('#qt'), $('#fsQt')].forEach(inp => { liveReset(inp); inp.setAttribute('enterkeyhint', S.quick ? 'enter' : 'send'); });
+  // With Quick on the keyboard button takes the typing box's place, and each key goes at once
+  $('#p-screen').classList.toggle('qmode', S.quick);
+  $('#qtForm').hidden = S.quick; $('#kbBtn').hidden = !S.quick;
+  $('#fsKb').setAttribute('aria-label', t(S.quick ? 'screen.kb' : 'fs.kb'));
+  if (!S.quick) closeKeys();
+  liveReset(QK); renderKeys();
   renderQtPlaceholder(); renderTarget();
 }
 $('#quickSw').onclick = () => { S.quick = !S.quick; store.set('quick', S.quick); if (S.quick) clearAim(); else quickStop(); renderQuick(); };
@@ -2387,12 +2386,13 @@ function showFsType(on) {
   $('#fsType').hidden = !on;
   $('#fsKb').setAttribute('aria-expanded', String(on));
   if (on) $('#fsQt').focus(); else $('#fsQt').blur();
+  if (S.quick) renderKeys();
 }
-$('#fsKb').onclick = () => showFsType($('#fsType').hidden);
+// The typing box, or with Quick on the phone keyboard
+$('#fsKb').onclick = () => { if (S.quick) toggleKeys(); else { KB.was = null; showFsType($('#fsType').hidden); } };
 $('#fsType').addEventListener('submit', async e => {
   e.preventDefault();
   const inp = $('#fsQt');
-  if (S.quick) { liveEnter(inp); return; }
   if (!inp.value) { inp.focus(); return; }
   if (await sendText(inp.value, false)) { liveReset(inp); showFsType(false); }
 });
