@@ -4,7 +4,7 @@ use super::frame::{Frame, Span, Tone, layout, span};
 use super::{Io, Key, Step, footer, header, is_key};
 use crate::app::{App, Remote, Urls};
 use crate::i18n::{self, Lang, Msg};
-use crate::server::{LogEntry, local_time};
+use crate::log::{LogEntry, local_time};
 use crate::config;
 
 pub struct View<'a> {

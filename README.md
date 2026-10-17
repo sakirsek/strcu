@@ -308,7 +308,9 @@ and placeholders as `lang/en.json`.
 
 - `src/sys/` operating system layer (screen, input, windows, UI Automation, clipboard, File Explorer, power,
   apps, icons, discovery, child processes)
-- `src/server.rs` + `src/web/` the panel; `src/worker.rs` runs operating system work in order on one thread
+- `src/server/` + `src/web/` the panel: who gets in (`mod.rs`, `via.rs`, `signin.rs`), the page, and the
+  endpoints by what they do (`control.rs`, `desktop.rs`, `transfer.rs`, `automation.rs`); `src/worker.rs` runs
+  operating system work in order on one thread; `src/log.rs` the log of what was done
 - `src/stream.rs` the live view stream (changed tiles as JPEG pieces); `src/files.rs` files to and from the phone;
   `src/usage.rs` the data used, per sign-in
 - `src/macros/` macros: steps and storage, schedules, the runner and recording

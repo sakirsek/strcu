@@ -17,8 +17,9 @@ use tokio::sync::Notify;
 use super::schedule::Minute;
 use super::*;
 use crate::i18n::Arg;
-use crate::server::{ActionLog, SHUTDOWN_SECS, local_time};
-use crate::sys::{Rect, apps, input, power, screen, window};
+use crate::log::{ActionLog, local_time};
+use crate::sys::power::{self, SHUTDOWN_SECS};
+use crate::sys::{Rect, apps, input, screen, window};
 use crate::worker::{Ctx, Worker};
 
 /// How long a step looks for its window or element (the app may still be opening or drawing)

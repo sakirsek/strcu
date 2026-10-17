@@ -11,7 +11,8 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::i18n::{self, Msg};
-use crate::server::{ActionLog, Listener, Panel};
+use crate::log::ActionLog;
+use crate::server::{Listener, Panel};
 use crate::{config, sys, tunnel};
 
 /// State of remote access (the cloudflared tunnel).

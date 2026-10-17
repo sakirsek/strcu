@@ -78,6 +78,9 @@ pub fn lock() -> Result<()> {
     Ok(())
 }
 
+/// How long a shutdown from the panel or a macro waits, so it can still be cancelled.
+pub const SHUTDOWN_SECS: u32 = 15;
+
 /// Shuts the computer down after `secs` seconds; `cancel_shutdown` can undo it within that time.
 /// Open apps are closed without saving: with a polite shutdown an app asking "Save changes?" could stop it,
 /// while strcu would already be gone and the computer would stay on without being visible remotely.

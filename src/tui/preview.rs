@@ -13,7 +13,7 @@ use crate::app::{Remote, Urls};
 use crate::i18n::{self, Lang, Msg};
 use crate::pair::{DEVICE_DAYS, Device, unix_now};
 use crate::passkey::Passkey;
-use crate::server::{LogEntry, local_time};
+use crate::log::{LogEntry, local_time};
 
 const COLS: usize = 90;
 const ROWS: usize = 30;

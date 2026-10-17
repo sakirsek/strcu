@@ -6,6 +6,7 @@ mod download;
 mod files;
 mod i18n;
 mod licenses;
+mod log;
 mod macros;
 mod pair;
 mod passkey;
