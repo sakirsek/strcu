@@ -161,7 +161,14 @@ pub(super) async fn launch(State(st): State<AppState>, Json(r): Json<LaunchReq>)
         true => Some(st.worker.run(|_| Ok(window::list().into_iter().map(|w| w.hwnd).collect::<Vec<_>>())).await?),
         false => None,
     };
-    let res = tokio::task::spawn_blocking(move || apps::launch(&r.id)).await.map_err(anyhow::Error::from)?;
+    // From the list the phone was shown; an app installed since then is looked up again
+    let known = app_list(&st).await.ok().and_then(|l| l.iter().find(|a| a.id == r.id).cloned());
+    let res = tokio::task::spawn_blocking(move || match known {
+        Some(app) => apps::start(&app).map(|()| app),
+        None => apps::launch(&r.id),
+    })
+    .await
+    .map_err(anyhow::Error::from)?;
     let desc = match &res {
         Ok(a) => Msg::new("ev.opened").with("name", &a.name),
         Err(e) => Msg::new("ev.open_failed").with("reason", i18n::from_error(e)),

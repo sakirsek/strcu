@@ -92,12 +92,18 @@ fn display_name(item: &IShellItem, kind: SIGDN) -> Option<String> {
 /// The app is not a child process of strcu and stays open when strcu exits.
 pub fn launch(id: &str) -> Result<App> {
     let app = list()?.into_iter().find(|a| a.id == id).context(Msg::new("err.no_app"))?;
+    start(&app)?;
+    Ok(app)
+}
+
+/// Launches an app taken from `list` (reading the list takes a while; the panel keeps it for a minute).
+pub fn start(app: &App) -> Result<()> {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     Command::new(format!(r"{windir}\explorer.exe"))
         .arg(format!(r"shell:AppsFolder\{}", app.id))
         .spawn()
         .context(Msg::new("err.launch_failed"))?;
-    Ok(app)
+    Ok(())
 }
 
 /// Opens a web page in the default browser. Only fixed https addresses from StrCu itself come here.
