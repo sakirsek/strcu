@@ -1,10 +1,12 @@
 //! Screenshots (GDI BitBlt). Verified to work while the display is off, too.
 
+use std::ffi::c_void;
+
 use anyhow::{Result, bail};
 use image::{DynamicImage, RgbaImage};
 use windows::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleBitmap, CreateCompatibleDC,
-    DIB_RGB_COLORS, DeleteDC, DeleteObject, GetDC, GetDIBits, HDC, ROP_CODE, ReleaseDC, SRCCOPY, SelectObject,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BitBlt, CAPTUREBLT, CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS,
+    DeleteDC, DeleteObject, GdiFlush, GetDC, HDC, ROP_CODE, ReleaseDC, SRCCOPY, SelectObject,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CURSOR_SHOWING, CURSORINFO, DI_NORMAL, DrawIconEx, GetCursorInfo, GetIconInfo, GetSystemMetrics, HICON, ICONINFO,
@@ -29,17 +31,45 @@ pub fn virtual_screen() -> Rect {
 /// The pixels of `area` as Windows gives them: BGRA, rows top to bottom, alpha meaningless. With `cursor` the
 /// mouse pointer is drawn in where it is on the screen (a screenshot does not include it).
 pub fn grab(area: Rect, cursor: bool) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    grab_into(area, cursor, &mut buf)?;
+    Ok(buf)
+}
+
+/// `grab` into `buf`, which is resized to fit: the live view passes the same two buffers back and forth, so a
+/// frame needs no new memory. Most of the time goes into waiting for Windows to hand the screen over.
+pub fn grab_into(area: Rect, cursor: bool, buf: &mut Vec<u8>) -> Result<()> {
     if area.w <= 0 || area.h <= 0 {
         bail!("invalid area: {area:?}");
     }
-    let mut buf = vec![0u8; area.w as usize * area.h as usize * 4];
+    let len = area.w as usize * area.h as usize * 4;
     unsafe {
         let screen_dc = GetDC(None);
         if screen_dc.is_invalid() {
             bail!(Msg::new("err.screen_unavailable"));
         }
+        let info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: area.w,
+                biHeight: -area.h, // negative: rows top to bottom
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        // Copied straight into memory this process can read (no conversion afterwards)
+        let mut bits: *mut c_void = std::ptr::null_mut();
+        let bmp = match CreateDIBSection(Some(screen_dc), &info, DIB_RGB_COLORS, &mut bits, None, 0) {
+            Ok(b) if !bits.is_null() => b,
+            _ => {
+                ReleaseDC(None, screen_dc);
+                bail!(Msg::new("err.screen_unavailable"));
+            }
+        };
         let mem_dc = CreateCompatibleDC(Some(screen_dc));
-        let bmp = CreateCompatibleBitmap(screen_dc, area.w, area.h);
         let old = SelectObject(mem_dc, bmp.into());
         let blt = BitBlt(
             mem_dc,
@@ -55,37 +85,19 @@ pub fn grab(area: Rect, cursor: bool) -> Result<Vec<u8>> {
         if cursor && blt.is_ok() {
             draw_cursor(mem_dc, area);
         }
-        let mut info = BITMAPINFO {
-            bmiHeader: BITMAPINFOHEADER {
-                biSize: size_of::<BITMAPINFOHEADER>() as u32,
-                biWidth: area.w,
-                biHeight: -area.h, // negative: rows top to bottom
-                biPlanes: 1,
-                biBitCount: 32,
-                biCompression: BI_RGB.0,
-                ..Default::default()
-            },
-            ..Default::default()
-        };
-        let lines = GetDIBits(
-            mem_dc,
-            bmp,
-            0,
-            area.h as u32,
-            Some(buf.as_mut_ptr().cast()),
-            &mut info,
-            DIB_RGB_COLORS,
-        );
+        // Drawing is finished before the pixels are read
+        let _ = GdiFlush();
+        if blt.is_ok() {
+            buf.resize(len, 0);
+            buf.copy_from_slice(std::slice::from_raw_parts(bits as *const u8, len));
+        }
         SelectObject(mem_dc, old);
         let _ = DeleteObject(bmp.into());
         let _ = DeleteDC(mem_dc);
         ReleaseDC(None, screen_dc);
         blt?;
-        if lines != area.h {
-            bail!("GetDIBits read {lines}/{} rows", area.h);
-        }
     }
-    Ok(buf)
+    Ok(())
 }
 
 /// The mouse pointer, drawn on a copy of `area` at its place on the screen (a hidden pointer is left out).

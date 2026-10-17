@@ -258,6 +258,8 @@ struct Shooter {
     sent: Option<Sent>,
     /// When the picture last changed
     changed: Option<Instant>,
+    /// The picture before the last one: the next look at the screen goes into it
+    spare: Vec<u8>,
 }
 
 /// A frame to send and how many tiles changed (0 for a key frame or a sharp resend).
@@ -269,7 +271,8 @@ struct Frame {
 impl Shooter {
     fn tick(&mut self, mode: Mode, view: View, n: u64) -> Result<Option<Frame>> {
         let area = area_of(view);
-        let mut px = screen::grab(area, true)?;
+        let mut px = std::mem::take(&mut self.spare);
+        screen::grab_into(area, true, &mut px)?;
         worker::mark_click(&mut px, area, screen::Order::Bgra);
         self.next_frame(mode, area, px, Instant::now(), n)
     }
@@ -284,7 +287,7 @@ impl Shooter {
         }
         let s = self.sent.as_mut().expect("checked above");
         let dirty = s.diff(&px);
-        s.px = px;
+        self.spare = std::mem::replace(&mut s.px, px);
         let tiles = dirty.iter().filter(|d| **d).count();
         if tiles == 0 {
             let settled = self.changed.is_none_or(|t| now - t >= SETTLE);
