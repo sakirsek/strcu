@@ -92,7 +92,7 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
 
 - **Top bar:** the foreground window with its app icon; tap it for the list of open windows. Shows when the
   computer is locked. Next to it, the live view controls (HD / SD / ❚❚) with a dot: green while the image is
-  live, red when it is paused or lagging.
+  live, red when it is paused or when the image in view lags.
 - **Screen:** a tap aims the crosshair; a bar with Click / Double / Right, ↑ / ↓ (scroll) and ✕ appears next to
   it. Below the image, a magnifier and the element's name. A typing box and eight common keys sit underneath.
 - **Quick** (the switch under the image) skips the crosshair. A tap clicks, a quarter of a second later in case
