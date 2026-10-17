@@ -134,16 +134,20 @@ pub async fn run(io: &mut impl Io, app: &mut App) {
     let mut changes = log.watch();
     let mut remote = app.remote();
     let mut confirm = false;
+    // Reading the addresses takes a while: not again for every log entry, only when they may have changed
+    let mut stale = false;
+    let (mut lan, mut urls) = (config::load().lan, app.urls());
     loop {
         let t = i18n::term();
-        let cfg = config::load();
-        let urls = app.urls();
+        if std::mem::take(&mut stale) {
+            (lan, urls) = (config::load().lan, app.urls());
+        }
         let state = remote.borrow_and_update().clone();
         let events: Vec<LogEntry> = log.entries().into_iter().filter(LogEntry::important).collect();
         let today = local_time();
         let v = View {
             urls: &urls,
-            lan: cfg.lan,
+            lan,
             remote: &state,
             listen_error: app.listen_error.as_ref(),
             events: &events,
@@ -154,9 +158,15 @@ pub async fn run(io: &mut impl Io, app: &mut App) {
         let key = tokio::select! {
             k = io.key() => k,
             Ok(()) = changes.changed() => continue,
-            Ok(()) = remote.changed() => continue,
-            // The clock in the event list moves on
-            _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => continue,
+            Ok(()) = remote.changed() => {
+                stale = true;
+                continue;
+            }
+            // The clock in the event list moves on; a new network shows up too
+            _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
+                stale = true;
+                continue;
+            }
         };
         let Some(k) = key else { continue };
         if k == Key::Interrupt || is_key(t, k, "dash.key_quit") {
@@ -167,6 +177,8 @@ pub async fn run(io: &mut impl Io, app: &mut App) {
             continue;
         }
         confirm = false;
+        // The pairing screen and the settings can change what the addresses are
+        stale = true;
         if is_key(t, k, "dash.key_pair") {
             confirm = super::pair::run(io, app).await == Step::Quit;
         } else if is_key(t, k, "dash.key_settings") {
