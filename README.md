@@ -309,7 +309,8 @@ and placeholders as `lang/en.json`.
 - `src/sys/` operating system layer (screen, input, windows, UI Automation, clipboard, File Explorer, power,
   apps, icons, discovery, child processes)
 - `src/server.rs` + `src/web/` the panel; `src/worker.rs` runs operating system work in order on one thread
-- `src/stream.rs` the live view stream (changed tiles as JPEG pieces); `src/files.rs` files to and from the phone
+- `src/stream.rs` the live view stream (changed tiles as JPEG pieces); `src/files.rs` files to and from the phone;
+  `src/usage.rs` the data used, per sign-in
 - `src/macros/` macros: steps and storage, schedules, the runner and recording
 - `src/app.rs` what runs while StrCu is open (listener, tunnel watcher); `src/tui/` the terminal screens, plain
   functions from state to frames that the terminal draws and `strcu dev preview` turns into HTML
