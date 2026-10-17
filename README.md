@@ -124,11 +124,11 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
   share of the live view, files and the rest. It counts StrCu's own data, so the phone's own figure comes out a
   little higher (encryption, headers); it starts over when StrCu restarts.
 
-**Full screen:** ⛶ or turn the phone sideways. Pinch to zoom, drag to pan, tap to aim. With Quick on, taps
-and long presses work as above, a quick drag still pans the zoomed image, and the keyboard button opens the
-phone keyboard.
+**Full screen:** ⛶ or turn the phone sideways. Pinch to zoom, drag to pan, tap to aim. At the bottom right, the
+keyboard button and the Quick switch. With Quick on, taps and long presses work as above, a quick drag still
+pans the zoomed image, and the keyboard button opens the phone keyboard.
 
-<img src="docs/fullscreen.png" alt="The panel in full screen on a phone held sideways, with the crosshair on a file and the click bar" width="640">
+<img src="docs/fullscreen.png" alt="The panel in full screen on a phone held sideways, with the crosshair on a file and the click bar, and the keyboard button and the Quick switch at the bottom right" width="640">
 
 **Tablets** (and wide browser windows): the Screen tab fills the page and the image takes all the room the
 controls leave. Held sideways, the tabs move to a rail on the left and the controls sit in one row under the

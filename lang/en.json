@@ -485,7 +485,7 @@
   "tab.more_label": "More: session, lock, shutdown, log",
   "fs.stage": "The computer's screen, full screen. Tap to aim; pinch to zoom.",
   "fs.exit": "Exit full screen",
-  "fs.keys": "Quick keys",
+  "fs.keys": "Keyboard and Quick",
   "fs.kb": "Typing box",
   "toast.sent": "Sent: {combo}",
   "toast.typed": {

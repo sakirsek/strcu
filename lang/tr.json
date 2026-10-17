@@ -473,7 +473,7 @@
   "tab.more_label": "Diğer: oturum, kilit, kapatma, kayıt",
   "fs.stage": "Bilgisayarın ekranı, tam ekran. Dokununca nişan alınır; iki parmakla yakınlaştırılır.",
   "fs.exit": "Tam ekrandan çık",
-  "fs.keys": "Hızlı tuşlar",
+  "fs.keys": "Klavye ve Hızlı",
   "fs.kb": "Yazma kutusu",
   "toast.sent": "Gönderildi: {combo}",
   "toast.typed": "{n} karakter yazıldı → {where}",
