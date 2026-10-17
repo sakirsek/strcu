@@ -119,7 +119,10 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
 - **Files:** files to the phone and from it ([below](#files)).
 - **Macros:** the macros, their schedules and last runs ([below](#macros)).
 - **More:** session and sign-out, passkeys, lock and shut down (with a 15 s countdown that can be cancelled),
-  panel language and a log of what was done.
+  panel language, the data used and a log of what was done. **Data used** shows what StrCu sent to the phone and
+  got from it in this session, through the tunnel and on the home network, with the total under them and the
+  share of the live view, files and the rest. It counts StrCu's own data, so the phone's own figure comes out a
+  little higher (encryption, headers); it starts over when StrCu restarts.
 
 **Full screen:** ⛶ or turn the phone sideways. Pinch to zoom, drag to pan, tap to aim. With Quick on, taps
 and long presses work as above, a quick drag still pans the zoomed image, and the keyboard button opens the
@@ -141,10 +144,11 @@ The page loads nothing from outside; its fonts (IBM Plex) are built in.
 
 On the Files tab:
 
-<img src="docs/files.png" alt="The Files tab on a phone: buttons to get the file selected in File Explorer and to send files from the phone, the folder chips, and the Downloads folder with its subfolders and newest files" width="320">
+<img src="docs/files.png" alt="The Files tab on a phone: buttons to get the File Explorer selection and to send files from the phone, the folder chips, the Downloads folder with its subfolders and newest files, one of them selected, and the Download button with its name and size" width="320">
 
 - **To the phone:** the Downloads, Desktop, Documents, Pictures and Videos folders (wherever Windows keeps them,
-  OneDrive included), folders first and then the newest files; tap a file to download it. **Get selected file**
+  OneDrive included), folders first and then the newest files. A tap selects a file and **Download** under the
+  list, showing its name and size, gets it; so a wrong tap costs no data. **Get File Explorer selection**
   downloads what is selected in File Explorer on the computer; with several selected, a list to choose from.
 - **From the phone:** **Send from phone** puts files into Downloads. They travel in 4 MB pieces, so large files
   get through the tunnel too (Cloudflare takes at most 100 MB a request), and keep a temporary name until they

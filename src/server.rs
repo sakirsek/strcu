@@ -29,6 +29,7 @@ use crate::macros::{self, Act, AppRef, WinOp};
 use crate::pair::{self, Pairing};
 use crate::passkey::{self, Kind, Site};
 use crate::files::{self, Root};
+use crate::usage::{self, Tap, Usage, Way};
 use crate::sys::{Rect, apps, clipboard, explorer, icons, input, net, power, screen, uia, window};
 use crate::worker::Worker;
 
@@ -70,6 +71,8 @@ struct AppState {
     kick: Arc<tokio::sync::watch::Sender<u64>>,
     /// Files arriving from the phone
     uploads: Arc<files::Uploads>,
+    /// What each phone got and sent (More → Data used)
+    usage: Arc<Usage>,
 }
 
 impl AppState {
@@ -142,6 +145,7 @@ impl Panel {
             live_at: Arc::default(),
             kick: Arc::new(tokio::sync::watch::Sender::new(0)),
             uploads: Arc::default(),
+            usage: Arc::default(),
         };
         Ok(Panel { state })
     }
@@ -227,6 +231,7 @@ impl Panel {
             .route("/api/shutdown", post(shutdown))
             .route("/api/shutdown/cancel", post(cancel_shutdown))
             .route("/api/log", get(log))
+            .route("/api/usage", get(usage_report))
             .route("/api/logout", post(logout))
             .route("/api/passkeys", get(passkeys_list))
             .route("/api/passkey/register/start", post(passkey_register_start))
@@ -254,6 +259,7 @@ impl Panel {
             .route("/api/passkey/login/start", post(passkey_login_start))
             .route("/api/passkey/login", post(passkey_login))
             .merge(api)
+            .layer(middleware::from_fn_with_state(state.clone(), count_usage))
             .layer(middleware::from_fn_with_state(state.clone(), require_access))
             .with_state(state)
     }
@@ -528,6 +534,27 @@ impl AppState {
         ips
     }
 
+    /// Whose meter a request counts on: this computer, a sign-in or a paired phone; None before sign-in.
+    fn usage_key(&self, via: &Via, h: &HeaderMap) -> Option<String> {
+        if *via == Via::Local && !local_needs_signin() {
+            return Some("local".into());
+        }
+        let cookies = h.get(header::COOKIE).and_then(|v| v.to_str().ok())?;
+        if let Some(t) = auth::token_from_cookie(cookies).filter(|t| self.auth.check(t)) {
+            return Some(format!("s:{t}"));
+        }
+        auth::cookie(cookies, pair::COOKIE).filter(|c| self.pairing.known(c)).map(|c| format!("d:{c}"))
+    }
+
+    /// Whether the sign-in or paired phone a meter belongs to is still there.
+    fn usage_alive(&self, key: &str) -> bool {
+        match key.split_once(':') {
+            Some(("s", t)) => self.auth.check(t),
+            Some(("d", c)) => self.pairing.known(c),
+            _ => true,
+        }
+    }
+
     async fn classify(&self, c: &Conn, h: &HeaderMap) -> std::result::Result<Via, Msg> {
         let private = if c.peer.ip().is_loopback() { Arc::default() } else { self.private_ips().await };
         let pc = std::env::var("COMPUTERNAME").unwrap_or_default();
@@ -576,6 +603,20 @@ async fn require_access(State(st): State<AppState>, ConnectInfo(c): ConnectInfo<
     }
     req.extensions_mut().insert(via);
     next.run(req).await
+}
+
+/// Counts what each phone gets and sends, on its own meter (usage.rs). Requests before sign-in are not counted.
+async fn count_usage(State(st): State<AppState>, mut req: Request, next: Next) -> Response {
+    let via = req.extensions().get::<Via>().cloned().unwrap_or(Via::Remote);
+    let Some(key) = st.usage_key(&via, req.headers()) else {
+        return next.run(req).await;
+    };
+    let way = if via == Via::Remote { Way::Tunnel } else { Way::Home };
+    let tap = Tap::new(st.usage.meter(&key, |k| st.usage_alive(k)), way, usage::kind(req.uri().path()));
+    let body = req.headers().get(header::CONTENT_LENGTH).and_then(|v| v.to_str().ok()?.parse::<usize>().ok());
+    tap.up(body.unwrap_or(0));
+    req.extensions_mut().insert(tap.clone());
+    tap.count(next.run(req).await)
 }
 
 /// Anything the panel does (every POST but a file arriving) makes the live view look at the screen more often
@@ -874,6 +915,11 @@ async fn logout(State(st): State<AppState>, headers: HeaderMap) -> Response {
 
 /// For the sign-in screen: where the request comes from, the email (partly hidden) when coming through
 /// Access, and whether a passkey is registered for this address. No session needed.
+/// What this phone (its sign-in) got and sent so far.
+async fn usage_report(tap: Option<Extension<Tap>>) -> Json<Value> {
+    Json(tap.map_or_else(|| usage::Meter::default().report(), |t| t.meter.report()))
+}
+
 async fn me(State(st): State<AppState>, req: Request) -> Json<Value> {
     let via = req.extensions().get::<Via>().cloned().unwrap_or(Via::Remote);
     let email = req.extensions().get::<AccessUser>().map(|u| mask_email(&u.0));
@@ -931,10 +977,13 @@ async fn index(headers: HeaderMap) -> Response {
     let page = include_str!("web/index.html")
         .replacen(LANG_ATTR, &format!(r#"<html lang="{}">"#, lang.code), 1)
         .replacen(LANG_SLOT, &format!(r#"<script id="i18n" type="application/json">{boot}</script>"#), 1);
-    let mut r = Html(page).into_response();
+    // Gzipped when the browser takes it (they all do): a fraction of the size, so it opens faster through the
+    // tunnel, and what More → Data used counts is close to what really travels
+    let gzip = headers.get(header::ACCEPT_ENCODING).and_then(|v| v.to_str().ok()).is_some_and(|v| v.contains("gzip"));
+    let mut r = if gzip { gzipped(page) } else { Html(page).into_response() };
     let h = r.headers_mut();
     h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-cache"));
-    h.insert(header::VARY, HeaderValue::from_static("Accept-Language, Cookie"));
+    h.insert(header::VARY, HeaderValue::from_static("Accept-Encoding, Accept-Language, Cookie"));
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
     h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
     let ws = if host.is_empty() { String::new() } else { format!(" ws://{host} wss://{host}") };
@@ -946,6 +995,14 @@ async fn index(headers: HeaderMap) -> Response {
         h.insert("content-security-policy", v);
     }
     r
+}
+
+fn gzipped(page: String) -> Response {
+    let mut z = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    match z.write_all(page.as_bytes()).and_then(|_| z.finish()) {
+        Ok(body) => ([(header::CONTENT_TYPE, "text/html; charset=utf-8"), (header::CONTENT_ENCODING, "gzip")], body).into_response(),
+        Err(_) => Html(page).into_response(),
+    }
 }
 
 /// Fonts embedded in the panel (IBM Plex, SIL Open Font License: web/fonts/OFL.txt).
@@ -1030,7 +1087,12 @@ struct ShotQ {
 
 /// The live view as a stream (see `stream`). Browsers do not apply the same-origin rule to WebSockets, so a
 /// site open on this computer could otherwise watch the screen: only the panel's own page may connect.
-async fn stream(State(st): State<AppState>, headers: HeaderMap, ws: axum::extract::ws::WebSocketUpgrade) -> Response {
+async fn stream(
+    State(st): State<AppState>,
+    tap: Option<Extension<Tap>>,
+    headers: HeaderMap,
+    ws: axum::extract::ws::WebSocketUpgrade,
+) -> Response {
     let host = headers.get(header::HOST).and_then(|v| v.to_str().ok());
     let origin = headers.get(header::ORIGIN).and_then(|v| v.to_str().ok());
     let same = match (origin, host) {
@@ -1043,7 +1105,8 @@ async fn stream(State(st): State<AppState>, headers: HeaderMap, ws: axum::extrac
         return StatusCode::FORBIDDEN.into_response();
     }
     let kick = st.kick.subscribe();
-    ws.max_message_size(4096).on_upgrade(move |sock| crate::stream::run(sock, kick))
+    let tap = tap.map(|t| t.0);
+    ws.max_message_size(4096).on_upgrade(move |sock| crate::stream::run(sock, kick, tap))
 }
 
 async fn shot(State(st): State<AppState>, Query(q): Query<ShotQ>) -> ApiResult<Response> {

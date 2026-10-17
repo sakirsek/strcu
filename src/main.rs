@@ -14,6 +14,7 @@ mod stream;
 mod sys;
 mod tui;
 mod tunnel;
+mod usage;
 mod worker;
 
 use std::io::IsTerminal;

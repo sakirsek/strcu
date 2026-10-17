@@ -282,6 +282,24 @@
   .flist .fname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
   .flist .fmeta { font-family: var(--mono); font-size: 12px; color: var(--muted); }
   .flist .fnote { padding: 14px; border-top: 1px solid var(--line); color: var(--muted); font-size: 14px; }
+  .flist li > [aria-pressed="true"] { background: var(--acc-soft); }
+  .flist li > [aria-pressed="true"] .ic, .flist li > [aria-pressed="true"] .fname { color: var(--acc); }
+  /* Download for the selected file: stays in sight under a long list */
+  .fget { position: sticky; bottom: 0; z-index: 2; margin-top: -4px; padding: 10px 0 2px; background: linear-gradient(to bottom, transparent, var(--bg) 14px); }
+  .fget .btn { width: 100%; gap: 8px; padding: 0 14px; }
+  .fget .fgn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: left; font-weight: 400; }
+  .fget .fgs { flex: none; font-family: var(--mono); font-size: 13px; font-weight: 500; }
+  /* ---- data used ---- */
+  .usage { width: 100%; border-collapse: collapse; font-size: 14px; }
+  .usage th, .usage td { padding: 8px 0; text-align: right; font-weight: 400; white-space: nowrap; }
+  .usage th:first-child { text-align: left; color: var(--fg2); white-space: normal; }
+  .usage thead th { padding-top: 0; font-size: 12px; color: var(--muted); }
+  .usage td { width: 30%; font-family: var(--mono); font-size: 13px; }
+  .usage tbody tr { border-top: 1px solid var(--line); }
+  .usage tr.total { border-top-color: var(--line2); }
+  .usage tr.total th, .usage tr.total td { color: var(--fg); font-weight: 600; }
+  .usemeta { margin: 4px 0 0; padding-top: 8px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+  .usemeta span { display: block; }
   .key.mod[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); color: var(--acc); font-weight: 500; }
   .modrow { display: flex; align-items: center; gap: 8px; }
   .modrow .field { flex: 1; min-width: 0; min-height: 48px; font-family: var(--mono); font-size: 15px; }
@@ -724,6 +742,9 @@
         <div id="fileCrumb" class="fcrumb"></div>
         <ul id="fileList" class="flist"></ul>
       </section>
+      <div id="fileGet" class="fget" hidden>
+        <button type="button" id="fileGetBtn" class="btn primary"><svg class="ic s" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg><span data-i18n="files.download"></span><span id="fileGetName" class="fgn"></span><span id="fileGetSize" class="fgs"></span></button>
+      </div>
       <p class="note" data-i18n="files.note"></p>
     </section>
 
@@ -794,6 +815,20 @@
           <span class="selwrap"><select id="langSel"></select><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></span>
         </div>
       </section>
+
+      <h2 class="eyebrow" style="margin-top:4px" data-i18n="use.title"></h2>
+      <section class="card" data-i18n-label="use.title">
+        <table class="usage">
+          <thead><tr><th></th><th data-i18n="use.down"></th><th data-i18n="use.up"></th></tr></thead>
+          <tbody>
+            <tr><th data-i18n="use.tunnel"></th><td id="useTd"></td><td id="useTu"></td></tr>
+            <tr><th data-i18n="use.home"></th><td id="useHd"></td><td id="useHu"></td></tr>
+            <tr class="total"><th data-i18n="use.total"></th><td id="useD"></td><td id="useU"></td></tr>
+          </tbody>
+        </table>
+        <p class="usemeta"><span id="useKinds"></span><span id="useSince"></span></p>
+      </section>
+      <p class="note" data-i18n="use.note"></p>
 
       <h2 class="eyebrow" style="margin-top:4px" data-i18n="more.log"></h2>
       <ol id="logList" class="log"></ol>
@@ -2397,11 +2432,26 @@ $('#fsType').addEventListener('submit', async e => {
   if (await sendText(inp.value, false)) { liveReset(inp); showFsType(false); }
 });
 
+// ---------- data used ----------
+// What StrCu sent to this phone and got from it since sign-in, by the computer's own count (usage.rs)
+async function loadUsage() {
+  try {
+    const u = await api('/api/usage');
+    const total = [u.tunnel[0] + u.home[0], u.tunnel[1] + u.home[1]];
+    const cells = { useTd: u.tunnel[0], useTu: u.tunnel[1], useHd: u.home[0], useHu: u.home[1], useD: total[0], useU: total[1] };
+    for (const [id, n] of Object.entries(cells)) $('#' + id).textContent = fmtSize(n);
+    const both = k => fmtSize(u[k][0] + u[k][1]);
+    $('#useKinds').textContent = t('use.kinds', { view: both('view'), files: both('files'), other: both('other') });
+    $('#useSince').textContent = t('use.since', { time: fmtDate(Date.now() / 1000 - u.secs) });
+  } catch (_) {}
+}
+setInterval(() => { if (S.tab === 'more' && !document.hidden && !$('#app').hidden) loadUsage(); }, 10000);
+
 // ---------- files ----------
 // To the phone: a folder under Desktop, Documents, Downloads, Pictures or Videos, or the file selected in File
 // Explorer; downloaded by the phone's browser. From the phone: into Downloads, in pieces (files.rs).
 const ROOTS = { downloads: 'files.downloads', desktop: 'files.desktop', documents: 'files.documents', pictures: 'files.pictures', videos: 'files.videos' };
-const F = { root: 'downloads', path: [], seq: 0 };
+const F = { root: 'downloads', path: [], seq: 0, sel: null };
 const ICON_FILE = 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5';
 const ICON_DIR = 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z';
 
@@ -2418,6 +2468,7 @@ function fmtDate(secs) {
   return new Intl.DateTimeFormat(I18N.lang, opt).format(d);
 }
 // The phone's browser saves it; the page stays where it is
+function fileUrl(name) { return '/api/files/get?' + new URLSearchParams({ root: F.root, path: [...F.path, name].join('/') }); }
 function download(url) {
   const a = h('a', { href: url, download: '' });
   document.body.append(a); a.click(); a.remove();
@@ -2435,26 +2486,42 @@ function renderCrumb() {
     return i ? [h('span', { 'aria-hidden': 'true' }, '›'), el] : [el];
   }));
 }
+// A tap selects a file (again: unselects it); Download under the list gets it, so a wrong tap costs no data
+function renderFileSel() {
+  $$('#fileList [data-name]').forEach(b => b.setAttribute('aria-pressed', String(!!F.sel && b.dataset.name === F.sel.name)));
+  $('#fileGet').hidden = !F.sel;
+  if (!F.sel) return;
+  $('#fileGetName').textContent = F.sel.name;
+  $('#fileGetSize').textContent = fmtSize(F.sel.size);
+  $('#fileGetBtn').setAttribute('aria-label', t('files.get_label', { name: F.sel.name }));
+}
+$('#fileGetBtn').onclick = () => { if (F.sel) download(fileUrl(F.sel.name)); };
+
 async function loadFiles() {
-  const seq = ++F.seq;
+  const seq = ++F.seq, here = F.root + '/' + F.path.join('/');
   renderRoots(); renderCrumb();
   try {
     const r = await api('/api/files?' + new URLSearchParams({ root: F.root, path: F.path.join('/') }));
     if (seq !== F.seq) return;
+    // The selection stays while its folder is shown and the file is still there
+    const still = F.sel && F.sel.at === here && r.entries.find(e => !e.dir && e.name === F.sel.name);
+    F.sel = still ? { at: here, name: still.name, size: still.size } : null;
     const rows = r.entries.map(e => {
       const meta = e.dir ? '' : fmtSize(e.size) + ' · ' + fmtDate(e.modified);
       const inner = [svgIcon(e.dir ? ICON_DIR : ICON_FILE), h('span', { class: 'ftext' }, h('span', { class: 'fname' }, e.name), meta && h('span', { class: 'fmeta' }, meta))];
       if (e.dir) return h('li', null, h('button', { type: 'button', 'aria-label': t('files.open_label', { name: e.name }), onclick: () => { F.path.push(e.name); loadFiles(); } }, ...inner));
-      const url = '/api/files/get?' + new URLSearchParams({ root: F.root, path: [...F.path, e.name].join('/') });
-      return h('li', null, h('a', { href: url, download: e.name, 'aria-label': t('files.get_label', { name: e.name }) }, ...inner));
+      return h('li', null, h('button', { type: 'button', 'data-name': e.name, 'aria-pressed': 'false', 'aria-label': t('files.select_label', { name: e.name }),
+        onclick: () => { F.sel = F.sel && F.sel.name === e.name ? null : { at: here, name: e.name, size: e.size }; renderFileSel(); } }, ...inner));
     });
     if (!rows.length) rows.push(h('li', null, h('p', { class: 'fnote' }, t('files.empty'))));
     if (r.cut) rows.push(h('li', null, h('p', { class: 'fnote' }, t('files.cut', { n: r.entries.length }))));
     $('#fileList').replaceChildren(...rows);
   } catch (e) {
     if (seq !== F.seq) return;
+    F.sel = null;
     $('#fileList').replaceChildren(h('li', null, h('p', { class: 'fnote' }, e.message)));
   }
+  renderFileSel();
 }
 
 // The file selected in File Explorer: one is downloaded at once, several are listed to choose from
@@ -3122,7 +3189,7 @@ function showTab(name) {
   if (name === 'screen') { placeAim(); if (S.shotAt && Date.now() - S.shotAt > 2000) refresh(); }
   if (name === 'windows') renderWl();
   if (name === 'elements') loadElements();
-  if (name === 'more') { loadLog(); loadPasskeys(); status(); }
+  if (name === 'more') { loadLog(); loadPasskeys(); status(); loadUsage(); }
   if (name === 'files') loadFiles();
   if (name === 'macros') {
     renderMacros(); loadMacros();

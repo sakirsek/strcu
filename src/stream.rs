@@ -25,6 +25,7 @@ use tokio::sync::watch;
 use tokio::time::sleep_until;
 
 use crate::sys::{Rect, screen, window};
+use crate::usage::Tap;
 use crate::worker;
 
 /// Tile side in screen pixels.
@@ -305,8 +306,15 @@ impl Shooter {
     }
 }
 
-/// Serves one panel until it disconnects. `kick` changes whenever the panel acts (a click, a key...).
-pub async fn run(ws: WebSocket, mut kick: watch::Receiver<u64>) {
+/// Serves one panel until it disconnects. `kick` changes whenever the panel acts (a click, a key...); `tap`
+/// counts what goes each way (usage.rs).
+pub async fn run(ws: WebSocket, mut kick: watch::Receiver<u64>, tap: Option<Tap>) {
+    let count = |down: usize, up: usize| {
+        if let Some(t) = &tap {
+            t.down(down);
+            t.up(up);
+        }
+    };
     let (mut tx, mut rx) = ws.split();
     let mut shooter = Some(Shooter::default());
     let mut cfg: Option<(Mode, View)> = None;
@@ -319,7 +327,10 @@ pub async fn run(ws: WebSocket, mut kick: watch::Receiver<u64>) {
             m = rx.next() => {
                 let Some(Ok(m)) = m else { break };
                 let text = match m {
-                    Message::Text(t) => t,
+                    Message::Text(t) => {
+                        count(0, t.len());
+                        t
+                    }
                     Message::Close(_) => break,
                     _ => continue,
                 };
@@ -374,9 +385,11 @@ pub async fn run(ws: WebSocket, mut kick: watch::Receiver<u64>) {
                         if f.tiles > BUSY_TILES {
                             busy_until = now + BUSY_FOR;
                         }
+                        let len = f.msg.len();
                         if tx.send(Message::Binary(f.msg.into())).await.is_err() {
                             break;
                         }
+                        count(len, 0);
                         in_flight += 1;
                         last_sent = Instant::now();
                     }
@@ -397,6 +410,7 @@ pub async fn run(ws: WebSocket, mut kick: watch::Receiver<u64>) {
                 if tx.send(Message::Text(beat.into())).await.is_err() {
                     break;
                 }
+                count(beat.len(), 0);
                 last_sent = Instant::now();
             }
         }

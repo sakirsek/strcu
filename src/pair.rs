@@ -183,6 +183,15 @@ impl Pairing {
         Ok((device.clone(), format!("{}.{secret}", device.id)))
     }
 
+    /// Whether a cookie belongs to a phone that is still paired. Only looks: `check` is what lets it in.
+    pub fn known(&self, cookie: &str) -> bool {
+        let Some((id, secret)) = cookie.split_once('.') else {
+            return false;
+        };
+        let unix = unix_now();
+        self.devices.lock().unwrap().iter().find(|d| d.id == id).is_some_and(|d| d.secret == sha256_hex(secret) && d.expires > unix)
+    }
+
     /// The paired phone a cookie belongs to, if it is still valid at this address.
     pub fn check(&self, cookie: &str, host: &str, now: &str) -> Option<Seen> {
         let (id, secret) = cookie.split_once('.')?;

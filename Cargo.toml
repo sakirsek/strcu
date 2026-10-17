@@ -16,7 +16,11 @@ clap = { version = "4.6", features = ["derive"] }
 # Terminal interface: raw keys, colours, alternate screen
 crossterm = { version = "0.29", features = ["event-stream"] }
 futures-util = "0.3"
+# The panel page goes gzipped; image already builds it
+flate2 = "1"
 getrandom = "0.3"
+# Counting what the panel sends (usage.rs); axum already builds it
+http-body = "1"
 image = { version = "0.25", default-features = false, features = ["png"] }
 # JPEG for the live view: about three times faster than image's own encoder
 jpeg-encoder = { version = "0.6", features = ["simd"] }
