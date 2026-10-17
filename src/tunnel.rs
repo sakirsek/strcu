@@ -148,10 +148,6 @@ impl Tunnel {
 
 /// Does cloudflared have at least one connection to Cloudflare?
 pub async fn connected(http: &reqwest::Client) -> bool {
-    ready(http).await
-}
-
-async fn ready(http: &reqwest::Client) -> bool {
     match http.get(format!("http://{METRICS}/ready")).timeout(Duration::from_secs(2)).send().await {
         Ok(r) => r.status().is_success(),
         Err(_) => false,
@@ -187,7 +183,7 @@ pub async fn start_with(token: &str) -> Result<Tunnel> {
         if let Some(why) = tunnel.exited() {
             bail!(why);
         }
-        if ready(&http).await {
+        if connected(&http).await {
             tunnel.ready = true;
             break;
         }

@@ -280,7 +280,8 @@ pub fn from_error(e: &anyhow::Error) -> Msg {
     match e.downcast_ref::<Msg>() {
         Some(m) => {
             let root = e.root_cause();
-            if root.downcast_ref::<Msg>().is_some() {
+            // Alone it is the whole story; given to a missing value as context it is the only link too
+            if root.downcast_ref::<Msg>().is_some() || e.chain().count() == 1 {
                 m.clone()
             } else {
                 Msg::new("err.detail").with("msg", m.clone()).with("detail", root.to_string())
@@ -433,6 +434,9 @@ mod tests {
         let wrapped = Msg::new("err.unknown_key").with("key", "x");
         let e = anyhow::Error::from(wrapped.clone()).context("outer");
         assert_eq!(from_error(&e), wrapped);
+        // A missing value with a message: the message alone, without an English copy of it
+        let e = None::<u8>.context(Msg::new("err.no_app")).unwrap_err();
+        assert_eq!(from_error(&e), Msg::new("err.no_app"));
         let page = en().page_json();
         assert!(!page.contains("</"));
     }
