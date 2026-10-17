@@ -51,6 +51,9 @@ impl LogEntry {
     }
 }
 
+/// `actions.log` starts over past this size; the one before is kept as `actions.old.log`.
+const FILE_MAX: u64 = 1 << 20;
+
 /// What was done, newest first. Kept in memory for the screens and appended to `actions.log`.
 pub struct ActionLog {
     recent: Mutex<VecDeque<LogEntry>>,
@@ -66,9 +69,11 @@ impl ActionLog {
 
     pub fn add(&self, msg: Msg, ok: bool) {
         let e = LogEntry { time: local_time(), msg, ok };
-        if let Ok(mut f) =
-            std::fs::OpenOptions::new().create(true).append(true).open(crate::config::data_dir().join("actions.log"))
-        {
+        let path = crate::config::data_dir().join("actions.log");
+        if std::fs::metadata(&path).is_ok_and(|m| m.len() > FILE_MAX) {
+            let _ = std::fs::rename(&path, path.with_extension("old.log"));
+        }
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
             let _ = writeln!(f, "{} {} {}", e.time, if ok { "OK " } else { "ERR" }, i18n::term().render(&e.msg));
         }
         let mut r = self.recent.lock().unwrap();
