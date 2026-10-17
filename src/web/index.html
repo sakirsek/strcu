@@ -216,6 +216,8 @@
   .tname { font-size: 16px; font-weight: 600; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tkind { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .tstrip.idle .tname { font-size: 15px; font-weight: 500; color: var(--fg2); }
+  /* The hint may take two lines: Quick's gestures do not fit one on a phone */
+  .tstrip.idle .tkind { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; white-space: normal; line-height: 1.25; }
   .dock { flex: none; display: flex; flex-direction: column; gap: 8px; }
   .qtype { position: relative; display: flex; gap: 8px; }
   .qtype .field { flex: 1; min-width: 0; min-height: 48px; text-overflow: ellipsis; }
@@ -932,6 +934,7 @@ const store = {
 const S = {
   scr: null,            // area covered by the last screenshot (physical pixels)
   shotAt: 0,
+  seenAt: 0,            // when the picture last came into view (frames are not taken while it is hidden)
   view: store.get('view', 'screen'),
   // Live view: 'hd' | 'sd' | 'off'. HD is not remembered; the page starts with SD (or paused) so a
   // forgotten HD view does not eat mobile data.
@@ -1111,6 +1114,8 @@ async function pairWith(code) { await api('/api/pair', { code, name: deviceName(
 
 function showPair(err) {
   $('#pairLink').hidden = true; $('#pairForm').hidden = false;
+  // The code's button is the one to press now
+  $('#loginSubmit').classList.remove('primary');
   $('#pairErr').textContent = err || '';
   $('#pairCode').focus();
 }
@@ -1141,7 +1146,7 @@ function renderMe() {
   const pk = pkReady();
   $('#pkLogin').hidden = !pk;
   $('#login').classList.toggle('pk', pk);
-  $('#loginSubmit').classList.toggle('primary', !pk);
+  $('#loginSubmit').classList.toggle('primary', !pk && $('#pairForm').hidden);
 }
 
 // ---------- passkey sign-in ----------
@@ -1366,7 +1371,8 @@ function renderQtPlaceholder() {
 function renderLiveDot() {
   let text, state;
   if (S.mode === 'off') { text = t('live.paused') + (S.shotAt ? ' · ' + hhmm(S.shotAt) : ''); state = 'off'; }
-  else if (S.shotAt && Date.now() - S.shotAt > 10000) { text = t('live.late') + ' · ' + hhmm(S.shotAt); state = 'late'; }
+  // Late only while the picture is in view: on the other tabs no frames are taken, on purpose
+  else if (onScreen() && !document.hidden && S.shotAt && Date.now() - Math.max(S.shotAt, S.seenAt) > 10000) { text = t('live.late') + ' · ' + hhmm(S.shotAt); state = 'late'; }
   else { text = t('live.on') + ' · ' + S.mode.toUpperCase(); state = 'on'; }
   $$('.livedot').forEach(d => { if (d.dataset.state !== state) d.dataset.state = state; if (d.title !== text) d.title = text; });
 }
@@ -1474,7 +1480,7 @@ $$('[data-live]').forEach(b => b.onclick = () => {
 document.addEventListener('visibilitychange', () => {
   if ($('#app').hidden) return;
   if (S.mode !== 'off') streamVisible();
-  if (!document.hidden) { refresh(); status(); }
+  if (!document.hidden) { S.seenAt = Date.now(); refresh(); status(); }
 });
 
 function renderView() {
@@ -2341,6 +2347,7 @@ function fsZoom(k, cx, cy) {
 
 function enterFs(real) {
   if (S.fs) return;
+  if (S.tab !== 'screen') S.seenAt = Date.now();
   S.fs = true; S.fsAuto = !real;
   copyPicture($('#shot'), $('#fsImg'));
   $('#fs').hidden = false;
@@ -2794,7 +2801,7 @@ function macRow(m) {
         h('span', { class: 'rowname' }, m.name),
         h('span', { class: 'rowsub' }, schedText(m.schedule) + ' · ' + t('mac.n_steps', { n: m.steps.length })),
         h('span', { class: 'rowsub' + (last && last.result !== 'ok' ? ' bad' : '') }, lastText(last)))),
-    h('button', { type: 'button', class: 'rowact', 'aria-label': running ? t('mac.stop') : t('mac.run_label', { name: m.name }), onclick: () => running ? stopMacro() : runMacro(m.id) },
+    h('button', { type: 'button', class: 'rowact', disabled: !running && !m.steps.length, 'aria-label': running ? t('mac.stop') : t('mac.run_label', { name: m.name }), onclick: () => running ? stopMacro() : runMacro(m.id) },
       svgIcon(running ? ICON.stop : ICON.play)));
 }
 
@@ -2826,6 +2833,8 @@ function renderRunBtn() {
   if (!b || !d) return;
   const running = !!(S.mac.state.running && d.id && S.mac.state.running.id === d.id);
   b.replaceChildren(svgIcon(running ? ICON.stop : ICON.play, 'ic s'), h('span', {}, running ? t('mac.stop') : t('mac.run')));
+  // Nothing to run without steps (Run would first save the empty macro)
+  b.disabled = !running && !d.steps.length;
   b.onclick = () => running ? stopMacro() : runEdited();
 }
 
@@ -3206,7 +3215,7 @@ function showTab(name) {
   $$('.panel').forEach(p => { p.hidden = p.id !== 'p-' + name; });
   $$('#tabs [data-tab]').forEach(b => b.setAttribute('aria-current', b.dataset.tab === name ? 'page' : 'false'));
   $('#main').scrollTop = 0;
-  if (name === 'screen') { placeAim(); if (S.shotAt && Date.now() - S.shotAt > 2000) refresh(); }
+  if (name === 'screen') { S.seenAt = Date.now(); placeAim(); if (S.shotAt && Date.now() - S.shotAt > 2000) refresh(); }
   if (name === 'windows') renderWl();
   if (name === 'elements') loadElements();
   if (name === 'more') { loadLog(); loadPasskeys(); status(); loadUsage(); }

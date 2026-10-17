@@ -57,7 +57,7 @@
   "target.idle": "Tap the screen to aim",
   "target.idle_sub": "Then Click, Double, Right or scroll",
   "target.quick": "Quick is on",
-  "target.quick_sub": "Tap: click · tap twice: double · hold: right / drag",
+  "target.quick_sub": "Tap: click · tap twice: double · hold: right\u00a0/\u00a0drag",
   "target.error": "Could not read the element",
   "target.unnamed": "An unnamed area",
   "target.unnamed_sub": "Windows reports no element here",

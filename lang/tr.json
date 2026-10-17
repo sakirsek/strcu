@@ -57,7 +57,7 @@
   "target.idle": "Ekrana dokun, nişan al",
   "target.idle_sub": "Sonra Tıkla, Çift, Sağ ya da kaydır",
   "target.quick": "Hızlı açık",
-  "target.quick_sub": "Dokun: tıkla · iki dokun: çift · basılı tut: sağ / sürükle",
+  "target.quick_sub": "Dokun: tıkla · iki dokun: çift · basılı tut: sağ\u00a0/\u00a0sürükle",
   "target.error": "Öğe okunamadı",
   "target.unnamed": "Adı olmayan bir alan",
   "target.unnamed_sub": "Windows bu noktada öğe bildirmiyor",
