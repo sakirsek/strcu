@@ -195,7 +195,6 @@
   .tool[aria-checked="true"] .knob, .fsquick[aria-checked="true"] .knob { background: var(--acc); box-shadow: none; }
   .tool[aria-checked="true"] .knob::after, .fsquick[aria-checked="true"] .knob::after { transform: translateX(12px); background: var(--acc-ink); }
   .tool[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); color: var(--acc); }
-  /* Target strip: fixed height, so the buttons below do not move when aiming */
   /* On very narrow phones (320 px) keep the view buttons and the foreground window name from being cut */
   @media (max-width: 340px) {
     .top { gap: 6px; }
@@ -204,6 +203,7 @@
     .toolbar .seg button { padding: 0 2px; font-size: 12px; }
     .tool { gap: 6px; padding: 0 6px 0 8px; }
   }
+  /* Target strip: fixed height, so the buttons below do not move when aiming */
   .tstrip { flex: none; width: 100%; height: 64px; display: flex; align-items: center; gap: 10px; padding: 4px 12px 4px 4px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--fg); text-align: left; }
   .loupe { position: relative; flex: none; width: 54px; height: 54px; overflow: hidden; border-radius: 10px; background: #000; }
   .loupe img { position: absolute; display: block; max-width: none; }
@@ -729,7 +729,7 @@
       </div>
     </section>
 
-    <!-- MACROS -->
+    <!-- FILES -->
     <section class="panel" id="p-files" hidden>
       <section class="card files" data-i18n-label="files.title">
         <div class="fbtns">
@@ -749,6 +749,7 @@
       <p class="note" data-i18n="files.note"></p>
     </section>
 
+    <!-- MACROS -->
     <section class="panel" id="p-macros" hidden>
       <div id="macHome" class="stack">
         <h2 class="eyebrow" data-i18n="mac.list"></h2>
@@ -961,7 +962,7 @@ const ORDER = { list: 0, text: 1, nav: 2, button: 3 };
 // The window's title bar buttons (Windows and browsers, Turkish and English); moved to the end of the list
 const CAPTION = new Set(['minimize', 'minimise', 'maximize', 'maximise', 'restore', 'restore down', 'close', 'simge durumuna kucult', 'ekrani kapla', 'onceki boyut', 'asagi geri getir', 'geri yukle', 'kapat', 'kucult', 'buyut', 'en aza indir', 'en buyuk duruma getir']);
 const MODS = ['ctrl', 'alt', 'shift', 'win'];
-const OFF_SECS = 15;    // SHUTDOWN_SECS on the server
+const OFF_SECS = 15;    // power::SHUTDOWN_SECS on the computer
 const ICON = {
   cross: 'M19 12a7 7 0 1 1-14 0 7 7 0 0 1 14 0M12 2v4M12 18v4M2 12h4M18 12h4',
   max: 'M9 4H4v5M15 4h5v5M20 15v5h-5M4 15v5h5',
@@ -1045,20 +1046,22 @@ async function decodePic(blob) {
   return img;
 }
 
-// Draws pieces into the screen picture (both canvases: the Screen tab's and full screen's). `w`×`h` is the
-// picture's size, `area` the part of the screen it shows; a new size starts a new picture.
+// The screen picture in view: full screen's, or the Screen tab's
+function shotCanvas() { return S.fs ? $('#fsImg') : $('#shot'); }
+
+// Draws pieces into the screen picture in view; the other one gets the picture when it comes into view
+// (copyPicture). `w`×`h` is the picture's size, `area` the part of the screen it shows; a new size starts a new
+// picture.
 function paint(area, w, h, parts) {
-  let resized = false;
-  for (const c of $$('.shot-img')) {
-    if (c.width !== w || c.height !== h) { c.width = w; c.height = h; resized = true; }
-    const g = c.getContext('2d');
-    for (const p of parts) g.drawImage(p.pic, p.x, p.y, p.w, p.h);
-  }
+  const c = shotCanvas(), resized = c.width !== w || c.height !== h;
+  if (resized) { c.width = w; c.height = h; }
+  const g = c.getContext('2d');
+  for (const p of parts) g.drawImage(p.pic, p.x, p.y, p.w, p.h);
   const a = S.scr, moved = !a || a.x !== area.x || a.y !== area.y || a.w !== area.w || a.h !== area.h;
   S.scr = area; S.shotAt = Date.now();
   $('#view').classList.add('loaded');
   // On tablets the image box is sized from the shape of the frame (full screen or a window)
-  $('#view').style.setProperty('--ar', (area.w / area.h).toFixed(4));
+  if (moved) $('#view').style.setProperty('--ar', (area.w / area.h).toFixed(4));
   if (resized || moved) {
     // Full screen fits a picture of another shape again (the view changed between full screen and window)
     const c = $('#fsImg');
@@ -1066,6 +1069,13 @@ function paint(area, w, h, parts) {
   }
   if (S.aimNext) { const p = S.aimNext; S.aimNext = null; setAim(p); }
   renderLiveDot();
+}
+
+// Entering or leaving full screen: the canvas coming into view takes the picture over
+function copyPicture(from, to) {
+  if (!from.width || !from.height) return;
+  if (to.width !== from.width || to.height !== from.height) { to.width = from.width; to.height = from.height; }
+  to.getContext('2d').drawImage(from, 0, 0);
 }
 
 // Show the result of an action: refresh the screen (unless paused) and the foreground window
@@ -1358,7 +1368,7 @@ function renderLiveDot() {
   if (S.mode === 'off') { text = t('live.paused') + (S.shotAt ? ' · ' + hhmm(S.shotAt) : ''); state = 'off'; }
   else if (S.shotAt && Date.now() - S.shotAt > 10000) { text = t('live.late') + ' · ' + hhmm(S.shotAt); state = 'late'; }
   else { text = t('live.on') + ' · ' + S.mode.toUpperCase(); state = 'on'; }
-  $$('.livedot').forEach(d => { d.dataset.state = state; d.title = text; });
+  $$('.livedot').forEach(d => { if (d.dataset.state !== state) d.dataset.state = state; if (d.title !== text) d.title = text; });
 }
 setInterval(renderLiveDot, 2000);
 
@@ -1386,6 +1396,8 @@ function stopLive() { clearInterval(S.timer); S.timer = null; streamStop(); }
 // so a slow network gets fewer frames instead of a growing delay. If the connection cannot be made three
 // times in a row (an old browser, a proxy in the way), frames are fetched every 2.5 s as before.
 const LV = { ws: null, open: false, fails: 0, poll: typeof WebSocket !== 'function', chain: Promise.resolve(), retry: 0 };
+
+const UTF8 = new TextDecoder();
 
 function streamOn() { return !!LV.ws; }
 
@@ -1430,7 +1442,7 @@ function newPicture() { if (streamOn()) streamCfg(); else refresh('urgent'); }
 async function streamFrame(ws, buf) {
   try {
     const n = new DataView(buf).getUint32(0, true);
-    const hd = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, 4, n)));
+    const hd = JSON.parse(UTF8.decode(new Uint8Array(buf, 4, n)));
     let off = 4 + n;
     const parts = hd.r.map(([x, y, w, h, len]) => {
       const p = { x, y, w, h, blob: new Blob([new Uint8Array(buf, off, len)], { type: 'image/jpeg' }) };
@@ -2330,6 +2342,7 @@ function fsZoom(k, cx, cy) {
 function enterFs(real) {
   if (S.fs) return;
   S.fs = true; S.fsAuto = !real;
+  copyPicture($('#shot'), $('#fsImg'));
   $('#fs').hidden = false;
   $('#fs').append($('#aim'), $('#bubble'));
   fsLayout(true);
@@ -2348,6 +2361,7 @@ function exitFs() {
   if (!S.fs) return;
   QF.cancel();
   S.fs = false; S.fsAuto = false;
+  copyPicture($('#fsImg'), $('#shot'));
   $('#fs').hidden = true; showFsType(false);
   $('#view .stage').append($('#aim'), $('#bubble'));
   streamVisible();
@@ -2457,17 +2471,21 @@ const F = { root: 'downloads', path: [], seq: 0, sel: null };
 const ICON_FILE = 'M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8zM14 3v5h5';
 const ICON_DIR = 'M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z';
 
+// A formatter takes a while to make and a long folder needs one on every line: each kind is made once
+const FMT = {};
+function fmtWith(kind, make) { return FMT[kind] || (FMT[kind] = make()); }
 function fmtSize(n) {
   const u = ['B', 'KB', 'MB', 'GB', 'TB'];
   let i = 0;
   while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
-  return new Intl.NumberFormat(I18N.lang, { maximumFractionDigits: i && n < 10 ? 1 : 0 }).format(n) + ' ' + u[i];
+  const digits = i && n < 10 ? 1 : 0;
+  return fmtWith('size' + digits, () => new Intl.NumberFormat(I18N.lang, { maximumFractionDigits: digits })).format(n) + ' ' + u[i];
 }
+const DATE_OPT = { today: { hour: 'numeric', minute: '2-digit' }, year: { day: 'numeric', month: 'short' }, older: { day: 'numeric', month: 'short', year: 'numeric' } };
 function fmtDate(secs) {
   const d = new Date(secs * 1000), now = new Date();
-  const opt = d.toDateString() === now.toDateString() ? { hour: 'numeric', minute: '2-digit' }
-    : d.getFullYear() === now.getFullYear() ? { day: 'numeric', month: 'short' } : { day: 'numeric', month: 'short', year: 'numeric' };
-  return new Intl.DateTimeFormat(I18N.lang, opt).format(d);
+  const kind = d.toDateString() === now.toDateString() ? 'today' : d.getFullYear() === now.getFullYear() ? 'year' : 'older';
+  return fmtWith('date-' + kind, () => new Intl.DateTimeFormat(I18N.lang, DATE_OPT[kind])).format(d);
 }
 // The phone's browser saves it; the page stays where it is
 function fileUrl(name) { return '/api/files/get?' + new URLSearchParams({ root: F.root, path: [...F.path, name].join('/') }); }
