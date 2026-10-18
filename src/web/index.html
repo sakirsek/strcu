@@ -150,6 +150,8 @@
   #toast { position: fixed; left: 50%; bottom: calc(86px + env(safe-area-inset-bottom)); transform: translateX(-50%); max-width: min(92vw, 560px); padding: 10px 14px; border-radius: 12px; background: #2A2F36; color: var(--fg); font-size: 14px; box-shadow: 0 6px 20px rgba(0,0,0,.45); opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 30; overflow-wrap: anywhere; }
   #toast.on { opacity: 1; }
   #toast.bad { color: var(--bad-soft); }
+  /* Over the turned full screen the message turns with it, at its bottom */
+  body.fsrot #toast { left: calc(46px + env(safe-area-inset-left)); top: 50%; bottom: auto; max-width: min(92vh, 560px); transform: translate(-50%, -50%) rotate(90deg); }
   @keyframes pulse { 50% { opacity: .2; } }
   @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -228,13 +230,17 @@
 
   /* ---- full screen ---- */
   .fs { position: fixed; inset: 0; z-index: 20; overflow: hidden; background: #000; color: var(--fg); touch-action: none; -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  /* Room left at the edges (notch, home bar); a quarter turn (iPhone, see fsTurn) hands each to another side */
+  .fs { --sl: env(safe-area-inset-left); --sr: env(safe-area-inset-right); --st: 0px; --sb: env(safe-area-inset-bottom); }
+  .fs.rot { inset: auto; left: 0; top: 0; width: var(--rh); height: var(--rw); transform-origin: 0 0; transform: translateX(var(--rw)) rotate(90deg);
+    --sl: env(safe-area-inset-top); --sr: env(safe-area-inset-bottom); --st: env(safe-area-inset-right); --sb: env(safe-area-inset-left); }
   .fsstage { position: absolute; inset: 0; touch-action: none; cursor: crosshair; }
   .fsstage .shot-img { position: absolute; left: 0; top: 0; max-width: none; transform-origin: 0 0; pointer-events: none; -webkit-user-drag: none; }
   .fsbar { position: absolute; z-index: 3; display: flex; align-items: center; gap: 8px; }
-  .fsbar.tl { left: calc(12px + env(safe-area-inset-left)); top: 10px; }
-  .fsbar.tr { right: calc(12px + env(safe-area-inset-right)); top: 10px; }
-  .fsbar.bl { left: calc(12px + env(safe-area-inset-left)); bottom: calc(12px + env(safe-area-inset-bottom)); max-width: min(320px, 42%); }
-  .fsbar.br { right: calc(12px + env(safe-area-inset-right)); bottom: calc(12px + env(safe-area-inset-bottom)); }
+  .fsbar.tl { left: calc(12px + var(--sl)); top: calc(10px + var(--st)); }
+  .fsbar.tr { right: calc(12px + var(--sr)); top: calc(10px + var(--st)); }
+  .fsbar.bl { left: calc(12px + var(--sl)); bottom: calc(12px + var(--sb)); max-width: min(320px, 42%); }
+  .fsbar.br { right: calc(12px + var(--sr)); bottom: calc(12px + var(--sb)); }
   .glass { border: 1px solid var(--glass-line); background: var(--glass); }
   .fsbtn { flex: none; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; border-radius: 12px; color: var(--fg); }
   .fsbtn .ic { width: 18px; height: 18px; stroke-width: 2; }
@@ -1513,15 +1519,21 @@ function placeAim() {
   const fx = (S.aim.x - S.scr.x) / S.scr.w, fy = (S.aim.y - S.scr.y) / S.scr.h;
   // A crosshair left outside the image (e.g. after switching to the "Pencere" view) is removed, not left without a bar
   if (fx < 0 || fy < 0 || fx > 1 || fy > 1) { clearAim(); return; }
-  const host = S.fs ? $('#fs') : $('#view .stage');
-  const ir = (S.fs ? $('#fsImg') : $('#shot')).getBoundingClientRect(), hr = host.getBoundingClientRect();
-  if (!ir.width || !hr.width) return;     // not visible (another tab); placed on return
-  const ax = ir.left - hr.left + fx * ir.width, ay = ir.top - hr.top + fy * ir.height;
+  let ax, ay, W, H;
+  if (S.fs) {
+    // From the zoom state: the full screen may be turned (fsTurn), and the page's own boxes are then sideways
+    if (!Z.bw) return;
+    ax = Z.x + fx * Z.bw * Z.k; ay = Z.y + fy * Z.bh * Z.k; W = Z.W; H = Z.H;
+  } else {
+    const ir = $('#shot').getBoundingClientRect(), hr = $('#view .stage').getBoundingClientRect();
+    if (!ir.width || !hr.width) return;     // not visible (another tab); placed on return
+    ax = ir.left - hr.left + fx * ir.width; ay = ir.top - hr.top + fy * ir.height; W = hr.width; H = hr.height;
+  }
   // When zoomed in full screen the crosshair may fall outside the view; it stays, only the marker is hidden
-  if (ax < 0 || ay < 0 || ax > hr.width || ay > hr.height) { a.hidden = bub.hidden = true; return; }
+  if (ax < 0 || ay < 0 || ax > W || ay > H) { a.hidden = bub.hidden = true; return; }
   a.hidden = bub.hidden = false;
   a.style.left = ax + 'px'; a.style.top = ay + 'px';
-  placeBubble(ax, ay, hr.width, hr.height);
+  placeBubble(ax, ay, W, H);
 }
 
 // The bar sits above the crosshair, below if there is no room; tapping outside the bar moves the crosshair there.
@@ -1536,7 +1548,12 @@ function placeBubble(ax, ay, W, H) {
   bub.style.setProperty('--ax', Math.max(12, Math.min(bw - 12, ax - left)) + 'px');
   bub.classList.toggle('above', above); bub.classList.toggle('below', !above);
 }
-window.addEventListener('resize', () => { if (S.fs) fsLayout(false); else placeAim(); });
+// iPhone turns the page late and in steps (its bars too): the full screen is laid out again whenever its size changes
+function onResize() { if (S.fs) { fsTurn(); fsLayout(false); } else placeAim(); }
+window.addEventListener('resize', onResize);
+window.addEventListener('orientationchange', () => setTimeout(onResize, 400));
+if (window.visualViewport) visualViewport.addEventListener('resize', onResize);
+new ResizeObserver(() => { if (S.fs) fsLayout(false); }).observe($('#fs'));
 
 function setAim(p) {
   S.aim = p; S.target = null; S.typeInto = ''; renderQtPlaceholder();
@@ -1777,9 +1794,17 @@ function quickOn() { return S.quick && !S.mac.pick; }
 
 // Point on the computer under the finger; outside the image null, or the nearest edge with `clamp`
 function pcAt(img, e, clamp) {
-  const r = img.getBoundingClientRect();
-  if (!S.scr || !r.width) return null;
-  let fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+  if (!S.scr) return null;
+  let fx, fy;
+  if (img.id === 'fsImg') {
+    if (!Z.bw) return null;
+    const p = fsPt(e);
+    fx = (p.x - Z.x) / (Z.bw * Z.k); fy = (p.y - Z.y) / (Z.bh * Z.k);
+  } else {
+    const r = img.getBoundingClientRect();
+    if (!r.width) return null;
+    fx = (e.clientX - r.left) / r.width; fy = (e.clientY - r.top) / r.height;
+  }
   if (clamp) { fx = Math.max(0, Math.min(1, fx)); fy = Math.max(0, Math.min(1, fy)); }
   else if (!(fx >= 0 && fy >= 0 && fx <= 1 && fy <= 1)) return null;
   return { x: Math.min(S.scr.x + S.scr.w - 1, Math.round(S.scr.x + fx * S.scr.w)), y: Math.min(S.scr.y + S.scr.h - 1, Math.round(S.scr.y + fy * S.scr.h)) };
@@ -1788,8 +1813,9 @@ function pcAt(img, e, clamp) {
 function quickGestures(img, host) {
   let g = null, pend = null;   // the press under way; a tap waiting to see if a second follows
   const mark = (e, kind) => {
-    const h = host(), m = $('.qmark', h), r = h.getBoundingClientRect();
-    m.style.left = (e.clientX - r.left) + 'px'; m.style.top = (e.clientY - r.top) + 'px';
+    const h = host(), m = $('.qmark', h);
+    if (h.id === 'fs') { const p = fsPt(e); m.style.left = p.x + 'px'; m.style.top = p.y + 'px'; }
+    else { const r = h.getBoundingClientRect(); m.style.left = (e.clientX - r.left) + 'px'; m.style.top = (e.clientY - r.top) + 'px'; }
     m.className = 'qmark';
     if (kind) { void m.offsetWidth; m.classList.add(kind); }   // restarts the tap animation
   };
@@ -2345,17 +2371,29 @@ function fsZoom(k, cx, cy) {
   fsApply();
 }
 
+// iPhone lets a page neither fill the screen nor turn it sideways (Android does both, below). Held upright, ⛶ turns
+// the full screen a quarter instead, so turning the phone is enough, even with rotation lock on. A screen that is
+// really sideways needs no turn, and while typing it stands upright again: the phone's keyboard always does.
+const TURN = !document.documentElement.requestFullscreen && matchMedia('(pointer: coarse)').matches && Math.min(screen.width, screen.height) < 600;
+function fsTurn() {
+  const fs = $('#fs'), typing = document.activeElement === QK || document.activeElement === $('#fsQt');
+  const on = !!(S.fs && S.fsReal && TURN && innerHeight > innerWidth && !typing);
+  if (on) { S.fsRotW = innerWidth; fs.style.setProperty('--rw', innerWidth + 'px'); fs.style.setProperty('--rh', innerHeight + 'px'); }
+  if (on !== !!S.fsRot) { S.fsRot = on; fs.classList.toggle('rot', on); document.body.classList.toggle('fsrot', on); }
+}
+// A point on the screen (a touch) in the full screen's own frame, which may be turned
+function fsPt(e) { return S.fsRot ? { x: e.clientY, y: S.fsRotW - e.clientX } : { x: e.clientX, y: e.clientY }; }
+
 function enterFs(real) {
   if (S.fs) return;
   if (S.tab !== 'screen') S.seenAt = Date.now();
-  S.fs = true; S.fsAuto = !real;
+  S.fs = true; S.fsAuto = !real; S.fsReal = !!real;
   copyPicture($('#shot'), $('#fsImg'));
   $('#fs').hidden = false;
   $('#fs').append($('#aim'), $('#bubble'));
-  fsLayout(true);
+  fsTurn(); fsLayout(true);
   renderTarget(); renderLiveDot(); streamVisible();
   if (real) {
-    S.fsReal = true;
     const el = document.documentElement;
     // If unsupported (e.g. iPhone) it is full screen within the page only
     Promise.resolve(el.requestFullscreen ? el.requestFullscreen({ navigationUI: 'hide' }) : Promise.reject())
@@ -2368,6 +2406,7 @@ function exitFs() {
   if (!S.fs) return;
   QF.cancel();
   S.fs = false; S.fsAuto = false;
+  fsTurn();
   copyPicture($('#fsImg'), $('#shot'));
   $('#fs').hidden = true; showFsType(false);
   $('#view .stage').append($('#aim'), $('#bubble'));
@@ -2401,13 +2440,15 @@ LAND.addEventListener('change', () => {
   };
   stage.addEventListener('pointerdown', e => {
     stage.setPointerCapture(e.pointerId);
-    P.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (P.size === 1) { G = { tap: true, t: Date.now(), sx: e.clientX, sy: e.clientY, x0: Z.x, y0: Z.y }; if (quickOn() && e.button === 0) QF.down(e); }
+    const p = fsPt(e);
+    P.set(e.pointerId, p);
+    if (P.size === 1) { G = { tap: true, t: Date.now(), sx: p.x, sy: p.y, x0: Z.x, y0: Z.y }; if (quickOn() && e.button === 0) QF.down(e); }
     else if (P.size === 2) { QF.cancel(); G = pinch(); }
   });
   stage.addEventListener('pointermove', e => {
     if (!P.has(e.pointerId) || !G) return;
-    P.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const p = fsPt(e);
+    P.set(e.pointerId, p);
     // Held: the finger drags on the computer; a quick move before that pans as usual
     if (QF.holding()) { QF.move(e); return; }
     QF.move(e);
@@ -2418,7 +2459,7 @@ LAND.addEventListener('change', () => {
       Z.k = k; Z.x = m.x - G.px * k; Z.y = m.y - G.py * k;
       fsApply();
     } else if (!G.pinch) {
-      const dx = e.clientX - G.sx, dy = e.clientY - G.sy;
+      const dx = p.x - G.sx, dy = p.y - G.sy;
       if (G.tap && Math.hypot(dx, dy) > 8) G.tap = false;
       if (!G.tap && Z.k > 1) { Z.x = G.x0 + dx; Z.y = G.y0 + dy; fsApply(); }
     }
@@ -2428,8 +2469,8 @@ LAND.addEventListener('change', () => {
     P.delete(e.pointerId);
     if (QF.active()) { if (e.type === 'pointerup' && !P.size) QF.up(e); else QF.cancel(); }
     else if (e.type === 'pointerup' && G && G.tap && !G.pinch && !P.size && Date.now() - G.t < 600 && !quickOn()) {
-      const r = $('#fsImg').getBoundingClientRect();
-      tapAt((e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height);
+      const p = fsPt(e);
+      tapAt((p.x - Z.x) / (Z.bw * Z.k), (p.y - Z.y) / (Z.bh * Z.k));
     }
     if (P.size === 1) { const [r] = [...P.values()]; G = { tap: false, sx: r.x, sy: r.y, x0: Z.x, y0: Z.y }; }
     if (!P.size) G = null;
@@ -2437,7 +2478,7 @@ LAND.addEventListener('change', () => {
   stage.addEventListener('pointerup', end);
   stage.addEventListener('pointercancel', end);
   stage.addEventListener('contextmenu', e => e.preventDefault());
-  stage.addEventListener('wheel', e => { e.preventDefault(); fsZoom(Z.k * Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY); }, { passive: false });
+  stage.addEventListener('wheel', e => { e.preventDefault(); const p = fsPt(e); fsZoom(Z.k * Math.exp(-e.deltaY * 0.0015), p.x, p.y); }, { passive: false });
 })();
 
 function showFsType(on) {
@@ -2448,6 +2489,8 @@ function showFsType(on) {
 }
 // The typing box, or with Quick on the phone keyboard
 $('#fsKb').onclick = () => { if (S.quick) toggleKeys(); else { KB.was = null; showFsType($('#fsType').hidden); } };
+// While the keyboard is open the turned full screen stands upright (fsTurn)
+[QK, $('#fsQt')].forEach(i => ['focus', 'blur'].forEach(k => i.addEventListener(k, () => { if (S.fs) { fsTurn(); fsLayout(false); } })));
 $('#fsType').addEventListener('submit', async e => {
   e.preventDefault();
   const inp = $('#fsQt');
