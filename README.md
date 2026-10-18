@@ -128,6 +128,10 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
 keyboard button and the Quick switch. With Quick on, taps and long presses work as above, a quick drag still
 pans the zoomed image, and the keyboard button opens the phone keyboard.
 
+On an iPhone a web page can neither fill the screen nor turn itself sideways, so ⛶ on a phone held upright
+turns the full screen instead: turn the phone to the left, with rotation lock on or off. While the keyboard is
+open, it stands upright.
+
 <img src="docs/fullscreen.png" alt="The panel in full screen on a phone held sideways, with the crosshair on a file and the click bar, and the keyboard button and the Quick switch at the bottom right" width="640">
 
 **Tablets** (and wide browser windows): the Screen tab fills the page and the image takes all the room the
