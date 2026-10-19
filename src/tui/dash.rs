@@ -128,7 +128,12 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
         f.text(Tone::Warn, t.t("dash.quit_ask"));
         f.text(Tone::Dim, t.render(&Msg::new("dash.quit_how").with("key", t.t("dash.key_quit").to_uppercase())));
     } else {
-        f.push(keys(t, &[("dash.key_log", "dash.log"), ("dash.key_quit", "dash.quit")]));
+        f.push(keys(t, &[
+            ("dash.key_pair", "dash.pair"),
+            ("dash.key_settings", "dash.settings"),
+            ("dash.key_log", "dash.log"),
+            ("dash.key_quit", "dash.quit"),
+        ]));
     }
     f
 }
@@ -162,11 +167,15 @@ pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<()> {
             continue;
         }
         confirm = false;
-        // The pairing and settings screens change what StrCu keeps, so they go through the pipe as well;
-        // they are wired to it in the next step.
-        if is_key(t, k, "dash.key_log") && full_log(io, live).await? == Step::Quit {
+        if is_key(t, k, "dash.key_pair") {
+            confirm = super::pair::run(io, live).await? == Step::Quit;
+        } else if is_key(t, k, "dash.key_settings") {
+            confirm = super::settings::run(io, live).await? == Step::Quit;
+        } else if is_key(t, k, "dash.key_log") && full_log(io, live).await? == Step::Quit {
             confirm = true;
         }
+        // Pairing or a new port changes what this screen shows: ask now rather than in a second
+        live.refresh()?;
     }
 }
 
@@ -266,7 +275,7 @@ mod tests {
         assert!(text.contains("https://strcu.example.com"), "{text}");
         // Today an event shows the time alone
         assert!(text.contains("12:00  Computer locked"), "{text}");
-        assert!(text.contains("full log"), "{text}");
+        assert!(text.contains("pair a phone") && text.contains("full log"), "{text}");
     }
 
     #[test]

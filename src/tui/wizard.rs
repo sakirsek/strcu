@@ -22,8 +22,9 @@ pub struct Start {
 
 pub struct Choices {
     pub lang: &'static Lang,
-    /// A new password's hash; None keeps the current one
-    pub hash: Option<String>,
+    /// A new password; None keeps the current one. It is hashed where it is written down, never kept as it
+    /// was typed.
+    pub password: Option<String>,
     pub lan: bool,
     pub autostart: bool,
 }
@@ -36,11 +37,17 @@ pub async fn run(io: &mut impl Io) -> Result<Option<Choices>> {
 }
 
 pub fn apply(c: &Choices) -> Result<()> {
+    // Hashed here, before anything is written: the setup is the one place that still writes the settings
+    // itself, and what it writes is the hash
+    let hash = match &c.password {
+        Some(password) => Some(auth::hash_password(password)?),
+        None => None,
+    };
     config::update(|cfg| {
         cfg.language = Some(c.lang.code.to_string());
         cfg.lan = c.lan;
-        if let Some(h) = &c.hash {
-            cfg.password_hash = Some(h.clone());
+        if let Some(hash) = hash {
+            cfg.password_hash = Some(hash);
         }
         cfg.setup_done = true;
     })?;
@@ -51,7 +58,7 @@ pub fn apply(c: &Choices) -> Result<()> {
 }
 
 pub async fn flow(io: &mut impl Io, start: &mut Start) -> Option<Choices> {
-    let mut c = Choices { lang: i18n::term(), hash: None, lan: true, autostart: true };
+    let mut c = Choices { lang: i18n::term(), password: None, lan: true, autostart: true };
     let mut step = 1;
     while step <= STEPS {
         let r = match step {
@@ -167,7 +174,7 @@ pub fn password_kept_view(t: &Lang, typed: &str) -> Frame {
 
 async fn password(io: &mut impl Io, start: &Start, c: &mut Choices) -> Step<()> {
     let t = i18n::term();
-    if start.has_password && c.hash.is_none() {
+    if start.has_password && c.password.is_none() {
         match choose(io, 2, Some(1), |typed| password_kept_view(t, typed)).await {
             Step::Done(1) => return Step::Done(()),
             Step::Done(_) => {}
@@ -176,8 +183,8 @@ async fn password(io: &mut impl Io, start: &Start, c: &mut Choices) -> Step<()> 
         }
     }
     match new_password(io, Some(2)).await {
-        Step::Done(hash) => {
-            c.hash = Some(hash);
+        Step::Done(password) => {
+            c.password = Some(password);
             Step::Done(())
         }
         Step::Back => Step::Back,
@@ -185,7 +192,7 @@ async fn password(io: &mut impl Io, start: &Start, c: &mut Choices) -> Step<()> 
     }
 }
 
-/// Asks for a new password twice; returns its hash. `step` is the setup step, None in the settings.
+/// Asks for a new password twice and returns it. `step` is the setup step, None in the settings.
 pub async fn new_password(io: &mut impl Io, step: Option<usize>) -> Step<String> {
     let t = i18n::term();
     let mut error = None;
@@ -212,10 +219,7 @@ pub async fn new_password(io: &mut impl Io, step: Option<usize>) -> Step<String>
             error = Some(Msg::new("err.passwords_differ"));
             continue;
         }
-        match auth::hash_password(&first) {
-            Ok(h) => return Step::Done(h),
-            Err(e) => error = Some(i18n::from_error(&e)),
-        }
+        return Step::Done(first);
     }
 }
 
@@ -387,8 +391,8 @@ mod tests {
         let c = flow(&mut io, &mut start).await.expect("finished");
         assert_eq!(c.lang.code, "tr");
         assert!(!c.lan && c.autostart);
-        let hash = c.hash.expect("new password");
-        assert!(hash.starts_with("$argon2"));
+        // The password itself comes back, and `apply` is the one that hashes it
+        assert_eq!(c.password.as_deref(), Some("long enough password"));
         let all = io.frames.join("\n----\n");
         assert!(all.contains("Parola en az 10 karakter olmalı"), "{all}");
         assert!(all.contains("Parolalar eşleşmiyor"));
@@ -404,7 +408,7 @@ mod tests {
         let mut io = Script::new(&[Key::Enter, Key::Enter, Key::Char('1'), Key::Esc, Key::Char('1'), Key::Char('1'), Key::Char('2')]);
         let mut start = Start { has_password: true, remote: Some("strcu.example.com".into()) };
         let c = flow(&mut io, &mut start).await.expect("finished");
-        assert!(c.hash.is_none() && c.lan && !c.autostart);
+        assert!(c.password.is_none() && c.lan && !c.autostart);
         assert!(io.frames.iter().any(|f| f.contains("https://strcu.example.com")));
         i18n::set_term(i18n::system());
     }

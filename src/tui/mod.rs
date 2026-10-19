@@ -8,23 +8,22 @@ mod dash;
 mod frame;
 mod html;
 mod live;
-mod preview;
-mod term;
-mod wizard;
-// The screens that change what StrCu keeps: they are drawn in `strcu dev preview` but not reachable from the
-// main screen until they ask over the pipe instead of writing the settings themselves (the next step).
-#[allow(dead_code)]
 mod pair;
+mod preview;
+// Setting remote access up walks through the Cloudflare dashboard, which needs asks of its own on the pipe:
+// its screens are drawn in `strcu dev preview` but not reachable from the settings yet.
 #[allow(dead_code)]
 mod remote;
-#[allow(dead_code)]
 mod settings;
+mod term;
+mod wizard;
 
 use anyhow::Result;
 
 pub use preview::preview;
 
 use crate::i18n::{self, Lang, Msg};
+use live::{Live, Tried};
 use crate::{config, sys};
 use frame::{Frame, Span, Tone, span};
 
@@ -90,13 +89,17 @@ pub async fn run() -> Result<()> {
         };
         wizard::apply(&choices)?;
     }
-    let mut live = match live::Live::connect() {
+    let mut live = match Live::connect() {
         Ok(live) => live,
         Err(e) => {
             drop(io);
             return Err(e);
         }
     };
+    // The window cannot read the settings folder, so even the language it draws in comes from StrCu
+    if let Some(l) = live.settings().ok().and_then(|s| s.language).and_then(|code| i18n::get(&code)) {
+        i18n::set_term(l);
+    }
     let ended = dash::run(&mut io, &mut live).await;
     if ended.is_ok() {
         let t = i18n::term();
@@ -186,6 +189,44 @@ fn hint_quit(t: &Lang) -> String {
 /// Pads labels to the same width so the values line up.
 fn pad(label: &str, width: usize) -> String {
     format!("{label}{}", " ".repeat(width.saturating_sub(label.chars().count())))
+}
+
+// ---------- signing in ----------
+
+/// Asks for the panel password and signs the window in with StrCu. True once it is; false when the user went
+/// back instead.
+///
+/// Reading what StrCu says is free, but everything that changes something needs the password, even here at
+/// the computer: StrCu runs with the rights of the computer and can type on the lock screen, so a program
+/// running as the user must not be able to hand out access through this window without it.
+pub async fn sign_in(io: &mut impl Io, live: &mut Live) -> Result<Step<bool>> {
+    let mut notice: Option<Notice> = None;
+    loop {
+        let t = i18n::term();
+        let shown = notice.take();
+        let typed = match read_line(io, "", true, |dots| sign_in_view(t, dots, shown.as_ref())).await {
+            Step::Done(s) => s,
+            Step::Back => return Ok(Step::Done(false)),
+            Step::Quit => return Ok(Step::Quit),
+        };
+        notice = match live.sign_in(&typed)? {
+            Tried::Right => return Ok(Step::Done(true)),
+            Tried::Wrong => Some(Notice::Err(Msg::new("err.wrong_password"))),
+            Tried::LockedOut(seconds) => Some(Notice::Err(Msg::new("err.locked_out").with("s", seconds))),
+        };
+    }
+}
+
+pub fn sign_in_view(t: &Lang, typed: &str, note: Option<&Notice>) -> Frame {
+    let mut f = Frame::default();
+    header(&mut f, &t.t("signin.title"), Vec::new());
+    f.text(Tone::Plain, t.t("signin.text"));
+    f.blank();
+    f.push(vec![span(Tone::Plain, format!("  {}:  ", t.t("setup.pw_field"))), span(Tone::Accent, typed)]);
+    f.cursor();
+    notice(&mut f, t, note);
+    footer(&mut f, &[t.t("ui.hint_enter"), hint_back(t)]);
+    f
 }
 
 // ---------- waiting for input ----------

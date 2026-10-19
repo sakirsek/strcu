@@ -2,11 +2,13 @@
 
 use std::time::Duration;
 
+use anyhow::Result;
+
 use super::frame::{Frame, Span, Tone, span};
+use super::live::{Live, Said};
 use super::{Io, Key, Step, footer, header, hint_back, option, prompt};
-use crate::app::App;
 use crate::i18n::{self, Lang, Msg};
-use crate::pair;
+use crate::{ipc, pair};
 
 /// Where the phone opens the panel: the label key and the address.
 pub type Place = (&'static str, String);
@@ -121,50 +123,81 @@ fn prompt_enter(f: &mut Frame, t: &Lang) {
 }
 
 /// Where the phone can open the panel, the home network first: it is the likelier one at the computer.
-fn places(app: &App) -> Vec<Place> {
-    let urls = app.urls();
+fn places(live: &Live) -> Vec<Place> {
+    let state = live.state();
     let mut out: Vec<Place> = Vec::new();
-    if let Some(home) = urls.home.first() {
+    if let Some(home) = state.home.first() {
         out.push(("dash.home", home.clone()));
     }
-    if let Some(remote) = urls.remote {
-        out.push(("dash.remote", remote));
+    if let Some(remote) = &state.remote_url {
+        out.push(("dash.remote", remote.clone()));
     }
     out
 }
 
+/// Asks StrCu about the code, and for the panel password first when StrCu wants it: a code is access being
+/// handed out, so it is not something the window may do on its own.
+async fn ask(io: &mut impl Io, live: &mut Live, what: ipc::Pair) -> Result<Step<ipc::PairState>> {
+    for _ in 0..2 {
+        match live.pair(what.clone())? {
+            Said::Done(state) => return Ok(Step::Done(state)),
+            // Nothing here can fail for a reason worth a screen of its own; the main screen is the answer
+            Said::Failed(_) => return Ok(Step::Back),
+            Said::SignInNeeded => match super::sign_in(io, live).await? {
+                Step::Done(true) => {}
+                Step::Done(false) | Step::Back => return Ok(Step::Back),
+                Step::Quit => return Ok(Step::Quit),
+            },
+        }
+    }
+    Ok(Step::Back)
+}
+
 /// The pairing screen until the phone pairs or the user leaves; the code closes when it is left.
-pub async fn run(io: &mut impl Io, app: &App) -> Step<()> {
-    let pairing = app.panel.pairing();
-    let places = places(app);
+pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
+    let places = places(live);
     let mut pick = 0;
+    let mut code = ipc::PairState::default();
     if !places.is_empty() {
-        pairing.open();
+        match ask(io, live, ipc::Pair::Open).await? {
+            Step::Done(fresh) => code = fresh,
+            Step::Back => return Ok(Step::Back),
+            Step::Quit => return Ok(Step::Quit),
+        }
     }
     let mut tick = tokio::time::interval(Duration::from_millis(500));
     let result = loop {
         let t = i18n::term();
-        let code = pairing.code();
-        let state = match &code {
-            pair::Code::Open(code, left) => State::Open(code, *left),
-            pair::Code::Paired(name) => State::Done(name),
-            pair::Code::Closed => State::Closed,
+        let state = match (&code.paired, &code.code) {
+            (Some(name), _) => State::Done(name),
+            (None, Some(digits)) => State::Open(digits, Duration::from_secs(code.seconds_left)),
+            (None, None) => State::Closed,
         };
         io.draw(&view(t, &places, pick, &state, io.size().0));
         let done = matches!(state, State::Done(_));
         let closed = matches!(state, State::Closed) && !places.is_empty();
         let key = tokio::select! {
             k = io.key() => k,
-            _ = tick.tick(), if !done => continue,
+            // While the code is open the phone may use it at any moment, and it runs out by itself
+            _ = tick.tick(), if !done => {
+                match ask(io, live, ipc::Pair::State).await? {
+                    Step::Done(fresh) => code = fresh,
+                    Step::Back => break Step::Back,
+                    Step::Quit => break Step::Quit,
+                }
+                continue;
+            }
         };
         let Some(k) = key else { continue };
         match k {
             Key::Interrupt => break Step::Quit,
             _ if done => break Step::Done(()),
             Key::Esc | Key::Char('0') => break Step::Back,
-            Key::Char('1') | Key::Enter if closed => {
-                pairing.open();
-            }
+            Key::Char('1') | Key::Enter if closed => match ask(io, live, ipc::Pair::Open).await? {
+                Step::Done(fresh) => code = fresh,
+                Step::Back => break Step::Back,
+                Step::Quit => break Step::Quit,
+            },
             Key::Char(c @ '1'..='9') => {
                 let n = c as usize - '1' as usize;
                 if n < places.len() {
@@ -174,8 +207,8 @@ pub async fn run(io: &mut impl Io, app: &App) -> Step<()> {
             _ => {}
         }
     };
-    pairing.close();
-    result
+    let _ = live.pair(ipc::Pair::Close);
+    Ok(result)
 }
 
 #[cfg(test)]

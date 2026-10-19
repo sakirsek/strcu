@@ -101,11 +101,12 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
     };
     let access =
         AccessConfig { hostname: host.into(), team_domain: "myteam.cloudflareaccess.com".into(), aud: String::new(), email: "you@example.com".into() };
-    let keys = vec![
+    let keys = [
         passkey("Android · Chrome", host, Some(&format!("{today} 14:02:41"))),
         passkey("iPhone · Safari", "localhost", None),
     ];
-    let devices = vec![Device {
+
+    let devices = [Device {
         id: "d1".into(),
         name: "iPhone · Safari".into(),
         host: "192.168.1.24".into(),
@@ -115,6 +116,9 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         secret: String::new(),
     }];
     let places: Vec<pair::Place> = vec![("dash.home", "http://192.168.1.24:8765".into()), ("dash.remote", format!("https://{host}"))];
+    // The phones the window shows come over the pipe, so they are the same two lists seen from there
+    let phones: Vec<ipc::Phone> =
+        devices.iter().map(ipc::Phone::from_device).chain(keys.iter().map(ipc::Phone::from_passkey)).collect();
     let values = Values {
         lang: t.name.clone(),
         lan: true,
@@ -132,6 +136,8 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("04-setup-lan", wizard::lan_view(t, Some(3), 1, "", None)),
         ("05-setup-remote", wizard::remote_view(t, None, "")),
         ("06-setup-autostart", wizard::autostart_view(t, Some(5), 1, "", None)),
+        ("06b-sign-in", super::sign_in_view(t, &super::dots(12), None)),
+        ("06c-sign-in-wrong", super::sign_in_view(t, "", Some(&Notice::Err(Msg::new("err.wrong_password"))))),
         ("07-dashboard", dash_view(&state(&urls, true, &Remote::Up), &events, false)),
         ("08-dashboard-first-start", dash_view(&state(&fresh, false, &Remote::Off), &[], false)),
         ("09-dashboard-problem", dash_view(&state(&urls, true, &failed), &events[2..], true)),
@@ -186,7 +192,7 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ),
         ("15-pair", pair::view(t, &places, 0, &pair::State::Open("482913", std::time::Duration::from_secs(272)), COLS)),
         ("15b-pair-done", pair::view(t, &places, 0, &pair::State::Done("iPhone · Safari"), COLS)),
-        ("15c-phones", settings::phones_view(t, &devices, &keys, unix_now(), "", None)),
+        ("15c-phones", settings::phones_view(t, &phones, unix_now(), "", None)),
         ("16-port", settings::port_view(t, "8765", None)),
     ];
     std::fs::create_dir_all(dir)?;

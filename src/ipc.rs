@@ -113,7 +113,7 @@ impl Ask {
 
 /// The settings the window may change. Setting up remote access is a conversation of its own and gets its
 /// own asks later; this is what the settings menu writes straight away.
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(tag = "change", content = "to", rename_all = "snake_case")]
 pub enum Change {
     /// A language code ("tr"): the terminal and the log follow it.
@@ -128,7 +128,7 @@ pub enum Change {
     Forget { id: String },
 }
 
-#[derive(Serialize, Deserialize, Debug, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
 #[serde(rename_all = "snake_case")]
 pub enum Pair {
     /// A fresh six-digit code; an open one is replaced.
