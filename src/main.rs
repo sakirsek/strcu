@@ -240,19 +240,24 @@ async fn main() {
     }
 }
 
-/// StrCu without a command: the terminal screens, or status lines when the output is not a terminal.
+/// StrCu without a command: the control window, or status lines when the output is not a terminal.
 async fn start(minimized: bool) -> Result<()> {
+    window::set_console_title(window::CONSOLE_TITLE);
+    if minimized {
+        window::minimize_console();
+    }
+    // The window only looks at the StrCu that is running: any number of them may be open, and a window
+    // keeps nothing awake.
+    if std::io::stdout().is_terminal() {
+        return tui::run().await;
+    }
     let Some(_instance) = sys::instance::claim() else {
         tui::already_running();
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
         return Ok(());
     };
-    window::set_console_title(window::CONSOLE_TITLE);
-    if minimized {
-        window::minimize_console();
-    }
     power::keep_awake(true, false);
-    if std::io::stdout().is_terminal() { tui::run().await } else { app::serve_plain(None, true).await }
+    app::serve_plain(None, true).await
 }
 
 async fn run(cli: Cli) -> Result<()> {

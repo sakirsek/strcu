@@ -10,8 +10,10 @@ use anyhow::{Result, bail};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use crate::auth::Check;
 use crate::i18n::{self, Lang, Msg};
 use crate::log::{ActionLog, LogEntry};
+use crate::pair::Code;
 use crate::server::{Listener, Panel};
 use crate::{config, ipc, sys, tunnel};
 
@@ -217,22 +219,31 @@ const URLS_FOR: Duration = Duration::from_secs(30);
 struct Shown {
     urls: Urls,
     looked: Instant,
+    /// Something the addresses depend on changed (the port, the home network): look them up again at once.
+    stale: bool,
 }
 
 impl Shown {
     fn urls(&mut self, app: &App) -> &Urls {
-        if self.looked.elapsed() > URLS_FOR {
+        if self.stale || self.looked.elapsed() > URLS_FOR {
             self.urls = app.urls();
             self.looked = Instant::now();
+            self.stale = false;
         }
         &self.urls
     }
 }
 
-/// Answers one ask from the control window (ipc.rs). What the window reads is answered here; signing in and
-/// the asks that change something follow with the window itself.
-fn answer(app: &App, shown: &mut Shown, req: ipc::Request) -> ipc::Answer {
+/// Answers one ask from the control window (ipc.rs). It is answered here, in the loop that runs StrCu,
+/// because a change has to be carried out at once: a new port means the panel must listen again, and this is
+/// the only place with anything to listen with.
+async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> ipc::Answer {
     let lang = i18n::term();
+    // Everything that changes something needs the panel password, even at the computer own keyboard: the
+    // worker types on the lock screen, and a program running as the user must not reach that without it.
+    if req.ask.needs_token() && !app.panel.auth().check(req.token.as_deref().unwrap_or("")) {
+        return ipc::Answer::SignInNeeded;
+    }
     match req.ask {
         ipc::Ask::Status { log_since } => {
             let log = app.panel.log();
@@ -258,12 +269,119 @@ fn answer(app: &App, shown: &mut Shown, req: ipc::Request) -> ipc::Answer {
             })
         }
         ipc::Ask::Settings => ipc::Answer::Settings(settings(app)),
-        _ => ipc::Answer::Failed { reason: lang.t("err.unknown_ask") },
+        ipc::Ask::SignIn { password } => sign_in(app, &password),
+        ipc::Ask::Change(what) => change(app, shown, what, lang).await,
+        ipc::Ask::Pair(ask) => ipc::Answer::Pair(pairing(app, ask)),
+        // Stopping StrCu until the computer starts again is for the service to do, and comes with it
+        ipc::Ask::Stop { .. } => ipc::Answer::Failed { reason: lang.t("err.unknown_ask") },
+    }
+}
+
+/// The panel password, typed in the window. Wrong tries count towards the same brake as the panel sign-in
+/// but under a source of their own, so somebody guessing at the keyboard does not lock the phone out.
+fn sign_in(app: &App, password: &str) -> ipc::Answer {
+    let from = Msg::new("src.local");
+    match app.panel.auth().check_password(password, "window") {
+        Check::Ok => {
+            app.panel.log().add(Msg::new("ev.signed_in").with("from", from), true);
+            ipc::Answer::SignedIn { token: app.panel.auth().new_session() }
+        }
+        Check::Wrong => {
+            app.panel.log().add(Msg::new("ev.signin_wrong_pw").with("from", from), false);
+            ipc::Answer::Wrong
+        }
+        Check::LockedOut(seconds) => ipc::Answer::LockedOut { seconds },
+    }
+}
+
+/// One change from the closed list the window may send. What could not be done comes back as a sentence
+/// ready to show.
+async fn change(app: &mut App, shown: &mut Shown, what: ipc::Change, lang: &Lang) -> ipc::Answer {
+    let failed = |e: &anyhow::Error| ipc::Answer::Failed { reason: lang.render(&i18n::from_error(e)) };
+    match what {
+        ipc::Change::Language(code) => {
+            let Some(l) = i18n::get(&code) else { return ipc::Answer::Failed { reason: lang.t("err.internal") } };
+            match config::update(|c| c.language = Some(code)) {
+                Ok(()) => {
+                    // The log is written in the language the settings name, so StrCu follows at once as well
+                    i18n::set_term(l);
+                    ipc::Answer::Done
+                }
+                Err(e) => failed(&e),
+            }
+        }
+        ipc::Change::Password(password) => match crate::auth::set_password(&password) {
+            Ok(hash) => {
+                app.panel.auth().replace_password(hash);
+                app.panel.log().add(Msg::new("ev.password_changed"), true);
+                ipc::Answer::Done
+            }
+            Err(e) => failed(&e),
+        },
+        ipc::Change::Lan(on) => listen_again(app, shown, |c| c.lan = on, |c| c.lan = !on, lang).await,
+        ipc::Change::Port(port) => {
+            let before = config::load().port;
+            listen_again(app, shown, |c| c.port = port, |c| c.port = before, lang).await
+        }
+        ipc::Change::Forget { id } => match app.panel.pairing().remove(&id) {
+            Ok(gone) => {
+                app.panel.log().add(Msg::new("ev.unpaired").with("name", gone.name), true);
+                ipc::Answer::Done
+            }
+            // One list holds both the phones paired with a code and the registered fingerprints
+            Err(unknown) => match app.panel.passkeys().remove(&id) {
+                Ok(gone) => {
+                    app.panel.log().add(Msg::new("ev.pk_removed").with("name", gone.name), true);
+                    ipc::Answer::Done
+                }
+                Err(_) => failed(&unknown),
+            },
+        },
+    }
+}
+
+/// Saves a setting the listener depends on and listens again; if that fails the old setting comes back, so
+/// the panel is never left unreachable over a port that cannot be had.
+async fn listen_again(
+    app: &mut App,
+    shown: &mut Shown,
+    set: impl Fn(&mut config::Config),
+    back: impl Fn(&mut config::Config),
+    lang: &Lang,
+) -> ipc::Answer {
+    if let Err(e) = config::update(set) {
+        return ipc::Answer::Failed { reason: lang.render(&i18n::from_error(&e)) };
+    }
+    shown.stale = true;
+    match app.relisten().await {
+        None => ipc::Answer::Done,
+        Some(why) => {
+            let _ = config::update(back);
+            app.relisten().await;
+            ipc::Answer::Failed { reason: lang.render(&why) }
+        }
+    }
+}
+
+/// Pairing a phone: the window opens a code, watches it, and closes it again.
+fn pairing(app: &App, ask: ipc::Pair) -> ipc::PairState {
+    let pairing = app.panel.pairing();
+    match ask {
+        ipc::Pair::Open => {
+            let _ = pairing.open();
+        }
+        ipc::Pair::Close => pairing.close(),
+        ipc::Pair::State => {}
+    }
+    match pairing.code() {
+        Code::Open(code, left) => ipc::PairState { code: Some(code), seconds_left: left.as_secs(), paired: None },
+        Code::Paired(name) => ipc::PairState { paired: Some(name), ..ipc::PairState::default() },
+        Code::Closed => ipc::PairState::default(),
     }
 }
 
 /// Remote access as the window shows it, with what a failure said.
-fn remote_state(remote: &Remote, lang: &Lang) -> (ipc::RemoteState, Option<String>) {
+pub fn remote_state(remote: &Remote, lang: &Lang) -> (ipc::RemoteState, Option<String>) {
     use ipc::RemoteState as State;
     match remote {
         Remote::Off => (State::Off, None),
@@ -278,7 +396,7 @@ fn remote_state(remote: &Remote, lang: &Lang) -> (ipc::RemoteState, Option<Strin
 
 /// The log for the window: ready to show, in the language the settings name, newest first. The window has no
 /// language file of its own to render a `Msg` with - its code is not something that travels.
-fn events(entries: &[LogEntry], lang: &Lang) -> Vec<ipc::Event> {
+pub fn events(entries: &[LogEntry], lang: &Lang) -> Vec<ipc::Event> {
     entries
         .iter()
         .map(|e| ipc::Event { time: e.time.clone(), text: lang.render(&e.msg), ok: e.ok, important: e.important() })
@@ -302,7 +420,7 @@ fn settings(app: &App) -> ipc::Settings {
 
 /// `strcu serve`, and a start without a terminal: no screens, status lines on the output instead.
 pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
-    let app = App::start(bind, tunnel).await?;
+    let mut app = App::start(bind, tunnel).await?;
     if let Some(e) = &app.listen_error {
         bail!(e.clone());
     }
@@ -329,12 +447,12 @@ pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
     println!("{}", lang.t("term.stop_hint"));
     // The control window reaches this StrCu through the pipe; without one the panel is served all the same
     let mut asks = ipc::Asks::open(&app.panel.log());
-    let mut shown = Shown { urls: app.urls(), looked: Instant::now() };
+    let mut shown = Shown { urls: app.urls(), looked: Instant::now(), stale: false };
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
             ipc::Asked(req, back) = asks.next() => {
-                let _ = back.send(answer(&app, &mut shown, req));
+                let _ = back.send(answer(&mut app, &mut shown, req).await);
             }
             Ok(()) = remote.changed() => say(&remote.borrow_and_update()),
             Ok(()) = log.changed() => {

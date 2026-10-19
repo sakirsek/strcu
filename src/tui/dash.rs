@@ -1,19 +1,21 @@
 //! The main screen: where the phone can open the panel, recent important events, the keys. And the full log.
+//!
+//! Everything here is drawn from what the running StrCu says over the pipe (live.rs). The window keeps
+//! nothing of its own: closing it leaves StrCu running.
+
+use anyhow::Result;
 
 use super::frame::{Frame, Span, Tone, layout, span};
+use super::live::{self, Live};
 use super::{Io, Key, Step, footer, header, is_key};
-use crate::app::{App, Remote, Urls};
 use crate::i18n::{self, Lang, Msg};
-use crate::log::{LogEntry, local_time};
-use crate::config;
+use crate::ipc;
+use crate::log::local_time;
 
 pub struct View<'a> {
-    pub urls: &'a Urls,
-    pub lan: bool,
-    pub remote: &'a Remote,
-    pub listen_error: Option<&'a Msg>,
+    pub state: &'a ipc::Status,
     /// Important entries, newest first
-    pub events: &'a [LogEntry],
+    pub events: &'a [&'a ipc::Event],
     pub today: &'a str,
     pub confirm_quit: bool,
 }
@@ -49,14 +51,21 @@ pub fn view(t: &Lang, v: &View, size: (usize, usize)) -> Frame {
 }
 
 fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
+    use ipc::RemoteState as R;
+
     let mut f = Frame::default();
-    let running = v.listen_error.is_none();
-    let state = if running { span(Tone::Ok, format!("● {}", t.t("dash.running"))) } else { span(Tone::Bad, format!("● {}", t.t("dash.stopped"))) };
-    header(&mut f, "", vec![state, span(Tone::Dim, format!(" · v{}", env!("CARGO_PKG_VERSION")))]);
+    let state = if v.state.serving {
+        span(Tone::Ok, format!("● {}", t.t("dash.running")))
+    } else {
+        span(Tone::Bad, format!("● {}", t.t("dash.stopped")))
+    };
+    // The version of the StrCu that answers, which after an update is not always this window's own
+    header(&mut f, "", vec![state, span(Tone::Dim, format!(" · v{}", v.state.version))]);
 
     f.text(Tone::Strong, t.t("dash.open_from_phone"));
-    if let Some(e) = v.listen_error {
-        f.hang(vec![span(Tone::Plain, "  ")], vec![span(Tone::Bad, t.render(&Msg::new("dash.listen_failed").with("reason", e.clone())))]);
+    if let Some(reason) = &v.state.listen_error {
+        let failed = Msg::new("dash.listen_failed").with("reason", reason.clone());
+        f.hang(vec![span(Tone::Plain, "  ")], vec![span(Tone::Bad, t.render(&failed))]);
         f.text(Tone::Dim, format!("  {}", t.t("dash.listen_hint")));
     } else {
         let labels = [t.t("dash.home"), t.t("dash.remote"), t.t("dash.this_pc")];
@@ -65,9 +74,9 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
             f.hang(vec![span(Tone::Plain, "  "), span(Tone::Plain, super::pad(&labels[i], w))], value);
         };
         // Home network
-        match (v.lan, v.urls.home.as_slice()) {
+        match (v.state.lan, v.state.home.as_slice()) {
             (false, _) => row(&mut f, 0, vec![span(Tone::Dim, t.t("dash.home_off"))]),
-            (true, []) if v.urls.public_network => row(&mut f, 0, vec![span(Tone::Warn, t.t("dash.home_public"))]),
+            (true, []) if v.state.public_network => row(&mut f, 0, vec![span(Tone::Warn, t.t("dash.home_public"))]),
             (true, []) => row(&mut f, 0, vec![span(Tone::Warn, t.t("dash.home_none"))]),
             (true, urls) => {
                 for (i, u) in urls.iter().enumerate() {
@@ -77,25 +86,26 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
             }
         }
         // Remote
-        match (&v.urls.remote, v.remote) {
-            (_, Remote::Off | Remote::Disabled) | (None, _) => {
-                let key = if *v.remote == Remote::Incomplete { "dash.remote_incomplete" } else { "dash.remote_off" };
-                let tone = if *v.remote == Remote::Incomplete { Tone::Warn } else { Tone::Dim };
+        match (&v.state.remote_url, v.state.remote) {
+            (_, R::Off | R::Disabled) | (None, _) => {
+                let incomplete = v.state.remote == R::Incomplete;
+                let key = if incomplete { "dash.remote_incomplete" } else { "dash.remote_off" };
+                let tone = if incomplete { Tone::Warn } else { Tone::Dim };
                 row(&mut f, 1, vec![span(tone, t.t(key))]);
             }
             (Some(url), state) => {
                 let mut value = vec![span(Tone::Accent, url), span(Tone::Plain, "  ")];
                 value.extend(super::remote::state_spans(t, state));
                 row(&mut f, 1, value);
-                if let Remote::Failed(why) = state {
-                    f.hang(vec![span(Tone::Plain, format!("  {}", " ".repeat(w)))], vec![span(Tone::Dim, t.render(why))]);
+                if let Some(why) = &v.state.remote_why {
+                    f.hang(vec![span(Tone::Plain, format!("  {}", " ".repeat(w)))], vec![span(Tone::Dim, why)]);
                 }
             }
         }
-        if let Some(u) = &v.urls.local {
+        if let Some(u) = &v.state.local {
             row(&mut f, 2, vec![span(Tone::Dim, u)]);
         }
-        let reachable = !v.urls.home.is_empty() || matches!(v.remote, Remote::Up | Remote::Down | Remote::Starting);
+        let reachable = !v.state.home.is_empty() || matches!(v.state.remote, R::Up | R::Down | R::Starting);
         if !reachable {
             f.blank();
             f.hang(vec![span(Tone::Plain, "  ")], vec![span(Tone::Warn, t.t("dash.unreachable"))]);
@@ -109,7 +119,7 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
     }
     for e in v.events.iter().take(n_events) {
         let prefix = vec![span(Tone::Plain, "  "), span(Tone::Dim, format!("{}  ", when(&e.time, v.today)))];
-        f.hang(prefix, vec![span(if e.ok { Tone::Plain } else { Tone::Bad }, t.render(&e.msg))]);
+        f.hang(prefix, vec![span(if e.ok { Tone::Plain } else { Tone::Bad }, &e.text)]);
     }
 
     f.blank();
@@ -118,76 +128,43 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
         f.text(Tone::Warn, t.t("dash.quit_ask"));
         f.text(Tone::Dim, t.render(&Msg::new("dash.quit_how").with("key", t.t("dash.key_quit").to_uppercase())));
     } else {
-        f.push(keys(t, &[
-            ("dash.key_pair", "dash.pair"),
-            ("dash.key_settings", "dash.settings"),
-            ("dash.key_log", "dash.log"),
-            ("dash.key_quit", "dash.quit"),
-        ]));
+        f.push(keys(t, &[("dash.key_log", "dash.log"), ("dash.key_quit", "dash.quit")]));
     }
     f
 }
 
-/// The main screen until the user quits.
-pub async fn run(io: &mut impl Io, app: &mut App) {
-    let log = app.panel.log();
-    let mut changes = log.watch();
-    let mut remote = app.remote();
+/// The main screen until the window is closed. It asks the running StrCu again every second; an answer that
+/// never comes ends the screen, since there is nothing left to show.
+pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<()> {
     let mut confirm = false;
-    // Reading the addresses takes a while: not again for every log entry, only when they may have changed
-    let mut stale = false;
-    let (mut lan, mut urls) = (config::load().lan, app.urls());
     loop {
         let t = i18n::term();
-        if std::mem::take(&mut stale) {
-            (lan, urls) = (config::load().lan, app.urls());
-        }
-        let state = remote.borrow_and_update().clone();
-        let events: Vec<LogEntry> = log.entries().into_iter().filter(LogEntry::important).collect();
         let today = local_time();
-        let v = View {
-            urls: &urls,
-            lan,
-            remote: &state,
-            listen_error: app.listen_error.as_ref(),
-            events: &events,
-            today: &today[..10],
-            confirm_quit: confirm,
+        let frame = {
+            let events: Vec<&ipc::Event> = live.log().iter().filter(|e| e.important).collect();
+            let v = View { state: live.state(), events: &events, today: &today[..10], confirm_quit: confirm };
+            view(t, &v, io.size())
         };
-        io.draw(&view(t, &v, io.size()));
+        io.draw(&frame);
         let key = tokio::select! {
             k = io.key() => k,
-            Ok(()) = changes.changed() => continue,
-            Ok(()) = remote.changed() => {
-                stale = true;
-                continue;
-            }
-            // The clock in the event list moves on; a new network shows up too
-            _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {
-                stale = true;
+            _ = tokio::time::sleep(live::POLL) => {
+                live.refresh()?;
                 continue;
             }
         };
         let Some(k) = key else { continue };
         if k == Key::Interrupt || is_key(t, k, "dash.key_quit") {
             if confirm {
-                return;
+                return Ok(());
             }
             confirm = true;
             continue;
         }
         confirm = false;
-        // The pairing screen and the settings can change what the addresses are
-        stale = true;
-        if is_key(t, k, "dash.key_pair") {
-            confirm = super::pair::run(io, app).await == Step::Quit;
-        } else if is_key(t, k, "dash.key_settings") {
-            if super::settings::run(io, app).await == Step::Quit {
-                confirm = true;
-            }
-            // Settings may have started a new tunnel watcher
-            remote = app.remote();
-        } else if is_key(t, k, "dash.key_log") && full_log(io, app).await == Step::Quit {
+        // The pairing and settings screens change what StrCu keeps, so they go through the pipe as well;
+        // they are wired to it in the next step.
+        if is_key(t, k, "dash.key_log") && full_log(io, live).await? == Step::Quit {
             confirm = true;
         }
     }
@@ -195,7 +172,7 @@ pub async fn run(io: &mut impl Io, app: &mut App) {
 
 // ---------- full log ----------
 
-pub fn log_view(t: &Lang, entries: &[LogEntry], top: usize, size: (usize, usize)) -> Frame {
+pub fn log_view(t: &Lang, entries: &[ipc::Event], top: usize, size: (usize, usize)) -> Frame {
     let (_, rows) = size;
     // Header (3) + footer (3)
     let fit = rows.saturating_sub(6).max(1);
@@ -209,39 +186,95 @@ pub fn log_view(t: &Lang, entries: &[LogEntry], top: usize, size: (usize, usize)
     }
     for e in entries.iter().skip(top).take(fit) {
         let prefix = vec![span(Tone::Dim, format!("{}  ", e.time))];
-        f.hang(prefix, vec![span(if e.ok { Tone::Plain } else { Tone::Bad }, t.render(&e.msg))]);
+        f.hang(prefix, vec![span(if e.ok { Tone::Plain } else { Tone::Bad }, &e.text)]);
     }
     footer(&mut f, &[t.t("dash.log_keys"), super::hint_back(t)]);
     f
 }
 
-async fn full_log(io: &mut impl Io, app: &App) -> Step<()> {
-    let log = app.panel.log();
-    let mut changes = log.watch();
+async fn full_log(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
     let mut top = 0usize;
     loop {
         let t = i18n::term();
-        let entries = log.entries();
         let size = io.size();
         let page = size.1.saturating_sub(6).max(1);
-        top = top.min(entries.len().saturating_sub(page));
-        io.draw(&log_view(t, &entries, top, size));
+        let frame = {
+            let entries = live.log();
+            top = top.min(entries.len().saturating_sub(page));
+            log_view(t, entries, top, size)
+        };
+        io.draw(&frame);
         let key = tokio::select! {
             k = io.key() => k,
-            Ok(()) = changes.changed() => continue,
+            _ = tokio::time::sleep(live::POLL) => {
+                live.refresh()?;
+                continue;
+            }
         };
         match key {
             None => {}
-            Some(Key::Interrupt) => return Step::Quit,
-            Some(Key::Esc | Key::Char('0')) => return Step::Back,
+            Some(Key::Interrupt) => return Ok(Step::Quit),
+            Some(Key::Esc | Key::Char('0')) => return Ok(Step::Back),
             Some(Key::Up) => top = top.saturating_sub(1),
             Some(Key::Down) => top += 1,
             Some(Key::PageUp) => top = top.saturating_sub(page),
             Some(Key::PageDown) => top += page,
             Some(Key::Home) => top = 0,
-            Some(Key::End) => top = entries.len(),
-            Some(k) if is_key(t, k, "dash.key_log") => return Step::Back,
+            Some(Key::End) => top = live.log().len(),
+            Some(k) if is_key(t, k, "dash.key_log") => return Ok(Step::Back),
             Some(_) => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::frame::plain;
+    use super::*;
+
+    fn running() -> ipc::Status {
+        ipc::Status {
+            version: "2.0.0".to_string(),
+            serving: true,
+            lan: true,
+            local: Some("http://localhost:8765".to_string()),
+            home: vec!["http://192.168.1.5:8765".to_string()],
+            remote_url: Some("https://strcu.example.com".to_string()),
+            remote: ipc::RemoteState::Up,
+            ..ipc::Status::default()
+        }
+    }
+
+    fn drawn(state: &ipc::Status, events: &[&ipc::Event]) -> String {
+        let t = i18n::get("en").expect("English is one of the languages");
+        let v = View { state, events, today: "2026-10-19", confirm_quit: false };
+        plain(&view(t, &v, (90, 30)), 90)
+    }
+
+    #[test]
+    fn the_main_screen_is_drawn_from_what_strcu_says() {
+        let locked = ipc::Event {
+            time: "2026-10-19 12:00:00".to_string(),
+            text: "Computer locked".to_string(),
+            ok: true,
+            important: true,
+        };
+        let text = drawn(&running(), &[&locked]);
+        // The version is the running StrCu one, not the window own
+        assert!(text.contains("v2.0.0"), "{text}");
+        assert!(text.contains("http://192.168.1.5:8765"), "{text}");
+        assert!(text.contains("https://strcu.example.com"), "{text}");
+        // Today an event shows the time alone
+        assert!(text.contains("12:00  Computer locked"), "{text}");
+        assert!(text.contains("full log"), "{text}");
+    }
+
+    #[test]
+    fn a_panel_that_could_not_start_says_why() {
+        let state = ipc::Status { serving: false, listen_error: Some("the port is taken".to_string()), ..running() };
+        let text = drawn(&state, &[]);
+        assert!(text.contains("the port is taken"), "{text}");
+        // And the addresses are not offered, since nothing answers on them
+        assert!(!text.contains("http://192.168.1.5:8765"), "{text}");
     }
 }

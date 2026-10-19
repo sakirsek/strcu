@@ -11,17 +11,19 @@ use crate::access::{self, AccessConfig};
 use crate::app::{App, Remote};
 use crate::download::{self, Progress};
 use crate::i18n::{self, Lang, Msg};
+use crate::ipc;
 use crate::{config, tunnel};
 
 /// "● connected" in its colour.
-pub fn state_spans(t: &Lang, r: &Remote) -> Vec<Span> {
-    let (tone, key) = match r {
-        Remote::Up => (Tone::Ok, "dash.r_up"),
-        Remote::Starting => (Tone::Warn, "dash.r_starting"),
-        Remote::Down => (Tone::Warn, "dash.r_down"),
-        Remote::Failed(_) => (Tone::Bad, "dash.r_failed"),
-        Remote::Off | Remote::Disabled => (Tone::Dim, "dash.remote_off"),
-        Remote::Incomplete => (Tone::Warn, "dash.remote_incomplete"),
+pub fn state_spans(t: &Lang, state: ipc::RemoteState) -> Vec<Span> {
+    use ipc::RemoteState as R;
+    let (tone, key) = match state {
+        R::Up => (Tone::Ok, "dash.r_up"),
+        R::Starting => (Tone::Warn, "dash.r_starting"),
+        R::Down => (Tone::Warn, "dash.r_down"),
+        R::Failed => (Tone::Bad, "dash.r_failed"),
+        R::Off | R::Disabled => (Tone::Dim, "dash.remote_off"),
+        R::Incomplete => (Tone::Warn, "dash.remote_incomplete"),
     };
     vec![span(tone, format!("● {}", t.t(key)))]
 }
@@ -57,9 +59,10 @@ pub fn status_view(t: &Lang, v: &StatusView, typed: &str, notice: Option<&Notice
             };
             row(&mut f, 0, vec![span(Tone::Accent, format!("https://{}", a.hostname))]);
             row(&mut f, 1, vec![span(Tone::Plain, &a.email)]);
-            row(&mut f, 2, state_spans(t, v.state));
-            if let Remote::Failed(why) = v.state {
-                f.hang(vec![span(Tone::Plain, format!("  {}", " ".repeat(w)))], vec![span(Tone::Bad, t.render(why))]);
+            let (state, why) = crate::app::remote_state(v.state, t);
+            row(&mut f, 2, state_spans(t, state));
+            if let Some(why) = why {
+                f.hang(vec![span(Tone::Plain, format!("  {}", " ".repeat(w)))], vec![span(Tone::Bad, why)]);
             }
             row(&mut f, 3, vec![span(Tone::Plain, v.version.unwrap_or("-"))]);
             f.blank();

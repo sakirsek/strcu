@@ -9,7 +9,8 @@ use super::remote::{Download, Field, StatusView};
 use super::settings::Values;
 use super::{Notice, dash, html, pair, remote, settings, wizard};
 use crate::access::AccessConfig;
-use crate::app::{Remote, Urls};
+use crate::app::{self, Remote, Urls};
+use crate::ipc;
 use crate::i18n::{self, Lang, Msg};
 use crate::pair::{DEVICE_DAYS, Device, unix_now};
 use crate::passkey::Passkey;
@@ -73,8 +74,29 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
     };
     let fresh = Urls { local: Some("http://localhost:8765".into()), home: Vec::new(), public_network: false, remote: None };
     let cafe = Urls { home: Vec::new(), public_network: true, ..urls.clone() };
-    let dash_view = |urls: &Urls, lan: bool, remote: &Remote, events: &[LogEntry], confirm_quit: bool| {
-        let v = dash::View { urls, lan, remote, listen_error: None, events, today, confirm_quit };
+    // The window draws the main screen from what StrCu answers over the pipe, so the made-up data is an
+    // answer too
+    let state = |urls: &Urls, lan: bool, remote: &Remote| {
+        let (remote, remote_why) = app::remote_state(remote, t);
+        ipc::Status {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            serving: true,
+            listen_error: None,
+            local: urls.local.clone(),
+            home: urls.home.clone(),
+            public_network: urls.public_network,
+            lan,
+            remote_url: urls.remote.clone(),
+            remote,
+            remote_why,
+            log_count: 0,
+            events: Vec::new(),
+        }
+    };
+    let dash_view = |state: &ipc::Status, events: &[LogEntry], confirm_quit: bool| {
+        let shown = app::events(events, t);
+        let picked: Vec<&ipc::Event> = shown.iter().collect();
+        let v = dash::View { state, events: &picked, today, confirm_quit };
         dash::view(t, &v, (COLS, ROWS))
     };
     let access =
@@ -110,11 +132,11 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("04-setup-lan", wizard::lan_view(t, Some(3), 1, "", None)),
         ("05-setup-remote", wizard::remote_view(t, None, "")),
         ("06-setup-autostart", wizard::autostart_view(t, Some(5), 1, "", None)),
-        ("07-dashboard", dash_view(&urls, true, &Remote::Up, &events, false)),
-        ("08-dashboard-first-start", dash_view(&fresh, false, &Remote::Off, &[], false)),
-        ("09-dashboard-problem", dash_view(&urls, true, &failed, &events[2..], true)),
-        ("09b-dashboard-public-network", dash_view(&cafe, true, &Remote::Up, &events, false)),
-        ("10-log", dash::log_view(t, &log, 0, (COLS, ROWS))),
+        ("07-dashboard", dash_view(&state(&urls, true, &Remote::Up), &events, false)),
+        ("08-dashboard-first-start", dash_view(&state(&fresh, false, &Remote::Off), &[], false)),
+        ("09-dashboard-problem", dash_view(&state(&urls, true, &failed), &events[2..], true)),
+        ("09b-dashboard-public-network", dash_view(&state(&cafe, true, &Remote::Up), &events, false)),
+        ("10-log", dash::log_view(t, &app::events(&log, t), 0, (COLS, ROWS))),
         ("11-settings", settings::menu_view(t, &values, "", Some(&Notice::Ok(Msg::new("set.saved"))))),
         (
             "12-settings-remote",

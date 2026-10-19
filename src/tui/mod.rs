@@ -7,18 +7,23 @@
 mod dash;
 mod frame;
 mod html;
-mod pair;
+mod live;
 mod preview;
-mod remote;
-mod settings;
 mod term;
 mod wizard;
+// The screens that change what StrCu keeps: they are drawn in `strcu dev preview` but not reachable from the
+// main screen until they ask over the pipe instead of writing the settings themselves (the next step).
+#[allow(dead_code)]
+mod pair;
+#[allow(dead_code)]
+mod remote;
+#[allow(dead_code)]
+mod settings;
 
 use anyhow::Result;
 
 pub use preview::preview;
 
-use crate::app::App;
 use crate::i18n::{self, Lang, Msg};
 use crate::{config, sys};
 use frame::{Frame, Span, Tone, span};
@@ -70,9 +75,13 @@ impl<T> Step<T> {
     }
 }
 
-/// Runs StrCu in the terminal: the setup on the first start, then the main screen until it is closed.
+/// Runs the window: the setup on the first start, then the main screen of the StrCu that is running.
+///
+/// From 2.0 the window does not run StrCu - it is its control screen. Closing it leaves StrCu running, and
+/// when there is none to talk to the window says so instead of starting one of its own.
 pub async fn run() -> Result<()> {
     let mut io = term::Terminal::enter()?;
+    // Setting up still writes the settings straight from here; it moves onto the pipe with the other screens
     if !config::load().setup_done {
         let Some(choices) = wizard::run(&mut io).await? else {
             drop(io);
@@ -81,15 +90,22 @@ pub async fn run() -> Result<()> {
         };
         wizard::apply(&choices)?;
     }
-    let mut app = App::start(None, true).await?;
-    dash::run(&mut io, &mut app).await;
-    let t = i18n::term();
-    let mut f = Frame::default();
-    header(&mut f, "", Vec::new());
-    f.text(Tone::Dim, t.t("dash.closing"));
-    io.draw(&f);
-    app.stop().await;
-    Ok(())
+    let mut live = match live::Live::connect() {
+        Ok(live) => live,
+        Err(e) => {
+            drop(io);
+            return Err(e);
+        }
+    };
+    let ended = dash::run(&mut io, &mut live).await;
+    if ended.is_ok() {
+        let t = i18n::term();
+        let mut f = Frame::default();
+        header(&mut f, "", Vec::new());
+        f.text(Tone::Dim, t.t("dash.closing"));
+        io.draw(&f);
+    }
+    ended
 }
 
 // ---------- pieces every screen uses ----------
