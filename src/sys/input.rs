@@ -22,6 +22,8 @@ pub enum Button {
 }
 
 fn send(inputs: &[INPUT]) -> Result<()> {
+    // Keys and clicks go to the desktop of the thread that sends them (see sys::desk)
+    super::desk::follow();
     let sent = unsafe { SendInput(inputs, size_of::<INPUT>() as i32) };
     if sent as usize != inputs.len() {
         bail!(Msg::new("err.input_blocked").with("sent", sent).with("total", inputs.len()));
@@ -46,6 +48,7 @@ fn key(vk: VIRTUAL_KEY, scan: u16, flags: KEYBD_EVENT_FLAGS) -> INPUT {
 }
 
 pub fn move_to(x: i32, y: i32) -> Result<()> {
+    super::desk::follow();
     unsafe { SetCursorPos(x, y)? };
     Ok(())
 }

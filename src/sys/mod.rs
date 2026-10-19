@@ -3,6 +3,7 @@
 pub mod apps;
 pub mod autostart;
 pub mod clipboard;
+pub mod desk;
 pub mod discover;
 pub mod explorer;
 pub mod icons;

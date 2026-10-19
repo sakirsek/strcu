@@ -42,6 +42,9 @@ pub fn grab_into(area: Rect, cursor: bool, buf: &mut Vec<u8>) -> Result<()> {
     if area.w <= 0 || area.h <= 0 {
         bail!("invalid area: {area:?}");
     }
+    // A thread sees its own desktop only: without this the lock screen and the "allow this app" prompt
+    // would come back black (see sys::desk)
+    super::desk::follow();
     let len = area.w as usize * area.h as usize * 4;
     unsafe {
         let screen_dc = GetDC(None);
