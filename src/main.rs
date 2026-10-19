@@ -11,6 +11,7 @@ mod log;
 mod macros;
 mod pair;
 mod passkey;
+mod paths;
 mod server;
 mod stream;
 mod sys;
@@ -214,6 +215,18 @@ enum DevCmd {
 #[tokio::main]
 async fn main() {
     sys::init();
+    // The settings folder before anything reads it: created, closed to everyone but the computer and its
+    // administrators, and filled from a 1.x install the first time
+    match paths::prepare() {
+        Ok(copied) if !copied.is_empty() => {
+            println!("{}", i18n::term().render(&Msg::new("term.took_over").with("files", copied.join(", "))));
+        }
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("{}", i18n::term().render(&Msg::new("err.data_dir").with("msg", format!("{e:#}"))));
+            std::process::exit(1);
+        }
+    }
     let cli = Cli::parse();
     // Started without a command (double-click, start with Windows): on error keep the window open so the
     // message can be read.

@@ -1,4 +1,4 @@
-//! Persistent settings: %LOCALAPPDATA%\strcu\config.json
+//! Persistent settings: config.json in the folder paths.rs protects
 
 use std::path::PathBuf;
 
@@ -57,7 +57,7 @@ impl Default for Config {
 }
 
 pub fn data_dir() -> PathBuf {
-    crate::brand::old_data_dir()
+    crate::paths::data_dir()
 }
 
 fn path() -> PathBuf {

@@ -11,13 +11,17 @@ pub const DEV: bool = cfg!(feature = "devbuild");
 /// Shown to people: the window title, the panel, the service's display name.
 pub const NAME: &str = if DEV { "StrCuDev" } else { "StrCu" };
 
+/// Used by Windows: the folder names, the service, the pipe. No spaces.
+pub const KEY: &str = NAME;
+
 /// The port the panel listens on. A development build takes another one so both can run at once.
 pub const PORT: u16 = if DEV { 8766 } else { 8765 };
 
-/// Where settings, macros and the log live today. From B1 they move to `%ProgramData%\StrCu`, with an ACL
-/// of SYSTEM and administrators only (S2 in the plan), and this is read once to migrate them.
+/// Where 1.x kept settings, macros and the log: `%LOCALAPPDATA%\strcu`. It is read once, to copy them into
+/// the folder of 2.0 (see paths.rs). A development build looks for its own name, so it never picks up the
+/// settings of the installed StrCu.
 pub fn old_data_dir() -> std::path::PathBuf {
-    std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into())).join("strcu")
+    std::path::PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into())).join(KEY.to_lowercase())
 }
 
 #[cfg(test)]
@@ -32,6 +36,8 @@ mod tests {
         } else {
             assert_eq!((NAME, PORT), ("StrCu", 8765));
         }
-        assert!(old_data_dir().ends_with("strcu"));
+        // A development build never reads the installed StrCu's settings
+        assert!(old_data_dir().ends_with(KEY.to_lowercase()));
+        assert_eq!(old_data_dir().ends_with("strcu"), !DEV);
     }
 }
