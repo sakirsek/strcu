@@ -122,7 +122,7 @@ enum Event {
 }
 
 /// The session on the physical screen, or `NO_SESSION` while there is none.
-fn console_session() -> u32 {
+pub fn console_session() -> u32 {
     unsafe { WTSGetActiveConsoleSessionId() }
 }
 
