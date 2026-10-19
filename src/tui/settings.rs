@@ -33,7 +33,7 @@ pub fn menu_view(t: &Lang, v: &Values, typed: &str, notice: Option<&Notice>) -> 
     let mut f = Frame::default();
     header(&mut f, &title(t, ""), Vec::new());
     let on_off = |on: bool| if on { span(Tone::Ok, t.t("ui.on")) } else { span(Tone::Dim, t.t("ui.off")) };
-    let items: [(&str, Span); 7] = [
+    let items: [(&str, Span); 8] = [
         ("set.language", span(Tone::Plain, &v.lang)),
         ("set.password", span(Tone::Dim, t.t("set.change"))),
         ("set.lan", on_off(v.lan)),
@@ -44,6 +44,7 @@ pub fn menu_view(t: &Lang, v: &Values, typed: &str, notice: Option<&Notice>) -> 
         ("set.autostart", on_off(v.autostart)),
         ("set.phones", span(Tone::Plain, t.render(&Msg::new("set.registered").with("n", v.passkeys)))),
         ("set.port", span(Tone::Plain, v.port.to_string())),
+        ("set.stop", span(Tone::Dim, t.t("set.stop_note"))),
     ];
     let w = items.iter().map(|(k, _)| t.t(k).chars().count()).max().unwrap_or(0) + 3;
     for (i, (k, value)) in items.into_iter().enumerate() {
@@ -83,7 +84,7 @@ pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
         let v = values(live)?;
         let t = i18n::term();
         let shown = notice.take();
-        let r = match choose(io, 7, None, |typed| menu_view(t, &v, typed, shown.as_ref())).await {
+        let r = match choose(io, 8, None, |typed| menu_view(t, &v, typed, shown.as_ref())).await {
             Step::Done(1) => language(io, live).await?,
             Step::Done(2) => password(io, live).await?,
             Step::Done(3) => lan(io, live, v.lan).await?,
@@ -92,10 +93,14 @@ pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
             Step::Done(4) => Step::Done(Some(Notice::Warn(Msg::new("set.remote_later")))),
             Step::Done(5) => Step::Done(Some(Notice::Warn(Msg::new("set.autostart_service")))),
             Step::Done(6) => phones(io, live).await?,
-            Step::Done(_) => port(io, live, v.port, v.remote.is_some()).await?,
+            Step::Done(7) => port(io, live, v.port, v.remote.is_some()).await?,
+            Step::Done(_) => stop(io, live).await?,
             Step::Back => return Ok(Step::Back),
             Step::Quit => return Ok(Step::Quit),
         };
+        if live.is_stopped() {
+            return Ok(Step::Back);
+        }
         match r {
             Step::Done(n) => notice = n,
             Step::Back => {}
@@ -308,6 +313,44 @@ async fn phones(io: &mut impl Io, live: &mut Live) -> Result<Step<Option<Notice>
             Step::Quit => return Ok(Step::Quit),
         };
     }
+}
+
+// ---------- stopping StrCu ----------
+
+pub fn stop_view(t: &Lang, typed: &str) -> Frame {
+    let mut f = Frame::default();
+    header(&mut f, &title(t, "set.stop"), Vec::new());
+    f.text(Tone::Warn, t.t("set.stop_ask"));
+    f.blank();
+    option(&mut f, 1, &t.t("set.stop_do"), None);
+    option(&mut f, 2, &t.t("common.cancel"), None);
+    f.blank();
+    prompt(&mut f, t, Some(2), typed);
+    footer(&mut f, &[hint_back(t)]);
+    f
+}
+
+/// Stops StrCu until the computer starts again. Nothing is left to show afterwards, so the window closes
+/// (see `tui::run`).
+async fn stop(io: &mut impl Io, live: &mut Live) -> Result<Step<Option<Notice>>> {
+    let t = i18n::term();
+    match choose(io, 2, Some(2), |typed| stop_view(t, typed)).await {
+        Step::Done(1) => {}
+        Step::Done(_) | Step::Back => return Ok(Step::Done(None)),
+        Step::Quit => return Ok(Step::Quit),
+    }
+    for _ in 0..2 {
+        match live.stop()? {
+            Said::Done(()) => return Ok(Step::Back),
+            Said::Failed(said) => return Ok(Step::Done(Some(Notice::Err(Msg::new("ui.said").with("text", said))))),
+            Said::SignInNeeded => match super::sign_in(io, live).await? {
+                Step::Done(true) => {}
+                Step::Done(false) | Step::Back => return Ok(Step::Back),
+                Step::Quit => return Ok(Step::Quit),
+            },
+        }
+    }
+    Ok(Step::Back)
 }
 
 // ---------- port ----------

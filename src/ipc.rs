@@ -61,7 +61,10 @@ use crate::passkey::Passkey;
 
 /// The protocol both ends must speak. It goes up whenever an `Ask` or an `Answer` changes in a way an older
 /// window would read wrongly; an `Ask` added for something an older window never asks does not need it.
-pub const VERSION: u32 = 1;
+///
+/// 2: `Stop` lost its `until_restart`. Stopping StrCu always means until the computer starts again - the
+/// service is the one that stops, and Windows starts it at the next boot.
+pub const VERSION: u32 = 2;
 
 /// The system account, which is what StrCu runs as once it is a service.
 const SYSTEM: &str = "S-1-5-18";
@@ -97,8 +100,8 @@ pub enum Ask {
     Change(Change),
     /// Pairing a phone with a code.
     Pair(Pair),
-    /// Stop serving the panel: until the computer starts again, or until the service is started again.
-    Stop { until_restart: bool },
+    /// Stop StrCu until the computer starts again.
+    Stop,
 }
 
 impl Ask {
@@ -106,7 +109,7 @@ impl Ask {
     pub fn needs_token(&self) -> bool {
         match self {
             Ask::Status { .. } | Ask::Settings | Ask::SignIn { .. } => false,
-            Ask::Change(_) | Ask::Pair(_) | Ask::Stop { .. } => true,
+            Ask::Change(_) | Ask::Pair(_) | Ask::Stop => true,
         }
     }
 }
@@ -373,8 +376,9 @@ fn converse(client: &Pipe, answer: impl Fn(Request) -> Answer) -> Result<()> {
         let reply = match serde_json::from_slice::<Request>(&body) {
             Ok(req) if req.v != VERSION => Answer::WrongVersion { want: VERSION },
             Ok(req) => answer(req),
-            // A window of this version sends nothing we cannot read, so this is something else
-            Err(e) => Answer::Failed { reason: e.to_string() },
+            // A window of this version sends nothing we cannot read: this is a newer one asking for
+            // something this StrCu has never heard of, or a program that is not ours at all
+            Err(_) => Answer::Failed { reason: crate::i18n::term().t("err.unknown_ask") },
         };
         write_frame(client.0, &serde_json::to_vec(&Reply { v: VERSION, answer: reply })?)?;
     }
@@ -675,7 +679,7 @@ mod tests {
         assert!(!Ask::SignIn { password: "x".into() }.needs_token());
         assert!(Ask::Change(Change::Lan(true)).needs_token());
         assert!(Ask::Pair(Pair::Open).needs_token());
-        assert!(Ask::Stop { until_restart: true }.needs_token());
+        assert!(Ask::Stop.needs_token());
     }
 
     #[test]
@@ -698,7 +702,7 @@ mod tests {
         // An ask that only reads carries no token at all. The shape is pinned on purpose: it is what
         // `VERSION` promises, and a change to it that forgets to raise the version breaks here.
         let plain = Request { v: VERSION, token: None, ask: Ask::Status { log_since: 7 } };
-        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":1,"ask":"status","with":{"log_since":7}}"#);
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":2,"ask":"status","with":{"log_since":7}}"#);
         let reply = Reply {
             v: VERSION,
             answer: Answer::Status(Status {

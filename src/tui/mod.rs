@@ -105,7 +105,9 @@ pub async fn run() -> Result<()> {
         let t = i18n::term();
         let mut f = Frame::default();
         header(&mut f, "", Vec::new());
-        f.text(Tone::Dim, t.t("dash.closing"));
+        // Closing the window leaves StrCu running - unless the window is what stopped it
+        let (tone, line) = if live.is_stopped() { (Tone::Warn, "set.stopped") } else { (Tone::Dim, "dash.closing") };
+        f.text(tone, t.t(line));
         io.draw(&f);
     }
     ended

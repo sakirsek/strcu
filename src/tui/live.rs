@@ -30,6 +30,8 @@ pub struct Live {
     /// The session StrCu gave the window after the panel password; the password itself is never kept.
     /// It lasts as long as a panel session does, so once a day at most.
     token: Option<String>,
+    /// StrCu was stopped from this window: it is not coming back before the computer does.
+    stopped: bool,
 }
 
 /// What StrCu said about something the window asked it to do.
@@ -53,7 +55,8 @@ impl Live {
     /// Finds the running StrCu and reads its state once. An error means there is none to talk to, which is
     /// what the window says then: StrCu runs as a service and the window is only its control screen.
     pub fn connect() -> Result<Live> {
-        let mut live = Live { link: link()?, state: ipc::Status::default(), log: Vec::new(), token: None };
+        let mut live =
+            Live { link: link()?, state: ipc::Status::default(), log: Vec::new(), token: None, stopped: false };
         live.ask_state()?;
         Ok(live)
     }
@@ -96,6 +99,24 @@ impl Live {
             Answer::Done => Some(()),
             _ => None,
         }))
+    }
+
+    /// Stops StrCu until the computer starts again. Nothing can be asked after this.
+    pub fn stop(&mut self) -> Result<Said<()>> {
+        let answer = self.ask(Ask::Stop)?;
+        let said = self.said(answer, |a| match a {
+            Answer::Done => Some(()),
+            _ => None,
+        });
+        if matches!(said, Said::Done(())) {
+            self.stopped = true;
+        }
+        Ok(said)
+    }
+
+    /// Was StrCu stopped from this window? Then there is nothing left to show.
+    pub fn is_stopped(&self) -> bool {
+        self.stopped
     }
 
     /// Pairing a phone: open a code, watch it, close it again.

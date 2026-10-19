@@ -234,17 +234,29 @@ impl Shown {
     }
 }
 
+/// Does StrCu keep running after an answer? Stopping waits for the answer to be on its way: the window is
+/// told it worked, and only then does StrCu go.
+#[derive(PartialEq)]
+enum After {
+    Running,
+    Stop,
+}
+
 /// Answers one ask from the control window (ipc.rs). It is answered here, in the loop that runs StrCu,
 /// because a change has to be carried out at once: a new port means the panel must listen again, and this is
 /// the only place with anything to listen with.
-async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> ipc::Answer {
+async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> (ipc::Answer, After) {
     let lang = i18n::term();
     // Everything that changes something needs the panel password, even at the computer own keyboard: the
     // worker types on the lock screen, and a program running as the user must not reach that without it.
     if req.ask.needs_token() && !app.panel.auth().check(req.token.as_deref().unwrap_or("")) {
-        return ipc::Answer::SignInNeeded;
+        return (ipc::Answer::SignInNeeded, After::Running);
     }
-    match req.ask {
+    if req.ask == ipc::Ask::Stop {
+        app.panel.log().add(Msg::new("ev.stop_asked"), true);
+        return (ipc::Answer::Done, After::Stop);
+    }
+    let answer = match req.ask {
         ipc::Ask::Status { log_since } => {
             let log = app.panel.log();
             // Only what the window has not seen; it passes back the count it was given last time
@@ -272,9 +284,10 @@ async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> ipc::Ans
         ipc::Ask::SignIn { password } => sign_in(app, &password),
         ipc::Ask::Change(what) => change(app, shown, what, lang).await,
         ipc::Ask::Pair(ask) => ipc::Answer::Pair(pairing(app, ask)),
-        // Stopping StrCu until the computer starts again is for the service to do, and comes with it
-        ipc::Ask::Stop { .. } => ipc::Answer::Failed { reason: lang.t("err.unknown_ask") },
-    }
+        // Taken care of above, before the password was even looked at
+        ipc::Ask::Stop => ipc::Answer::Done,
+    };
+    (answer, After::Running)
 }
 
 /// The panel password, typed in the window. Wrong tries count towards the same brake as the panel sign-in
@@ -452,7 +465,17 @@ pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
             ipc::Asked(req, back) = asks.next() => {
-                let _ = back.send(answer(&mut app, &mut shown, req).await);
+                let (answer, after) = answer(&mut app, &mut shown, req).await;
+                let _ = back.send(answer);
+                if after == After::Stop {
+                    // Long enough for the answer to be written on the pipe before the service pulls this
+                    // process down; the window would otherwise see StrCu go without a word
+                    tokio::time::sleep(Duration::from_millis(300)).await;
+                    if let Err(e) = crate::svc::stop() {
+                        app.panel.log().add(Msg::new("ev.stop_failed").with("msg", format!("{e:#}")), false);
+                    }
+                    break;
+                }
             }
             Ok(()) = remote.changed() => say(&remote.borrow_and_update()),
             Ok(()) = log.changed() => {

@@ -174,6 +174,10 @@ pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<()> {
         } else if is_key(t, k, "dash.key_log") && full_log(io, live).await? == Step::Quit {
             confirm = true;
         }
+        // There is nothing left to show once StrCu has been stopped from here
+        if live.is_stopped() {
+            return Ok(());
+        }
         // Pairing or a new port changes what this screen shows: ask now rather than in a second
         live.refresh()?;
     }

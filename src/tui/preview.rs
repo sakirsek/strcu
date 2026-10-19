@@ -194,6 +194,7 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("15b-pair-done", pair::view(t, &places, 0, &pair::State::Done("iPhone · Safari"), COLS)),
         ("15c-phones", settings::phones_view(t, &phones, unix_now(), "", None)),
         ("16-port", settings::port_view(t, "8765", None)),
+        ("16b-stop", settings::stop_view(t, "")),
     ];
     std::fs::create_dir_all(dir)?;
     let mut out = Vec::new();

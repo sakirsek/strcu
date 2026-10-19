@@ -30,7 +30,9 @@ use windows::core::PWSTR;
 use windows_service::service::{
     ServiceControl, ServiceControlAccept, ServiceExitCode, ServiceState, ServiceStatus, ServiceType,
 };
+use windows_service::service::ServiceAccess;
 use windows_service::service_control_handler::{self, ServiceControlHandlerResult};
+use windows_service::service_manager::{ServiceManager, ServiceManagerAccess};
 use windows_service::{define_windows_service, service_dispatcher};
 
 use crate::i18n::Msg;
@@ -47,6 +49,24 @@ const LOOK: Duration = Duration::from_secs(2);
 pub fn run() -> Result<()> {
     service_dispatcher::start(crate::brand::KEY, ffi_service_main)?;
     Ok(())
+}
+
+/// Stops StrCu: the service, which takes the worker down with it, and Windows starts it again at the next
+/// boot. The worker may ask for this although stopping a service needs an administrator - it runs with the
+/// rights of the computer itself, and the panel password is what stands in front of it (see ipc.rs).
+///
+/// A worker started by hand while developing has no service; that is not an error, it is the whole of StrCu
+/// and the caller stops it by returning.
+pub fn stop() -> Result<()> {
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    match manager.open_service(crate::brand::KEY, ServiceAccess::STOP) {
+        Ok(service) => {
+            service.stop()?;
+            Ok(())
+        }
+        Err(windows_service::Error::Winapi(e)) if e.raw_os_error() == Some(1060) => Ok(()),
+        Err(e) => Err(e.into()),
+    }
 }
 
 define_windows_service!(ffi_service_main, service_main);
