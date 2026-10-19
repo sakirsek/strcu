@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
+use tokio::sync::{mpsc, oneshot};
 use windows::Win32::Foundation::{
     CloseHandle, ERROR_BROKEN_PIPE, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL,
     LocalFree,
@@ -53,6 +54,8 @@ use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, OpenProcessToken};
 use windows::core::{HSTRING, PWSTR};
 
+use crate::i18n::Msg;
+use crate::log::ActionLog;
 use crate::pair::Device;
 use crate::passkey::Passkey;
 
@@ -433,6 +436,53 @@ fn instance(name: &str, sddl: &HSTRING, first: bool) -> Result<Pipe> {
             bail!("{}", std::io::Error::last_os_error());
         }
         Ok(Pipe(h))
+    }
+}
+
+/// An ask from the window, and where its answer goes.
+pub struct Asked(pub Request, pub oneshot::Sender<Answer>);
+
+/// The asks waiting for an answer. StrCu takes them in its own loop (app.rs), where everything an answer
+/// needs is at hand; the client waits on the thread it was given, so one window never holds up another.
+pub struct Asks(Option<mpsc::Receiver<Asked>>);
+
+impl Asks {
+    /// Opens the pipe. One that cannot be opened - what happens when something else already holds the name -
+    /// is written in the log and nothing else changes: the panel is served either way, the window simply
+    /// cannot reach this StrCu.
+    pub fn open(log: &ActionLog) -> Asks {
+        let server = match Server::open() {
+            Ok(server) => server,
+            Err(e) => {
+                log.add(Msg::new("ev.pipe_failed").with("msg", format!("{e:#}")), false);
+                return Asks(None);
+            }
+        };
+        let (asked, waiting) = mpsc::channel(8);
+        std::thread::spawn(move || {
+            let _ = server.serve(move |req| {
+                let (back, answer) = oneshot::channel();
+                // These are the pipe's own threads, outside the runtime, so they may wait here
+                let gone = || Answer::Failed { reason: crate::i18n::term().t("err.no_answer") };
+                if asked.blocking_send(Asked(req, back)).is_err() {
+                    return gone();
+                }
+                answer.blocking_recv().unwrap_or_else(|_| gone())
+            });
+        });
+        Asks(Some(waiting))
+    }
+
+    /// The next ask. While there is no pipe it never returns, so it can sit in a `select!` without a branch
+    /// of its own for "there is no pipe to listen to".
+    pub async fn next(&mut self) -> Asked {
+        match self.0.as_mut() {
+            Some(waiting) => match waiting.recv().await {
+                Some(asked) => asked,
+                None => std::future::pending().await,
+            },
+            None => std::future::pending().await,
+        }
     }
 }
 

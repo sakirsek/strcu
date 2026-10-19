@@ -4,16 +4,16 @@
 use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
-use crate::i18n::{self, Msg};
-use crate::log::ActionLog;
+use crate::i18n::{self, Lang, Msg};
+use crate::log::{ActionLog, LogEntry};
 use crate::server::{Listener, Panel};
-use crate::{config, sys, tunnel};
+use crate::{config, ipc, sys, tunnel};
 
 /// State of remote access (the cloudflared tunnel).
 #[derive(Clone, Debug, PartialEq)]
@@ -207,6 +207,99 @@ async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>, pid: Arc
     }
 }
 
+// ---------- answering the control window ----------
+
+/// How long this computer's addresses stay good before they are looked up again.
+const URLS_FOR: Duration = Duration::from_secs(30);
+
+/// What the window asks for often enough to keep instead of working it out every time: finding the
+/// addresses takes a moment, and the window asks about once a second.
+struct Shown {
+    urls: Urls,
+    looked: Instant,
+}
+
+impl Shown {
+    fn urls(&mut self, app: &App) -> &Urls {
+        if self.looked.elapsed() > URLS_FOR {
+            self.urls = app.urls();
+            self.looked = Instant::now();
+        }
+        &self.urls
+    }
+}
+
+/// Answers one ask from the control window (ipc.rs). What the window reads is answered here; signing in and
+/// the asks that change something follow with the window itself.
+fn answer(app: &App, shown: &mut Shown, req: ipc::Request) -> ipc::Answer {
+    let lang = i18n::term();
+    match req.ask {
+        ipc::Ask::Status { log_since } => {
+            let log = app.panel.log();
+            // Only what the window has not seen; it passes back the count it was given last time
+            let count = log.count();
+            let entries = log.latest(count.saturating_sub(log_since) as usize);
+            let remote = app.remote();
+            let (state, why) = remote_state(&remote.borrow(), lang);
+            let urls = shown.urls(app).clone();
+            ipc::Answer::Status(ipc::Status {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                serving: app.listen_error.is_none(),
+                listen_error: app.listen_error.as_ref().map(|m| lang.render(m)),
+                local: urls.local,
+                home: urls.home,
+                public_network: urls.public_network,
+                lan: config::load().lan,
+                remote_url: urls.remote,
+                remote: state,
+                remote_why: why,
+                log_count: count,
+                events: events(&entries, lang),
+            })
+        }
+        ipc::Ask::Settings => ipc::Answer::Settings(settings(app)),
+        _ => ipc::Answer::Failed { reason: lang.t("err.unknown_ask") },
+    }
+}
+
+/// Remote access as the window shows it, with what a failure said.
+fn remote_state(remote: &Remote, lang: &Lang) -> (ipc::RemoteState, Option<String>) {
+    use ipc::RemoteState as State;
+    match remote {
+        Remote::Off => (State::Off, None),
+        Remote::Incomplete => (State::Incomplete, None),
+        Remote::Disabled => (State::Disabled, None),
+        Remote::Starting => (State::Starting, None),
+        Remote::Up => (State::Up, None),
+        Remote::Down => (State::Down, None),
+        Remote::Failed(why) => (State::Failed, Some(lang.render(why))),
+    }
+}
+
+/// The log for the window: ready to show, in the language the settings name, newest first. The window has no
+/// language file of its own to render a `Msg` with - its code is not something that travels.
+fn events(entries: &[LogEntry], lang: &Lang) -> Vec<ipc::Event> {
+    entries
+        .iter()
+        .map(|e| ipc::Event { time: e.time.clone(), text: lang.render(&e.msg), ok: e.ok, important: e.important() })
+        .collect()
+}
+
+/// The settings screen: what is set, never what it is set to. No password hash, no tunnel token, and the
+/// phones without the secret behind their cookie.
+fn settings(app: &App) -> ipc::Settings {
+    let cfg = config::load();
+    let (devices, keys) = (app.panel.pairing().list(), app.panel.passkeys().list());
+    ipc::Settings {
+        language: cfg.language,
+        lan: cfg.lan,
+        port: cfg.port,
+        remote_host: cfg.access.map(|a| a.hostname),
+        password_set: cfg.password_hash.is_some(),
+        phones: devices.iter().map(ipc::Phone::from_device).chain(keys.iter().map(ipc::Phone::from_passkey)).collect(),
+    }
+}
+
 /// `strcu serve`, and a start without a terminal: no screens, status lines on the output instead.
 pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
     let app = App::start(bind, tunnel).await?;
@@ -234,9 +327,15 @@ pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
     };
     say(&remote.borrow_and_update());
     println!("{}", lang.t("term.stop_hint"));
+    // The control window reaches this StrCu through the pipe; without one the panel is served all the same
+    let mut asks = ipc::Asks::open(&app.panel.log());
+    let mut shown = Shown { urls: app.urls(), looked: Instant::now() };
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            ipc::Asked(req, back) = asks.next() => {
+                let _ = back.send(answer(&app, &mut shown, req));
+            }
             Ok(()) = remote.changed() => say(&remote.borrow_and_update()),
             Ok(()) = log.changed() => {
                 // The value counts the entries ever added
@@ -252,4 +351,49 @@ pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
     }
     app.stop().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fixed language, so what the window is given does not depend on this computer's settings.
+    fn english() -> &'static Lang {
+        i18n::all().iter().find(|l| l.code == "en").expect("English is one of the languages")
+    }
+
+    fn entry(time: &str, msg: Msg, ok: bool) -> LogEntry {
+        LogEntry { time: time.to_string(), msg, ok }
+    }
+
+    #[test]
+    fn remote_access_reaches_the_window_with_its_reason() {
+        let lang = english();
+        assert_eq!(remote_state(&Remote::Up, lang), (ipc::RemoteState::Up, None));
+        assert_eq!(remote_state(&Remote::Off, lang), (ipc::RemoteState::Off, None));
+        let (state, why) = remote_state(&Remote::Failed(Msg::new("err.internal")), lang);
+        assert_eq!(state, ipc::RemoteState::Failed);
+        assert_eq!(why.as_deref(), Some("Something went wrong"));
+    }
+
+    #[test]
+    fn the_log_reaches_the_window_ready_to_show() {
+        let entries = [
+            entry("2026-10-19 12:00:00", Msg::new("ev.locked"), true),
+            entry("2026-10-19 11:59:00", Msg::new("ev.worker_failed").with("msg", "the port is taken"), false),
+            entry("2026-10-19 11:58:00", Msg::new("ev.click"), true),
+        ];
+        let shown = events(&entries, english());
+        assert_eq!(shown[0], ipc::Event {
+            time: "2026-10-19 12:00:00".to_string(),
+            text: "Computer locked".to_string(),
+            ok: true,
+            important: true,
+        });
+        // What a failure says is rendered too; the window has no language file to do it with
+        assert_eq!(shown[1].text, "The panel could not be started: the port is taken");
+        assert!(!shown[1].ok);
+        // Clicks belong in the full log, not on the main screen
+        assert!(!shown[2].important);
+    }
 }

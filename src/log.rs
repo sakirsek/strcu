@@ -96,6 +96,12 @@ impl ActionLog {
     pub fn watch(&self) -> tokio::sync::watch::Receiver<u64> {
         self.changed.subscribe()
     }
+
+    /// How many entries have ever been written. The control window sends it back as `log_since` and gets
+    /// only what it has not seen yet.
+    pub fn count(&self) -> u64 {
+        *self.changed.borrow()
+    }
 }
 
 /// The computer's local time, "YYYY-MM-DD HH:MM:SS".
