@@ -11,7 +11,7 @@ use windows::core::HSTRING;
 use crate::i18n::Msg;
 
 const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
-const NAME: &str = "StrCu";
+const NAME: &str = crate::brand::NAME;
 
 /// Does Windows start this copy at sign-in?
 pub fn enabled() -> bool {

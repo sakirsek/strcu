@@ -45,7 +45,7 @@ pub struct WindowInfo {
 }
 
 /// Title of the `strcu serve` console; also lets the panel recognise strcu's own window.
-pub const CONSOLE_TITLE: &str = "StrCu";
+pub const CONSOLE_TITLE: &str = crate::brand::NAME;
 
 pub fn set_console_title(title: &str) {
     unsafe {

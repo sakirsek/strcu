@@ -35,7 +35,7 @@ pub struct Config {
     pub setup_done: bool,
 }
 
-pub const DEFAULT_PORT: u16 = 8765;
+pub const DEFAULT_PORT: u16 = crate::brand::PORT;
 
 fn default_port() -> u16 {
     DEFAULT_PORT
@@ -57,7 +57,7 @@ impl Default for Config {
 }
 
 pub fn data_dir() -> PathBuf {
-    PathBuf::from(std::env::var("LOCALAPPDATA").unwrap_or_else(|_| ".".into())).join("strcu")
+    crate::brand::old_data_dir()
 }
 
 fn path() -> PathBuf {

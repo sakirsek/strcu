@@ -1,6 +1,7 @@
 mod access;
 mod app;
 mod auth;
+mod brand;
 mod config;
 mod download;
 mod files;
