@@ -42,6 +42,8 @@ sha2 = "0.11"
 tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }
 # uiautomation also uses windows 0.62; staying on the same version builds a single copy.
 uiautomation = "0.25"
+# Being a Windows service: the dispatcher Windows talks to, and installing the service (svc.rs)
+windows-service = "0.8.1"
 
 [dependencies.windows]
 version = "0.62"

@@ -14,6 +14,7 @@ mod passkey;
 mod paths;
 mod server;
 mod stream;
+mod svc;
 mod sys;
 mod tui;
 mod tunnel;
@@ -50,6 +51,12 @@ enum Cmd {
         #[arg(long)]
         no_tunnel: bool,
     },
+    /// Run as the Windows service: started by Windows, keeps the panel running on the screen in use
+    #[command(hide = true)]
+    Service,
+    /// The panel itself, started by the service in the session on the physical screen
+    #[command(hide = true)]
+    Worker,
     /// Set the panel password
     Passwd {
         /// Read the password from standard input (for scripts)
@@ -215,18 +222,6 @@ enum DevCmd {
 #[tokio::main]
 async fn main() {
     sys::init();
-    // The settings folder before anything reads it: created, closed to everyone but the computer and its
-    // administrators, and filled from a 1.x install the first time
-    match paths::prepare() {
-        Ok(copied) if !copied.is_empty() => {
-            println!("{}", i18n::term().render(&Msg::new("term.took_over").with("files", copied.join(", "))));
-        }
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("{}", i18n::term().render(&Msg::new("err.data_dir").with("msg", format!("{e:#}"))));
-            std::process::exit(1);
-        }
-    }
     let cli = Cli::parse();
     // Started without a command (double-click, start with Windows): on error keep the window open so the
     // message can be read.
@@ -266,6 +261,17 @@ async fn run(cli: Cli) -> Result<()> {
             window::set_console_title(window::CONSOLE_TITLE);
             app::serve_plain(bind, !no_tunnel).await?;
         }
+        // Windows starts these two, and they run with the rights of the computer: they are the ones that
+        // make the settings folder and take a 1.x install over. Every other command only uses what is there.
+        Cmd::Service => {
+            prepare_data_dir()?;
+            svc::run()?;
+        }
+        Cmd::Worker => {
+            prepare_data_dir()?;
+            power::keep_awake(true, false);
+            app::serve_plain(None, true).await?;
+        }
         Cmd::Passwd { stdin } => {
             let pw = if stdin {
                 let mut s = String::new();
@@ -290,6 +296,16 @@ async fn run(cli: Cli) -> Result<()> {
             let _ = std::io::stdout().lock().write_all(licenses::text().as_bytes());
         }
         Cmd::Dev { cmd } => dev_cmd(cmd).await?,
+    }
+    Ok(())
+}
+
+/// The settings folder, before anything reads it: created, closed to everyone but the computer and its
+/// administrators, and filled from a 1.x install the first time.
+fn prepare_data_dir() -> Result<()> {
+    let copied = paths::prepare().context(Msg::new("err.data_dir"))?;
+    if !copied.is_empty() {
+        println!("{}", i18n::term().render(&Msg::new("term.took_over").with("files", copied.join(", "))));
     }
     Ok(())
 }
