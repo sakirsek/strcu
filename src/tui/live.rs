@@ -101,6 +101,21 @@ impl Live {
         }))
     }
 
+    /// What the setup screens collected. While StrCu has no password this is the one thing it takes without
+    /// one; afterwards it is a change like any other and needs a signed-in window.
+    pub fn setup(&mut self, language: &str, password: Option<&str>, lan: bool) -> Result<Said<()>> {
+        let ask = Ask::Setup {
+            language: language.to_string(),
+            password: password.map(str::to_string),
+            lan,
+        };
+        let answer = self.ask(ask)?;
+        Ok(self.said(answer, |a| match a {
+            Answer::Done => Some(()),
+            _ => None,
+        }))
+    }
+
     /// One step of setting remote access up (ipc.rs `Tunnel`), and where it has got to.
     pub fn tunnel(&mut self, ask: ipc::Tunnel) -> Result<Said<ipc::TunnelState>> {
         let answer = self.ask(Ask::Tunnel(ask))?;

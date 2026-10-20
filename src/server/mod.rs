@@ -131,7 +131,8 @@ impl Drop for Listener {
 }
 
 impl Panel {
-    /// Needs the panel password to be set.
+    /// Works without a panel password as well: StrCu then runs and lets nobody in, until the window sets one
+    /// (`ipc::Ask::Setup`). That is what the first start after an install looks like.
     pub fn new() -> Result<Panel> {
         let cfg = crate::config::load();
         let (worker, log, shutdown_at) = (Worker::spawn(), Arc::new(ActionLog::new()), Arc::new(Mutex::new(None)));
@@ -141,7 +142,7 @@ impl Panel {
         let state = AppState {
             worker,
             agent,
-            auth: Arc::new(Auth::from_config()?),
+            auth: Arc::new(Auth::from_config()),
             log,
             access: Arc::new(RwLock::new(cfg.access.map(|a| Arc::new(Verifier::new(a))))),
             shutdown_at,

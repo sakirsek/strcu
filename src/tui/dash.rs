@@ -67,8 +67,11 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
     }
     header(&mut f, "", top);
 
-    f.text(Tone::Strong, t.t("dash.open_from_phone"));
-    if let Some(reason) = &v.state.listen_error {
+    f.text(Tone::Strong, t.t(if v.state.password_set { "dash.open_from_phone" } else { "dash.not_set_up" }));
+    if !v.state.password_set {
+        // No addresses to show: the panel is not listening and will not until there is a password
+        f.hang(vec![span(Tone::Plain, "  ")], vec![span(Tone::Warn, t.t("err.no_password"))]);
+    } else if let Some(reason) = &v.state.listen_error {
         let failed = Msg::new("dash.listen_failed").with("reason", reason.clone());
         f.hang(vec![span(Tone::Plain, "  ")], vec![span(Tone::Bad, t.render(&failed))]);
         f.text(Tone::Dim, format!("  {}", t.t("dash.listen_hint")));
@@ -259,6 +262,7 @@ mod tests {
             home: vec!["http://192.168.1.5:8765".to_string()],
             remote_url: Some("https://strcu.example.com".to_string()),
             remote: ipc::RemoteState::Up,
+            password_set: true,
             ..ipc::Status::default()
         }
     }
@@ -285,6 +289,14 @@ mod tests {
         // Today an event shows the time alone
         assert!(text.contains("12:00  Computer locked"), "{text}");
         assert!(text.contains("pair a phone") && text.contains("full log"), "{text}");
+    }
+
+    #[test]
+    fn before_a_password_there_are_no_addresses_to_offer() {
+        let text = drawn(&ipc::Status { password_set: false, ..running() }, &[]);
+        assert!(text.contains("Not set up yet"), "{text}");
+        assert!(text.contains("no panel password yet"), "{text}");
+        assert!(!text.contains("http://192.168.1.5:8765"), "{text}");
     }
 
     #[test]

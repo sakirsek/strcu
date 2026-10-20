@@ -66,7 +66,8 @@ use crate::passkey::Passkey;
 /// service is the one that stops, and Windows starts it at the next boot.
 /// 3: `Tunnel` for setting remote access up, and two more fields in `Settings` for the screen that shows it.
 /// 4: `Status` says which user the agent runs as, if any.
-pub const VERSION: u32 = 4;
+/// 5: the first start is done over the pipe (`Setup`), and both `Status` and `Settings` say what is missing.
+pub const VERSION: u32 = 5;
 
 /// The system account, which is what StrCu runs as once it is a service.
 const SYSTEM: &str = "S-1-5-18";
@@ -106,6 +107,17 @@ pub enum Ask {
     Stop,
     /// Remote access: the steps that need StrCu itself (see [`Tunnel`]).
     Tunnel(Tunnel),
+    /// The first start: what the setup screens collected. A StrCu with no password runs but lets nobody in,
+    /// and this is how it gets one - so it is the one ask that needs no password itself. Once there is one it
+    /// needs a signed-in window like any other change.
+    Setup {
+        /// A language code ("tr")
+        language: String,
+        /// The panel password in the clear, needed while there is none. Only the worker hashes and keeps it.
+        password: Option<String>,
+        /// Serve on the home network too
+        lan: bool,
+    },
 }
 
 impl Ask {
@@ -113,6 +125,8 @@ impl Ask {
     pub fn needs_token(&self) -> bool {
         match self {
             Ask::Status { .. } | Ask::Settings | Ask::SignIn { .. } => false,
+            // Looked at where it is answered: free while there is no password, signed in afterwards
+            Ask::Setup { .. } => false,
             Ask::Change(_) | Ask::Pair(_) | Ask::Stop | Ask::Tunnel(_) => true,
         }
     }
@@ -252,6 +266,9 @@ pub struct Status {
     /// The account the agent runs as (agent.rs), None while nobody is signed in to Windows. The panel needs
     /// it for everything that is the user's own: apps, files, the clipboard.
     pub agent: Option<String>,
+    /// There is a panel password. Without one StrCu runs but does not listen at all, and the window says so
+    /// and offers the setup.
+    pub password_set: bool,
     /// Entries ever written, which is what the next ask passes as `log_since`.
     pub log_count: u64,
     /// The entries since `log_since`, newest first.
@@ -303,6 +320,9 @@ pub struct Settings {
     pub cloudflared: Option<String>,
     /// A password is set, so the window must sign in before it changes anything.
     pub password_set: bool,
+    /// The setup screens have been through once. Without that the window opens them (and without a password
+    /// it has to).
+    pub setup_done: bool,
     pub phones: Vec<Phone>,
 }
 
@@ -743,6 +763,8 @@ mod tests {
     #[test]
     fn only_the_asks_that_change_something_need_the_password() {
         assert!(!Ask::Status { log_since: 0 }.needs_token());
+        // The first start is free of it, and answered as such only while there is no password
+        assert!(!Ask::Setup { language: "tr".into(), password: None, lan: true }.needs_token());
         assert!(!Ask::Settings.needs_token());
         assert!(!Ask::SignIn { password: "x".into() }.needs_token());
         assert!(Ask::Change(Change::Lan(true)).needs_token());
@@ -770,7 +792,7 @@ mod tests {
         // An ask that only reads carries no token at all. The shape is pinned on purpose: it is what
         // `VERSION` promises, and a change to it that forgets to raise the version breaks here.
         let plain = Request { v: VERSION, token: None, ask: Ask::Status { log_since: 7 } };
-        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":4,"ask":"status","with":{"log_since":7}}"#);
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":5,"ask":"status","with":{"log_since":7}}"#);
         let reply = Reply {
             v: VERSION,
             answer: Answer::Status(Status {

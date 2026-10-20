@@ -121,6 +121,15 @@ impl App {
 
     /// Listens where the settings say (after a port or home network change). Returns the error if it could not.
     pub async fn relisten(&mut self) -> Option<Msg> {
+        // Until there is a password there is nothing to tell an allowed phone from any other, so the panel
+        // stays closed. The window offers the setup, and this is called again when it is done.
+        if !self.panel.auth().is_set() {
+            if let Some(old) = self.listener.take() {
+                old.stop().await;
+            }
+            self.listen_error = None;
+            return None;
+        }
         let want = self.wanted_addr();
         if self.listener.as_ref().is_some_and(|l| l.addr == want) {
             return None;
@@ -413,7 +422,8 @@ async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> (ipc::An
     let lang = i18n::term();
     // Everything that changes something needs the panel password, even at the computer own keyboard: the
     // worker types on the lock screen, and a program running as the user must not reach that without it.
-    if req.ask.needs_token() && !app.panel.auth().check(req.token.as_deref().unwrap_or("")) {
+    let signed_in = app.panel.auth().check(req.token.as_deref().unwrap_or(""));
+    if req.ask.needs_token() && !signed_in {
         return (ipc::Answer::SignInNeeded, After::Running);
     }
     if req.ask == ipc::Ask::Stop {
@@ -421,6 +431,9 @@ async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> (ipc::An
         return (ipc::Answer::Done, After::Stop);
     }
     let answer = match req.ask {
+        ipc::Ask::Setup { language, password, lan } => {
+            first_setup(app, shown, language, password, lan, signed_in).await
+        }
         ipc::Ask::Status { log_since } => {
             let log = app.panel.log();
             // Only what the window has not seen; it passes back the count it was given last time
@@ -441,6 +454,7 @@ async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> (ipc::An
                 remote: state,
                 remote_why: why,
                 agent: app.panel.agent().user(),
+                password_set: app.panel.auth().is_set(),
                 log_count: count,
                 events: events(&entries, lang),
             })
@@ -454,6 +468,57 @@ async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> (ipc::An
         ipc::Ask::Stop => ipc::Answer::Done,
     };
     (answer, After::Running)
+}
+
+/// The first start, from the setup screens in the window: a language, the first password and whether the
+/// home network may reach the panel. While there is no password this needs none, because there is no other
+/// way to set one; once there is, it is a change like any other and the window has to be signed in.
+async fn first_setup(
+    app: &mut App,
+    shown: &mut Shown,
+    language: String,
+    password: Option<String>,
+    lan: bool,
+    signed_in: bool,
+) -> ipc::Answer {
+    let lang = i18n::term();
+    if app.panel.auth().is_set() && !signed_in {
+        return ipc::Answer::SignInNeeded;
+    }
+    let failed = |m: Msg| ipc::Answer::Failed { reason: lang.render(&m) };
+    let Some(l) = i18n::get(&language) else { return failed(Msg::new("err.internal")) };
+    // A StrCu with no password has to come out of this with one
+    let hash = match password {
+        Some(password) => match crate::auth::hash_password(&password) {
+            Ok(hash) => Some(hash),
+            Err(e) => return failed(i18n::from_error(&e)),
+        },
+        None if app.panel.auth().is_set() => None,
+        None => return failed(Msg::new("err.no_password")),
+    };
+    let written = config::update(|c| {
+        c.language = Some(language.clone());
+        c.lan = lan;
+        if let Some(hash) = &hash {
+            c.password_hash = Some(hash.clone());
+        }
+        c.setup_done = true;
+    });
+    if let Err(e) = written {
+        return failed(i18n::from_error(&e));
+    }
+    i18n::set_term(l);
+    if let Some(hash) = hash {
+        // The new password applies at once, and the panel can be opened with it
+        app.panel.auth().replace_password(hash);
+    }
+    app.panel.log().add(Msg::new("ev.setup_done"), true);
+    // The panel is about to start listening, so the addresses it is open on are new
+    shown.stale = true;
+    match app.relisten().await {
+        Some(e) => ipc::Answer::Failed { reason: lang.render(&e) },
+        None => ipc::Answer::Done,
+    }
 }
 
 /// The panel password, typed in the window. Wrong tries count towards the same brake as the panel sign-in
@@ -606,6 +671,7 @@ pub fn events(entries: &[LogEntry], lang: &Lang) -> Vec<ipc::Event> {
 /// phones without the secret behind their cookie.
 fn settings(app: &App) -> ipc::Settings {
     let cfg = config::load();
+    let setup_done = cfg.setup_done;
     let (devices, keys) = (app.panel.pairing().list(), app.panel.passkeys().list());
     ipc::Settings {
         language: cfg.language,
@@ -615,6 +681,7 @@ fn settings(app: &App) -> ipc::Settings {
         remote_email: cfg.access.map(|a| a.email),
         cloudflared: tunnel::installed_version(),
         password_set: cfg.password_hash.is_some(),
+        setup_done,
         phones: devices.iter().map(ipc::Phone::from_device).chain(keys.iter().map(ipc::Phone::from_passkey)).collect(),
     }
 }
@@ -626,6 +693,10 @@ pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
         bail!(e.clone());
     }
     let lang = i18n::term();
+    if !app.panel.auth().is_set() {
+        // It runs, so the window can reach it and set one; it just lets nobody in yet
+        println!("{}", lang.t("err.no_password"));
+    }
     let urls = app.urls();
     for url in urls.local.iter().chain(&urls.home) {
         println!("{}", lang.render(&Msg::new("term.panel").with("url", url)));

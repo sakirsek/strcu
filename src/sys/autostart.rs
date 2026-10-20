@@ -2,6 +2,12 @@
 //!
 //! The value belongs to the copy of StrCu it points to. Another copy (a test build, a second folder) reads it
 //! as off and never removes it, so it cannot switch off the installed StrCu's start.
+//!
+//! Nothing calls this in 2.0: Windows starts the service, and the settings screen says so. It stays for the
+//! other direction, which the installer needs - a computer coming from 1.x has a value here that would start
+//! the old user-mode StrCu beside the service, and since it is the user's own registry the agent is the one
+//! that can clear it (phase 2).
+#![allow(dead_code)]
 
 use anyhow::{Context, Result};
 use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;

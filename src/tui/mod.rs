@@ -20,8 +20,8 @@ use anyhow::Result;
 pub use preview::preview;
 
 use crate::i18n::{self, Lang, Msg};
-use live::{Live, Tried};
-use crate::{config, sys};
+use live::{Live, Said, Tried};
+use crate::sys;
 use frame::{Frame, Span, Tone, span};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -77,15 +77,8 @@ impl<T> Step<T> {
 /// when there is none to talk to the window says so instead of starting one of its own.
 pub async fn run() -> Result<()> {
     let mut io = term::Terminal::enter()?;
-    // Setting up still writes the settings straight from here; it moves onto the pipe with the other screens
-    if !config::load().setup_done {
-        let Some(choices) = wizard::run(&mut io).await? else {
-            drop(io);
-            println!("{}", i18n::term().t("setup.unfinished"));
-            return Ok(());
-        };
-        wizard::apply(&choices)?;
-    }
+    // StrCu comes first now: it is the one that has the settings, and the setup is sent to it like
+    // everything else. A window without a StrCu to talk to has nothing to set up.
     let mut live = match Live::connect() {
         Ok(live) => live,
         Err(e) => {
@@ -93,9 +86,28 @@ pub async fn run() -> Result<()> {
             return Err(e);
         }
     };
+    let settings = match live.settings() {
+        Ok(settings) => settings,
+        Err(e) => {
+            drop(io);
+            return Err(e);
+        }
+    };
     // The window cannot read the settings folder, so even the language it draws in comes from StrCu
-    if let Some(l) = live.settings().ok().and_then(|s| s.language).and_then(|code| i18n::get(&code)) {
+    if let Some(l) = settings.language.as_deref().and_then(i18n::get) {
         i18n::set_term(l);
+    }
+    // A StrCu with no password runs but lets nobody in; this is where it gets one
+    if !settings.setup_done || !settings.password_set {
+        let start = wizard::Start { has_password: settings.password_set, remote: settings.remote_host.clone() };
+        match set_up(&mut io, &mut live, start).await? {
+            Step::Done(()) => {}
+            Step::Back | Step::Quit => {
+                drop(io);
+                println!("{}", i18n::term().t("setup.unfinished"));
+                return Ok(());
+            }
+        }
     }
     let ended = dash::run(&mut io, &mut live).await;
     if ended.is_ok() {
@@ -108,6 +120,35 @@ pub async fn run() -> Result<()> {
         io.draw(&f);
     }
     ended
+}
+
+/// The setup screens, and what StrCu says about them. A StrCu that has a password already wants a signed-in
+/// window even for this, so the sign-in screen comes up in the middle of it.
+async fn set_up(io: &mut impl Io, live: &mut Live, start: wizard::Start) -> Result<Step<()>> {
+    let Some(choices) = wizard::run(io, start).await? else { return Ok(Step::Quit) };
+    for _ in 0..2 {
+        match live.setup(choices.lang.code, choices.password.as_deref(), choices.lan)? {
+            Said::Done(()) => return Ok(Step::Done(())),
+            Said::Failed(said) => {
+                drop_notice(io, &Msg::new("ui.said").with("text", said));
+                return Ok(Step::Back);
+            }
+            Said::SignInNeeded => match sign_in(io, live).await? {
+                Step::Done(true) => {}
+                Step::Done(false) | Step::Back | Step::Quit => return Ok(Step::Quit),
+            },
+        }
+    }
+    Ok(Step::Back)
+}
+
+/// A last screen with one sentence on it, for something that went wrong on the way in.
+fn drop_notice(io: &mut impl Io, msg: &Msg) {
+    let t = i18n::term();
+    let mut f = Frame::default();
+    header(&mut f, "", Vec::new());
+    f.text(Tone::Bad, t.render(msg));
+    io.draw(&f);
 }
 
 // ---------- pieces every screen uses ----------

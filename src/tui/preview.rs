@@ -95,6 +95,7 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
             remote,
             remote_why,
             agent: Some(whoami()),
+            password_set: true,
             log_count: 0,
             events: Vec::new(),
         }
@@ -141,11 +142,15 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("03-setup-password-error", wizard::password_view(t, Some(2), ["", ""], 0, Some(&Msg::new("err.passwords_differ")))),
         ("04-setup-lan", wizard::lan_view(t, Some(3), 1, "", None)),
         ("05-setup-remote", wizard::remote_view(t, None, "")),
-        ("06-setup-autostart", wizard::autostart_view(t, Some(5), 1, "", None)),
+
         ("06b-sign-in", super::sign_in_view(t, &super::dots(12), None)),
         ("06c-sign-in-wrong", super::sign_in_view(t, "", Some(&Notice::Err(Msg::new("err.wrong_password"))))),
         ("07-dashboard", dash_view(&state(&urls, true, &Remote::Up), &events, false)),
         ("08-dashboard-first-start", dash_view(&state(&fresh, false, &Remote::Off), &[], false)),
+        ("08b-dashboard-no-password", {
+            let unset = ipc::Status { password_set: false, ..state(&fresh, false, &Remote::Off) };
+            dash_view(&unset, &[], false)
+        }),
         ("09-dashboard-problem", dash_view(&state(&urls, true, &failed), &events[2..], true)),
         ("09b-dashboard-public-network", dash_view(&state(&cafe, true, &Remote::Up), &events, false)),
         ("10-log", dash::log_view(t, &app::events(&log, t), 0, (COLS, ROWS))),

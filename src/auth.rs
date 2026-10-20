@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 
@@ -41,7 +41,9 @@ pub fn set_password(pw: &str) -> Result<String> {
 }
 
 pub struct Auth {
-    hash: Mutex<String>,
+    /// None on a computer where StrCu has just been installed: it runs, but lets nobody in until a password
+    /// is set from the window (`ipc::Ask::Setup`).
+    hash: Mutex<Option<String>>,
     sessions: Mutex<HashMap<String, Instant>>,
     /// Wrong attempts per source (an address): how many, and when the last one was
     fails: Mutex<HashMap<String, (u32, Instant)>>,
@@ -55,14 +57,20 @@ pub enum Check {
 }
 
 impl Auth {
-    pub fn from_config() -> Result<Self> {
-        let hash = config::load().password_hash.context(Msg::new("err.no_password"))?;
-        Ok(Auth { hash: Mutex::new(hash), sessions: Mutex::default(), fails: Mutex::default() })
+    pub fn from_config() -> Auth {
+        let hash = config::load().password_hash;
+        Auth { hash: Mutex::new(hash), sessions: Mutex::default(), fails: Mutex::default() }
+    }
+
+    /// Is there a password at all? Without one the panel does not listen: there would be no way to tell the
+    /// phone that is allowed in from one that is not.
+    pub fn is_set(&self) -> bool {
+        self.hash.lock().unwrap().is_some()
     }
 
     /// The password was changed on the computer: the new one applies at once and every session ends.
     pub fn replace_password(&self, hash: String) {
-        *self.hash.lock().unwrap() = hash;
+        *self.hash.lock().unwrap() = Some(hash);
         self.sessions.lock().unwrap().clear();
         self.fails.lock().unwrap().clear();
     }
@@ -79,7 +87,8 @@ impl Auth {
         {
             return Check::LockedOut((LOCKOUT - last.elapsed()).as_secs().max(1));
         }
-        let hash = self.hash.lock().unwrap().clone();
+        // No password yet: there is nothing to guess and nothing to get in with
+        let Some(hash) = self.hash.lock().unwrap().clone() else { return Check::Wrong };
         let ok = PasswordHash::new(&hash)
             .map(|h| Argon2::default().verify_password(pw.as_bytes(), &h).is_ok())
             .unwrap_or(false);
@@ -148,7 +157,7 @@ mod tests {
         let salt = SaltString::encode_b64(b"0123456789abcdef").unwrap();
         let fast = Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::new(8, 1, 1, None).unwrap());
         let hash = fast.hash_password(b"right password", &salt).unwrap().to_string();
-        let auth = Auth { hash: Mutex::new(hash), sessions: Mutex::default(), fails: Mutex::default() };
+        let auth = Auth { hash: Mutex::new(Some(hash)), sessions: Mutex::default(), fails: Mutex::default() };
         for _ in 0..MAX_FAILS {
             assert!(matches!(auth.check_password("wrong", "192.168.1.73"), Check::Wrong));
         }
@@ -157,8 +166,17 @@ mod tests {
         // Another source is not affected
         assert!(matches!(auth.check_password("right password", "remote 203.0.113.24"), Check::Ok));
         // A new password lifts every brake
-        let same = auth.hash.lock().unwrap().clone();
+        let same = auth.hash.lock().unwrap().clone().unwrap();
         auth.replace_password(same);
         assert!(matches!(auth.check_password("right password", "192.168.1.73"), Check::Ok));
+    }
+
+    #[test]
+    fn before_there_is_a_password_nothing_gets_in() {
+        let auth = Auth { hash: Mutex::new(None), sessions: Mutex::default(), fails: Mutex::default() };
+        assert!(!auth.is_set());
+        assert!(matches!(auth.check_password("", "192.168.1.73"), Check::Wrong));
+        assert!(matches!(auth.check_password("anything at all", "192.168.1.73"), Check::Wrong));
+        assert!(!auth.check(""));
     }
 }

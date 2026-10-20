@@ -1,7 +1,8 @@
-//! First start: language, panel password, home network, remote access, starting with Windows.
+//! First start: language, panel password, home network, remote access.
 //!
-//! The choices are collected first and saved together at the end (`apply`); only remote access is saved when
-//! it is set up, by its own flow.
+//! The choices are collected here and sent to StrCu as one ask (`ipc::Ask::Setup`), which is what writes
+//! them: the window cannot read or write the settings folder at all. Starting with Windows is no longer a
+//! question - StrCu is a service and Windows starts it - and remote access has a flow of its own.
 
 use anyhow::Result;
 
@@ -9,9 +10,8 @@ use super::frame::{Frame, Tone, span};
 use super::{Io, Notice, Step, choose, footer, header, hint_back, hint_quit, option, prompt, read_line};
 use crate::auth;
 use crate::i18n::{self, Lang, Msg};
-use crate::{config, sys};
 
-const STEPS: usize = 5;
+const STEPS: usize = 4;
 
 /// What is already set up; an existing install keeps its password and remote access unless changed.
 pub struct Start {
@@ -22,51 +22,26 @@ pub struct Start {
 
 pub struct Choices {
     pub lang: &'static Lang,
-    /// A new password; None keeps the current one. It is hashed where it is written down, never kept as it
-    /// was typed.
+    /// A new password; None keeps the current one. It travels to StrCu as it was typed, over the pipe only,
+    /// and StrCu hashes it before writing it down.
     pub password: Option<String>,
     pub lan: bool,
-    pub autostart: bool,
 }
 
-/// The setup with the real settings. None if it was left with Ctrl+C.
-pub async fn run(io: &mut impl Io) -> Result<Option<Choices>> {
-    let cfg = config::load();
-    let mut start = Start { has_password: cfg.password_hash.is_some(), remote: cfg.access.map(|a| a.hostname) };
+/// The setup, from what StrCu says is already there. None if it was left with Ctrl+C.
+pub async fn run(io: &mut impl Io, mut start: Start) -> Result<Option<Choices>> {
     Ok(flow(io, &mut start).await)
 }
 
-pub fn apply(c: &Choices) -> Result<()> {
-    // Hashed here, before anything is written: the setup is the one place that still writes the settings
-    // itself, and what it writes is the hash
-    let hash = match &c.password {
-        Some(password) => Some(auth::hash_password(password)?),
-        None => None,
-    };
-    config::update(|cfg| {
-        cfg.language = Some(c.lang.code.to_string());
-        cfg.lan = c.lan;
-        if let Some(hash) = hash {
-            cfg.password_hash = Some(hash);
-        }
-        cfg.setup_done = true;
-    })?;
-    if sys::autostart::enabled() != c.autostart {
-        sys::autostart::set(c.autostart)?;
-    }
-    Ok(())
-}
-
 pub async fn flow(io: &mut impl Io, start: &mut Start) -> Option<Choices> {
-    let mut c = Choices { lang: i18n::term(), password: None, lan: true, autostart: true };
+    let mut c = Choices { lang: i18n::term(), password: None, lan: true };
     let mut step = 1;
     while step <= STEPS {
         let r = match step {
             1 => language(io, &mut c).await,
             2 => password(io, start, &mut c).await,
             3 => lan(io, &mut c).await,
-            4 => remote(io, start).await,
-            _ => autostart(io, &mut c).await,
+            _ => remote(io, start).await,
         };
         match r {
             Step::Done(()) => step += 1,
@@ -303,41 +278,6 @@ async fn remote(io: &mut impl Io, start: &mut Start) -> Step<()> {
 
 // ---------- 5: starting with Windows ----------
 
-pub fn autostart_view(t: &Lang, step: Option<usize>, default: usize, typed: &str, notice: Option<&Notice>) -> Frame {
-    let mut f = match step {
-        Some(s) => frame(t, s),
-        None => {
-            let mut f = Frame::default();
-            header(&mut f, &format!("{} · {}", t.t("set.title"), t.t("set.autostart")), Vec::new());
-            f
-        }
-    };
-    f.text(Tone::Strong, t.t("setup.auto_title"));
-    f.blank();
-    option(&mut f, 1, &t.t("setup.auto_yes"), None);
-    option(&mut f, 2, &t.t("ui.no"), None);
-    f.blank();
-    prompt(&mut f, t, Some(default), typed);
-    super::notice(&mut f, t, notice);
-    footer(&mut f, &match step {
-        Some(s) => hints(t, s),
-        None => vec![hint_back(t)],
-    });
-    f
-}
-
-async fn autostart(io: &mut impl Io, c: &mut Choices) -> Step<()> {
-    let t = i18n::term();
-    match choose(io, 2, Some(1), |typed| autostart_view(t, Some(5), 1, typed, None)).await {
-        Step::Done(n) => {
-            c.autostart = n == 1;
-            Step::Done(())
-        }
-        Step::Back => Step::Back,
-        Step::Quit => Step::Quit,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::super::Key;
@@ -362,20 +302,20 @@ mod tests {
             &Script::typed("something else 123"),
             &Script::typed("long enough password"),
             &Script::typed("long enough password"),
-            // Home network: no; remote: not now; start with Windows: default (yes)
-            &[Key::Char('2'), Key::Char('1'), Key::Enter],
+            // Home network: no; remote: not now
+            &[Key::Char('2'), Key::Char('1')],
         ]);
         let mut io = Script::new(&script);
         let mut start = Start { has_password: false, remote: None };
         let c = flow(&mut io, &mut start).await.expect("finished");
         assert_eq!(c.lang.code, "tr");
-        assert!(!c.lan && c.autostart);
-        // The password itself comes back, and `apply` is the one that hashes it
+        assert!(!c.lan);
+        // The password itself comes back, and StrCu is the one that hashes it
         assert_eq!(c.password.as_deref(), Some("long enough password"));
         let all = io.frames.join("\n----\n");
         assert!(all.contains("Parola en az 10 karakter olmalı"), "{all}");
         assert!(all.contains("Parolalar eşleşmiyor"));
-        assert!(all.contains("5 / 5"));
+        assert!(all.contains("4 / 4"));
         // Typed passwords never show
         assert!(!all.contains("long enough"));
         i18n::set_term(en);
@@ -384,10 +324,10 @@ mod tests {
     #[tokio::test]
     async fn existing_install_keeps_password() {
         let _lang = LANG.lock().await;
-        let mut io = Script::new(&[Key::Enter, Key::Enter, Key::Char('1'), Key::Esc, Key::Char('1'), Key::Char('1'), Key::Char('2')]);
+        let mut io = Script::new(&[Key::Enter, Key::Enter, Key::Char('1'), Key::Esc, Key::Char('1'), Key::Char('1')]);
         let mut start = Start { has_password: true, remote: Some("strcu.example.com".into()) };
         let c = flow(&mut io, &mut start).await.expect("finished");
-        assert!(c.password.is_none() && c.lan && !c.autostart);
+        assert!(c.password.is_none() && c.lan);
         assert!(io.frames.iter().any(|f| f.contains("https://strcu.example.com")));
         i18n::set_term(i18n::system());
     }
