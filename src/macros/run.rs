@@ -486,10 +486,7 @@ impl Engine {
                 Flow::Next
             }
             Act::Open { path } => {
-                let did = self.agent.job(agent::Job::Open { path: path.clone() }).await.map_err(failed)?;
-                if did != agent::Did::Done {
-                    return Err(failed(did.wrong()));
-                }
+                self.agent.done(agent::Job::Open { path: path.clone() }).await.map_err(failed)?;
                 Flow::Next
             }
             Act::Window { app, op } => {

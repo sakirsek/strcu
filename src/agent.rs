@@ -44,7 +44,7 @@ use windows::core::{HSTRING, PWSTR};
 use crate::files;
 use crate::i18n::{self, Arg, Msg};
 use crate::ipc;
-use crate::sys::apps;
+use crate::sys::{apps, clipboard, icons};
 
 /// The biggest job or answer. The lists and files the agent will carry later are the long ones.
 const MAX_FRAME: u32 = 8 << 20;
@@ -79,6 +79,14 @@ pub enum Job {
     Keep { token: u64 },
     /// Throw the half-written file away - it stopped arriving, or a piece came out of order.
     Throw { token: u64 },
+    /// What is on the clipboard. It belongs to the session someone is signed in to, so what the computer
+    /// reads there is not what the person sees in their own programs.
+    Clip,
+    /// Puts text on the clipboard in place of what is there.
+    Copy { text: String },
+    /// The icon of a program or of a Start menu app, as a PNG. A Store app's icon comes out of its package,
+    /// which is read through the user's own Applications folder (`shell:AppsFolder\<id>`).
+    Icon { path: String, size: u32 },
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -123,6 +131,14 @@ pub enum Did {
     /// The name the finished file was saved under.
     Kept {
         name: String,
+    },
+    Clip {
+        /// None when the clipboard holds no text at all (a picture, files, nothing)
+        text: Option<String>,
+    },
+    Icon {
+        #[serde(with = "bytes")]
+        png: Vec<u8>,
     },
     /// Done, with nothing to say about it.
     Done,
@@ -264,6 +280,9 @@ fn done(job: Job, mind: &mut Mind) -> Did {
         Job::Make { name } => make(&name, mind),
         Job::Keep { token } => keep(token, mind),
         Job::Throw { token } => Ok(throw(token, mind)),
+        Job::Clip => clipboard::get().map(|text| Did::Clip { text }),
+        Job::Copy { text } => clipboard::set(&text).map(|()| Did::Done),
+        Job::Icon { path, size } => icons::png(&path, size).map(|png| Did::Icon { png }),
     };
     did.unwrap_or_else(|e| Did::Failed { why: Why::of(&e) })
 }
@@ -666,6 +685,31 @@ impl Hand {
         let hand = self.clone();
         tokio::task::spawn_blocking(move || hand.ask(job)).await?
     }
+
+    /// A job whose answer is only that it is done: anything else becomes the error to show.
+    pub async fn done(&self, job: Job) -> Result<()> {
+        match self.job(job).await? {
+            Did::Done => Ok(()),
+            other => Err(other.wrong()),
+        }
+    }
+}
+
+/// Bytes in an answer travel as base64. JSON has no short way to carry them otherwise, and the only ones
+/// that travel are small: an icon is a few thousand bytes, while a file is handed over open instead.
+mod bytes {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD as B64;
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub fn serialize<S: Serializer>(v: &[u8], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&B64.encode(v))
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+        let text = String::deserialize(d)?;
+        B64.decode(text).map_err(serde::de::Error::custom)
+    }
 }
 
 // ---------- jobs and answers on the wire ----------
@@ -830,6 +874,37 @@ mod tests {
         };
         assert_eq!(why.msg(), Msg::new("err.no_app"));
         drop(agent);
+    }
+
+    #[test]
+    fn the_clipboard_is_the_one_the_person_sees() {
+        let hand = Hand::new();
+        // Whatever is on it belongs to whoever is at the computer: it goes back before anything is checked
+        let Did::Clip { text: before } = hand.ask(Job::Clip).unwrap() else { panic!("another answer") };
+        // No text on it means something that is not text, or nothing at all: putting text there would
+        // throw a picture somebody copied away, so only the reading is checked
+        let Some(before) = before else { return };
+        let ours = "strcu test · pano";
+        let put = hand.ask(Job::Copy { text: ours.to_string() });
+        let read = hand.ask(Job::Clip);
+        let back = hand.ask(Job::Copy { text: before.clone() });
+        assert_eq!(put.unwrap(), Did::Done);
+        assert_eq!(read.unwrap(), Did::Clip { text: Some(ours.to_string()) });
+        assert_eq!(back.unwrap(), Did::Done);
+        let Did::Clip { text: now } = hand.ask(Job::Clip).unwrap() else { panic!("another answer") };
+        assert_eq!(now, Some(before));
+    }
+
+    #[test]
+    fn an_icon_comes_back_as_a_picture() {
+        let hand = Hand::new();
+        let exe = std::env::current_exe().unwrap();
+        let did = hand.ask(Job::Icon { path: exe.display().to_string(), size: 64 }).unwrap();
+        let Did::Icon { png } = did else { panic!("another answer") };
+        assert_eq!(&png[..8], b"\x89PNG\r\n\x1a\n", "not a PNG");
+        // Through the wire as base64 and back, byte for byte
+        let text = serde_json::to_string(&Did::Icon { png: png.clone() }).unwrap();
+        assert_eq!(serde_json::from_str::<Did>(&text).unwrap(), Did::Icon { png });
     }
 
     #[test]

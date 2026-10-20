@@ -13,13 +13,14 @@ use serde_json::{Value, json};
 
 use super::signin::paired;
 use super::{ApiError, ApiResult, AppState, logged, short};
+use crate::agent;
 use crate::auth;
 use crate::i18n::Msg;
 use crate::log::LogEntry;
 use crate::macros::{self, Act};
 use crate::pair;
 use crate::sys::power::{self, SHUTDOWN_SECS};
-use crate::sys::{Rect, clipboard, input, screen, uia, window};
+use crate::sys::{Rect, input, screen, uia, window};
 use crate::usage::{self, Tap};
 
 pub(super) async fn status(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
@@ -209,9 +210,14 @@ pub(super) async fn type_text(State(st): State<AppState>, Json(r): Json<TypeReq>
 /// Most of the clipboard's text that goes either way at once.
 const CLIP_MAX: usize = 100_000;
 
-/// The computer's clipboard text. Only on request, never on its own: it may hold a password just copied.
+/// The clipboard of the person signed in (agent.rs; the computer's own is not theirs). Only on request,
+/// never on its own: it may hold a password just copied.
 pub(super) async fn clip_get(State(st): State<AppState>) -> ApiResult<Json<Value>> {
-    let Some(text) = st.worker.run(|_| clipboard::get()).await? else { return Ok(Json(json!({ "text": null }))) };
+    let text = match st.agent.job(agent::Job::Clip).await? {
+        agent::Did::Clip { text } => text,
+        other => return Err(other.wrong().into()),
+    };
+    let Some(text) = text else { return Ok(Json(json!({ "text": null }))) };
     let n = text.chars().count();
     let text: String = if n > CLIP_MAX { text.chars().take(CLIP_MAX).collect() } else { text };
     st.log.add(Msg::new("ev.clip_read").with("n", n.min(CLIP_MAX)), true);
@@ -229,7 +235,9 @@ pub(super) async fn clip_set(State(st): State<AppState>, Json(r): Json<ClipReq>)
     if n > CLIP_MAX {
         return Err(ApiError(StatusCode::BAD_REQUEST, Msg::new("err.text_too_long").with("max", CLIP_MAX)));
     }
-    logged(&st, Msg::new("ev.clip_set").with("n", n), move |_| clipboard::set(&r.text)).await?;
+    let done = st.agent.done(agent::Job::Copy { text: r.text }).await;
+    st.log.add(Msg::new("ev.clip_set").with("n", n), done.is_ok());
+    done?;
     Ok(Json(json!({ "ok": true, "n": n })))
 }
 

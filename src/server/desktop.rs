@@ -15,7 +15,7 @@ use super::{ApiError, ApiResult, AppState, logged, short};
 use crate::agent;
 use crate::i18n::{self, Msg};
 use crate::macros::{Act, AppRef, WinOp};
-use crate::sys::{apps, icons, uia, window};
+use crate::sys::{apps, uia, window};
 
 pub(super) async fn elements(State(st): State<AppState>) -> ApiResult<Json<Vec<uia::Element>>> {
     Ok(Json(st.worker.run(|ctx| ctx.scanner()?.visible_elements(false)).await?))
@@ -108,9 +108,14 @@ async fn icon_png(st: &AppState, path: String) -> ApiResult<Response> {
     let png = match cached {
         Some(p) => p,
         None => {
-            let p2 = path.clone();
-            let r = tokio::task::spawn_blocking(move || icons::png(&p2, 64)).await.map_err(anyhow::Error::from)?;
-            let p = r.ok().map(Arc::new);
+            // The agent draws it: a Store app's icon is in its package, which is in the user's own
+            // Applications folder and nowhere the computer can see it
+            let job = agent::Job::Icon { path: path.clone(), size: 64 };
+            let p = match st.agent.job(job).await {
+                Ok(agent::Did::Icon { png }) => Some(Arc::new(png)),
+                // No icon is not a failure: the panel shows a letter instead
+                _ => None,
+            };
             st.icons.lock().unwrap().insert(path, p.clone());
             p
         }
