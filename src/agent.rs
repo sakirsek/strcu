@@ -16,10 +16,11 @@
 //! itself, and Windows would not give it anybody's token anyway. Then the jobs are simply done in place
 //! (`Hand::ask`), which is also how a development build behaves without a service behind it.
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::windows::io::{FromRawHandle, IntoRawHandle};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -71,6 +72,13 @@ pub enum Job {
     Selected,
     /// Opens the n-th of those, which must still be called `name`.
     TakeSelected { at: usize, name: String },
+    /// Makes a file in the user's Downloads for something arriving from the phone, under a temporary name,
+    /// and hands it over open for the worker to write into.
+    Make { name: String },
+    /// The file is whole: give it its own name (files.rs `free_path`, so nothing is ever replaced).
+    Keep { token: u64 },
+    /// Throw the half-written file away - it stopped arriving, or a piece came out of order.
+    Throw { token: u64 },
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -105,6 +113,16 @@ pub enum Did {
     },
     Selected {
         items: Vec<files::Picked>,
+    },
+    /// A file made for something arriving from the phone. `file` is handled like `Opened`'s; `token` is what
+    /// the agent calls it afterwards, so no path has to travel back and forth.
+    Made {
+        file: isize,
+        token: u64,
+    },
+    /// The name the finished file was saved under.
+    Kept {
+        name: String,
     },
     /// Done, with nothing to say about it.
     Done,
@@ -194,10 +212,10 @@ impl Why {
 pub fn run() -> Result<()> {
     let mut jobs = std::io::stdin().lock();
     let mut answers = std::io::stdout().lock();
-    let mut known = Vec::new();
+    let mut mind = Mind::default();
     while let Some(frame) = read_frame(&mut jobs)? {
         let answer = match serde_json::from_slice::<Job>(&frame) {
-            Ok(job) => done(job, &mut known),
+            Ok(job) => done(job, &mut mind),
             // Only the worker is at the other end, so this is a mistake of ours
             Err(e) => Did::Failed { why: Why::of(&anyhow::Error::new(e)) },
         };
@@ -207,8 +225,28 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// One job. `known` is the app list the last `Apps` job read, kept because launching looks an id up in it.
-fn done(job: Job, known: &mut Vec<apps::App>) -> Did {
+/// What the agent keeps between jobs.
+#[derive(Default)]
+struct Mind {
+    /// The app list the last `Apps` job read: launching looks an id up in it
+    known: Vec<apps::App>,
+    /// Files from the phone being written, by the token the worker names them with
+    coming: HashMap<u64, Coming>,
+    /// The last token handed out
+    tokens: u64,
+}
+
+/// A file from the phone, waiting under a temporary name in Downloads. The path stays here, so nothing can
+/// ask the agent to rename or delete anything else.
+struct Coming {
+    tmp: PathBuf,
+    /// What it is to be called once it is whole
+    name: String,
+}
+
+/// One job, with what the agent remembers.
+fn done(job: Job, mind: &mut Mind) -> Did {
+    let known = &mut mind.known;
     let did = match job {
         Job::Who => who(),
         Job::Apps => apps::list().map(|list| {
@@ -223,8 +261,58 @@ fn done(job: Job, known: &mut Vec<apps::App>) -> Did {
         Job::Take { root, path } => files::resolve(root, &path).and_then(|p| opened(&p)),
         Job::Selected => files::selected().map(|items| Did::Selected { items }),
         Job::TakeSelected { at, name } => files::picked(at, &name).and_then(|p| opened(&p)),
+        Job::Make { name } => make(&name, mind),
+        Job::Keep { token } => keep(token, mind),
+        Job::Throw { token } => Ok(throw(token, mind)),
     };
     did.unwrap_or_else(|e| Did::Failed { why: Why::of(&e) })
+}
+
+/// Makes the file a phone is about to send, under a name no finished file has: there is nothing half
+/// written for anyone to open by mistake, and a file that was already there is never touched. Pieces left
+/// behind by a StrCu that stopped in the middle are swept away first, by age.
+fn make(name: &str, mind: &mut Mind) -> Result<Did> {
+    let dir = files::root_dir(files::Root::Downloads)?;
+    sweep(&dir);
+    mind.tokens += 1;
+    let token = mind.tokens;
+    let name = files::clean_name(name);
+    let tmp = files::free_path(&dir, &format!("{name}.{token}{}", files::PART));
+    let file = std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+    mind.coming.insert(token, Coming { tmp, name });
+    Ok(Did::Made { file: file.into_raw_handle() as isize, token })
+}
+
+/// The file is whole: it gets its own name, or the next free one beside it.
+fn keep(token: u64, mind: &mut Mind) -> Result<Did> {
+    let Some(coming) = mind.coming.remove(&token) else { bail!(Msg::new("err.upload_order")) };
+    let dir = coming.tmp.parent().map(Path::to_path_buf).unwrap_or_default();
+    let dest = files::free_path(&dir, &coming.name);
+    if let Err(e) = std::fs::rename(&coming.tmp, &dest) {
+        let _ = std::fs::remove_file(&coming.tmp);
+        return Err(e.into());
+    }
+    let name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(coming.name);
+    Ok(Did::Kept { name })
+}
+
+/// It is not coming any more: what was written goes.
+fn throw(token: u64, mind: &mut Mind) -> Did {
+    if let Some(coming) = mind.coming.remove(&token) {
+        let _ = std::fs::remove_file(&coming.tmp);
+    }
+    Did::Done
+}
+
+/// Pieces of files nobody is sending any more.
+fn sweep(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).is_ok_and(|t| t.elapsed().unwrap_or_default() > files::STALE);
+        if old && e.file_name().to_string_lossy().ends_with(files::PART) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Opens a file and hands it over as it is. The handle is left open on purpose: it belongs to whoever asked
@@ -410,24 +498,28 @@ impl Agent {
     /// nothing is left open on the other side. Everything else about the answer is passed through.
     fn adopt(&self, did: Did) -> Result<Did> {
         match did {
-            Did::Opened { file, name, size } => {
-                let mut ours = HANDLE::default();
-                unsafe {
-                    DuplicateHandle(
-                        self.process,
-                        HANDLE(file as *mut _),
-                        GetCurrentProcess(),
-                        &mut ours,
-                        0,
-                        false,
-                        DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS,
-                    )
-                }
-                .context("taking over the file the agent opened")?;
-                Ok(Did::Opened { file: ours.0 as isize, name, size })
-            }
+            Did::Opened { file, name, size } => Ok(Did::Opened { file: self.bring(file)?, name, size }),
+            Did::Made { file, token } => Ok(Did::Made { file: self.bring(file)?, token }),
             other => Ok(other),
         }
+    }
+
+    /// One handle, from the agent's process into ours.
+    fn bring(&self, theirs: isize) -> Result<isize> {
+        let mut ours = HANDLE::default();
+        unsafe {
+            DuplicateHandle(
+                self.process,
+                HANDLE(theirs as *mut _),
+                GetCurrentProcess(),
+                &mut ours,
+                0,
+                false,
+                DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS,
+            )
+        }
+        .context("taking over the file the agent opened")?;
+        Ok(ours.0 as isize)
     }
 }
 
@@ -499,8 +591,8 @@ struct Held {
 #[derive(Default)]
 struct Kept {
     agent: Option<Agent>,
-    /// The app list, for the jobs this StrCu does itself
-    known: Vec<apps::App>,
+    /// What an agent would remember, for the jobs this StrCu does itself
+    mind: Mind,
 }
 
 impl Default for Hand {
@@ -565,7 +657,7 @@ impl Hand {
         if self.0.mine.is_none() {
             bail!(Msg::new("err.no_user"));
         }
-        Ok(done(job, &mut kept.known))
+        Ok(done(job, &mut kept.mind))
     }
 
     /// The same, off the threads that serve the panel: a job can take a moment (reading the app list takes

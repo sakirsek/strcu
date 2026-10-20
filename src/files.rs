@@ -22,6 +22,7 @@ use windows::Win32::UI::Shell::{
     SHGetKnownFolderPath,
 };
 
+use crate::agent;
 use crate::i18n::Msg;
 use crate::sys::explorer;
 
@@ -30,7 +31,9 @@ pub const CHUNK: usize = 4 * 1024 * 1024;
 /// Most entries a folder listing returns.
 const MAX_ENTRIES: usize = 1000;
 /// A file from the phone that stops arriving for this long is given up and its piece deleted.
-const STALE: Duration = Duration::from_secs(3600);
+pub const STALE: Duration = Duration::from_secs(3600);
+/// What a piece of a file still arriving is called while it is being written.
+pub const PART: &str = ".strcu-part";
 
 /// Written as well as read, because the panel asks the agent for a folder by it (agent.rs).
 #[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -189,7 +192,7 @@ fn split_ext(name: &str) -> (&str, &str) {
 }
 
 /// `name` in `dir`, or "name (1).ext", "name (2).ext" ... if taken.
-fn free_path(dir: &Path, name: &str) -> PathBuf {
+pub fn free_path(dir: &Path, name: &str) -> PathBuf {
     let p = dir.join(name);
     if !p.exists() {
         return p;
@@ -212,13 +215,21 @@ pub fn disposition(name: &str) -> String {
     format!("attachment; filename=\"{ascii}\"; filename*=UTF-8''{enc}")
 }
 
-/// A file from the phone that is still arriving.
+/// A file from the phone that is still arriving. The agent made it and named it; what is kept here is the
+/// open file to write into and how much of it has arrived.
 struct Part {
-    tmp: PathBuf,
-    name: String,
+    file: std::fs::File,
+    /// What the agent calls it, for finishing it or throwing it away
+    token: u64,
     size: u64,
     next: u64,
     at: Instant,
+}
+
+/// What was written of a file that is not coming any more is thrown away by the agent; there is nothing to
+/// be done about a failure here, which only means the agent went with it.
+fn throw(hand: &agent::Hand, token: u64) {
+    let _ = hand.ask(agent::Job::Throw { token });
 }
 
 /// Files arriving from the phone, by the id the panel gave each.
@@ -228,40 +239,52 @@ pub struct Uploads {
 }
 
 impl Uploads {
-    /// Writes the piece of file `id` starting at `offset`; `name` and `size` are the whole file's. When the
-    /// file is complete, returns the name it was saved under in Downloads.
-    pub fn chunk(&self, id: &str, name: &str, size: u64, offset: u64, data: &[u8]) -> Result<Option<String>> {
+    /// Writes the piece of file `id` starting at `offset`; `name` and `size` are the whole file's. The file
+    /// is made and named by the agent, in the user's own Downloads and with their rights (agent.rs); what
+    /// happens here is the writing. When the file is complete, the name it was saved under comes back.
+    pub fn chunk(
+        &self,
+        hand: &agent::Hand,
+        id: &str,
+        name: &str,
+        size: u64,
+        offset: u64,
+        data: &[u8],
+    ) -> Result<Option<String>> {
         if id.len() < 16 || id.len() > 64 || !id.bytes().all(|b| b.is_ascii_alphanumeric()) {
             bail!("invalid upload id");
         }
         let mut parts = self.parts.lock().unwrap();
-        parts.retain(|_, p| {
-            let stale = p.at.elapsed() > STALE;
-            if stale {
-                let _ = std::fs::remove_file(&p.tmp);
-            }
-            !stale
-        });
-        if offset == 0 {
-            if let Some(old) = parts.remove(id) {
-                let _ = std::fs::remove_file(old.tmp);
-            }
-            let dir = root_dir(Root::Downloads)?;
-            let name = clean_name(name);
-            let tmp = free_path(&dir, &format!("{name}.{}.strcu-part", &id[..8]));
-            std::fs::OpenOptions::new().write(true).create_new(true).open(&tmp)?;
-            parts.insert(id.to_string(), Part { tmp, name, size, next: 0, at: Instant::now() });
+        // Files nobody is sending any more: the agent throws away what it made for them
+        let stale: Vec<u64> = parts.values().filter(|p| p.at.elapsed() > STALE).map(|p| p.token).collect();
+        parts.retain(|_, p| p.at.elapsed() <= STALE);
+        for token in stale {
+            throw(hand, token);
         }
-        let Some(p) = parts.get(id) else { bail!(Msg::new("err.upload_order")) };
+        if offset == 0 {
+            // An earlier try at the same file, closed here before the agent deletes it
+            if let Some(old) = parts.remove(id) {
+                let token = old.token;
+                drop(old);
+                throw(hand, token);
+            }
+            let (file, token) = match hand.ask(agent::Job::Make { name: name.to_string() })? {
+                agent::Did::Made { file, token } => (agent::file_of(file), token),
+                other => return Err(other.wrong()),
+            };
+            parts.insert(id.to_string(), Part { file, token, size, next: 0, at: Instant::now() });
+        }
+        let Some(p) = parts.get_mut(id) else { bail!(Msg::new("err.upload_order")) };
         let in_order = offset == p.next && size == p.size && offset + data.len() as u64 <= size;
-        let written = if in_order {
-            std::fs::OpenOptions::new().append(true).open(&p.tmp).and_then(|mut f| f.write_all(data)).map_err(Into::into)
-        } else {
-            Err(anyhow::Error::new(Msg::new("err.upload_order")))
+        let written = match in_order {
+            true => p.file.write_all(data).map_err(anyhow::Error::from),
+            false => Err(anyhow::Error::new(Msg::new("err.upload_order"))),
         };
         if let Err(e) = written {
             let p = parts.remove(id).expect("found above");
-            let _ = std::fs::remove_file(p.tmp);
+            let token = p.token;
+            drop(p);
+            throw(hand, token);
             return Err(e);
         }
         let p = parts.get_mut(id).expect("found above");
@@ -270,14 +293,14 @@ impl Uploads {
         if p.next < p.size {
             return Ok(None);
         }
+        // Closed before it is renamed: Windows will not move a file that is still open
         let p = parts.remove(id).expect("found above");
-        let dir = p.tmp.parent().map(Path::to_path_buf).unwrap_or_default();
-        let dest = free_path(&dir, &p.name);
-        if let Err(e) = std::fs::rename(&p.tmp, &dest) {
-            let _ = std::fs::remove_file(&p.tmp);
-            return Err(e.into());
+        let token = p.token;
+        drop(p);
+        match hand.ask(agent::Job::Keep { token })? {
+            agent::Did::Kept { name } => Ok(Some(name)),
+            other => Err(other.wrong()),
         }
-        Ok(Some(dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or(p.name)))
     }
 }
 
@@ -316,6 +339,35 @@ mod tests {
             disposition("Rapor ş.pdf"),
             "attachment; filename=\"Rapor _.pdf\"; filename*=UTF-8''Rapor%20%C5%9F.pdf"
         );
+    }
+
+    #[test]
+    fn a_file_from_the_phone_arrives_in_pieces() {
+        let hand = agent::Hand::new();
+        let id = format!("test{:0>12}", std::process::id());
+        let name = format!("strcu-upload-test-{}.txt", std::process::id());
+        let (first, second) = ("iki parça ".as_bytes(), "hâlinde".as_bytes());
+        let size = (first.len() + second.len()) as u64;
+        let ups = Uploads::default();
+        assert!(ups.chunk(&hand, &id, &name, size, 0, first).unwrap().is_none());
+        // A piece that does not follow the last one is refused and the file is given up
+        let out_of_order = ups.chunk(&hand, &id, &name, size, 999, second).unwrap_err();
+        assert_eq!(crate::i18n::from_error(&out_of_order).code, "err.upload_order");
+        // From the start again, all the way through
+        assert!(ups.chunk(&hand, &id, &name, size, 0, first).unwrap().is_none());
+        let saved = ups.chunk(&hand, &id, &name, size, first.len() as u64, second).unwrap().unwrap();
+        assert_eq!(saved, name);
+        let dir = root_dir(Root::Downloads).unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join(&saved)).unwrap(), "iki parça hâlinde");
+        std::fs::remove_file(dir.join(&saved)).unwrap();
+        // Nothing half written is left behind
+        let left: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("strcu-upload-test-") || n.ends_with(PART))
+            .collect();
+        assert!(left.is_empty(), "left behind: {left:?}");
     }
 
     #[test]

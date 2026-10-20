@@ -119,8 +119,8 @@ pub(super) struct UploadQ {
 
 /// A piece of a file from the phone (see `files::Uploads`); the last piece returns the name it was saved under.
 pub(super) async fn files_upload(State(st): State<AppState>, Query(q): Query<UploadQ>, body: axum::body::Bytes) -> ApiResult<Json<Value>> {
-    let up = st.uploads.clone();
-    let saved = blocking(move || up.chunk(&q.id, &q.name, q.size, q.offset, &body)).await?;
+    let (up, hand) = (st.uploads.clone(), st.agent.clone());
+    let saved = blocking(move || up.chunk(&hand, &q.id, &q.name, q.size, q.offset, &body)).await?;
     if let Some(name) = &saved {
         st.log.add(Msg::new("ev.file_received").with("name", short(name)), true);
     }
