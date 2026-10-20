@@ -7,6 +7,12 @@
 //!
 //! So the folder is `%ProgramData%\StrCu`, and only the system and administrators may write there. The
 //! 1.x folder is copied over once, at the first start, so nobody has to set the panel up again.
+//!
+//! Closing the folder is the computer's doing, and only the computer's. StrCu started by a person has to go
+//! on writing there, and a folder closed against the one program that uses it is no use to anybody; it is
+//! also no danger, since what reads those settings is then running as that same person. The service closes
+//! the folder every time it starts, so a folder somebody made by hand is closed as soon as the service takes
+//! over, which is the moment it starts to matter.
 
 use std::path::{Path, PathBuf};
 
@@ -27,31 +33,38 @@ pub fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into())).join(crate::brand::KEY)
 }
 
-/// Makes sure the folder is there, that anything 1.x left behind has been copied in, and that from then on
-/// only the system and administrators may write to it. Returns what was copied, for the terminal.
+/// Makes sure the folder is there and that anything 1.x left behind has been copied in. Returns what was
+/// copied, for the terminal. As the computer it also closes the folder, every time: see the note above.
 ///
-/// The copying comes first on purpose: once the folder is closed, a program running as the user - this one
-/// included, unless it is the service - can no longer write there. That is the point of it.
+/// The copying comes first on purpose: once the folder is closed, a program running as the user can no
+/// longer write there. That is the point of it.
 pub fn prepare() -> Result<Vec<String>> {
-    let dir = data_dir();
+    prepare_in(&data_dir(), &crate::brand::old_data_dir(), crate::ipc::as_system())
+}
+
+/// `close` is for the computer alone. The folder is read and written by whoever StrCu is; closing it while
+/// that is a person would shut this very program out of its own settings. `old` is where 1.x kept things.
+fn prepare_in(dir: &Path, old: &Path, close: bool) -> Result<Vec<String>> {
     // Already there and closed to us: the service set it up and is the one that may change it. Nothing to do
     // here, and nothing wrong either - this is what the folder is meant to look like from a user's program.
-    if dir.exists() && std::fs::read_dir(&dir).is_err() {
+    if dir.exists() && std::fs::read_dir(dir).is_err() {
         return Ok(Vec::new());
     }
-    let fresh = !dir.exists();
-    std::fs::create_dir_all(&dir).with_context(|| format!("{}", dir.display()))?;
-    let copied = migrate(&crate::brand::old_data_dir(), &dir)?;
-    if fresh {
-        protect(&dir)?;
+    std::fs::create_dir_all(dir).with_context(|| format!("{}", dir.display()))?;
+    let copied = migrate(old, dir)?;
+    if close {
+        set_dacl(dir, CLOSED)?;
     }
     Ok(copied)
 }
 
-/// Replaces whatever the folder inherited from `%ProgramData%` with: the system and administrators may do
-/// anything, everyone else nothing. `P` keeps later changes to the parent out.
-fn protect(dir: &Path) -> Result<()> {
-    let sddl = HSTRING::from("D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)");
+/// The system and administrators may do anything, everyone else nothing. `P` keeps later changes to the
+/// parent out.
+const CLOSED: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
+
+/// Replaces whatever the folder inherited from `%ProgramData%` with `sddl`.
+fn set_dacl(dir: &Path, sddl: &str) -> Result<()> {
+    let sddl = HSTRING::from(sddl);
     let mut sd = PSECURITY_DESCRIPTOR::default();
     let path = HSTRING::from(dir.as_os_str());
     unsafe {
@@ -135,6 +148,24 @@ mod tests {
         let dir = data_dir();
         assert!(dir.ends_with(crate::brand::KEY));
         assert_ne!(dir, crate::brand::old_data_dir());
+    }
+
+    #[test]
+    fn only_the_computer_closes_the_folder() {
+        // As a person: the folder stays ours to write, or StrCu could not keep its own settings
+        let (mine, nothing) = (temp("mine"), temp("no-1x"));
+        assert!(prepare_in(&mine, &nothing, false).unwrap().is_empty());
+        std::fs::write(mine.join("config.json"), "{}").unwrap();
+        assert!(std::fs::read_dir(&mine).is_ok());
+        std::fs::remove_dir_all(&mine).unwrap();
+
+        // As the computer: closed to everyone else, which here means to the very user who made it
+        let theirs = temp("theirs");
+        prepare_in(&theirs, &nothing, true).unwrap();
+        assert!(std::fs::read_dir(&theirs).is_err(), "the folder is still open");
+        // Opening it again takes the ownership we have, which is what an administrator would use
+        set_dacl(&theirs, "D:P(A;OICI;FA;;;WD)").unwrap();
+        std::fs::remove_dir_all(&theirs).unwrap();
     }
 
     #[test]
