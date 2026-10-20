@@ -11,6 +11,7 @@ use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
 use crate::access::AccessConfig;
+use crate::agent;
 use crate::auth::Check;
 use crate::i18n::{self, Lang, Msg};
 use crate::log::{ActionLog, LogEntry};
@@ -52,6 +53,8 @@ pub struct Urls {
 
 pub struct App {
     pub panel: Panel,
+    /// The part that works with the signed-in user's own rights (agent.rs), while there is a user
+    agent: Option<agent::Agent>,
     /// What the control window has started on the way to remote access
     setup: Setup,
     listener: Option<Listener>,
@@ -98,6 +101,7 @@ impl App {
     pub async fn start(bind: Option<SocketAddr>, tunnel: bool) -> Result<App> {
         let mut app = App {
             panel: Panel::new()?,
+            agent: None,
             setup: Setup::default(),
             listener: None,
             listen_error: None,
@@ -189,6 +193,23 @@ impl App {
         }
         self.panel.tunnel_pid().store(0, Ordering::Relaxed);
         self.remote.send_replace(Remote::Off);
+    }
+
+    /// Keeps the agent running while somebody is signed in at the screen. It is looked at every couple of
+    /// seconds, because a user may sign in long after StrCu started - it serves the sign-in screen too - and
+    /// the agent comes and goes with them. While there is nobody there is nothing to start, which is not an
+    /// error and says itself in the state the window reads.
+    pub fn keep_agent(&mut self) {
+        if let Some(gone) = self.agent.take_if(|a| a.has_stopped()) {
+            self.panel.log().add(Msg::new("ev.agent_gone").with("user", gone.user.clone()), false);
+        }
+        if self.agent.is_some() {
+            return;
+        }
+        if let Ok(agent) = agent::Agent::start(crate::svc::console_session()) {
+            self.panel.log().add(Msg::new("ev.agent_started").with("user", agent.user.clone()), true);
+            self.agent = Some(agent);
+        }
     }
 
     /// Starts downloading cloudflared, unless the right version is already here. It runs on its own: the
@@ -417,6 +438,7 @@ async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> (ipc::An
                 remote_url: urls.remote,
                 remote: state,
                 remote_why: why,
+                agent: app.agent.as_ref().map(|a| a.user.clone()),
                 log_count: count,
                 events: events(&entries, lang),
             })
@@ -625,9 +647,12 @@ pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
     // The control window reaches this StrCu through the pipe; without one the panel is served all the same
     let mut asks = ipc::Asks::open(&app.panel.log());
     let mut shown = Shown { urls: app.urls(), looked: Instant::now(), stale: false };
+    // The first tick comes at once: the agent starts as soon as there is a user to start it for
+    let mut look = tokio::time::interval(Duration::from_secs(2));
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            _ = look.tick() => app.keep_agent(),
             ipc::Asked(req, back) = asks.next() => {
                 let (answer, after) = answer(&mut app, &mut shown, req).await;
                 let _ = back.send(answer);

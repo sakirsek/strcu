@@ -65,7 +65,8 @@ use crate::passkey::Passkey;
 /// 2: `Stop` lost its `until_restart`. Stopping StrCu always means until the computer starts again - the
 /// service is the one that stops, and Windows starts it at the next boot.
 /// 3: `Tunnel` for setting remote access up, and two more fields in `Settings` for the screen that shows it.
-pub const VERSION: u32 = 3;
+/// 4: `Status` says which user the agent runs as, if any.
+pub const VERSION: u32 = 4;
 
 /// The system account, which is what StrCu runs as once it is a service.
 const SYSTEM: &str = "S-1-5-18";
@@ -248,6 +249,9 @@ pub struct Status {
     pub remote: RemoteState,
     /// Why remote access failed.
     pub remote_why: Option<String>,
+    /// The account the agent runs as (agent.rs), None while nobody is signed in to Windows. The panel needs
+    /// it for everything that is the user's own: apps, files, the clipboard.
+    pub agent: Option<String>,
     /// Entries ever written, which is what the next ask passes as `log_since`.
     pub log_count: u64,
     /// The entries since `log_since`, newest first.
@@ -759,7 +763,7 @@ mod tests {
         // An ask that only reads carries no token at all. The shape is pinned on purpose: it is what
         // `VERSION` promises, and a change to it that forgets to raise the version breaks here.
         let plain = Request { v: VERSION, token: None, ask: Ask::Status { log_since: 7 } };
-        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":3,"ask":"status","with":{"log_since":7}}"#);
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":4,"ask":"status","with":{"log_since":7}}"#);
         let reply = Reply {
             v: VERSION,
             answer: Answer::Status(Status {

@@ -1,4 +1,5 @@
 mod access;
+mod agent;
 mod app;
 mod auth;
 mod brand;
@@ -58,6 +59,9 @@ enum Cmd {
     /// The panel itself, started by the service in the session on the physical screen
     #[command(hide = true)]
     Worker,
+    /// The part that works with the signed-in user's own rights, started by the worker
+    #[command(hide = true)]
+    Agent,
     /// Set the panel password
     Passwd {
         /// Read the password from standard input (for scripts)
@@ -278,6 +282,8 @@ async fn run(cli: Cli) -> Result<()> {
             power::keep_awake(true, false);
             app::serve_plain(None, true).await?;
         }
+        // Started by the worker, with the user's own token and two pipes for talking to it
+        Cmd::Agent => agent::run()?,
         Cmd::Passwd { stdin } => {
             let pw = if stdin {
                 let mut s = String::new();

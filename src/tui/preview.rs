@@ -23,6 +23,11 @@ fn entry(today: &str, clock: &str, msg: Msg, ok: bool) -> LogEntry {
     LogEntry { time: format!("{today} {clock}"), msg, ok }
 }
 
+/// The account in the made-up pictures: this computer's own, so the screens look like they will here.
+fn whoami() -> String {
+    std::env::var("USERNAME").unwrap_or_else(|_| "you".into())
+}
+
 fn passkey(name: &str, site: &str, used: Option<&str>) -> Passkey {
     Passkey {
         id: name.into(),
@@ -89,6 +94,7 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
             remote_url: urls.remote.clone(),
             remote,
             remote_why,
+            agent: Some(whoami()),
             log_count: 0,
             events: Vec::new(),
         }

@@ -518,6 +518,8 @@
   "ev.worker_started": "Panel running on the screen in use (session {session})",
   "ev.worker_gone": "The panel stopped on session {session}; starting it again",
   "ev.worker_failed": "The panel could not be started: {msg}",
+  "ev.agent_started": "Working as {user} as well now",
+  "ev.agent_gone": "Stopped working as {user}; starting that again",
   "ev.pipe_failed": "The control window cannot reach StrCu: {msg}",
   "ev.access_denied": "Access denied ({ip}): {reason}",
   "ev.signin_wrong_pw": "Sign-in: wrong password · {from}",
