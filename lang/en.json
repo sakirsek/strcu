@@ -606,7 +606,7 @@
   "err.no_icon": "No icon",
   "err.missing": "{name} is required",
   "err.no_app": "There is no app with this id",
-  "err.no_user": "Nobody is signed in at this computer",
+  "err.no_user": "Nobody is signed in to Windows. The screen, the keyboard and the mouse work; apps, files and the clipboard need somebody signed in.",
   "err.launch_failed": "Could not launch the app",
   "err.input_blocked": "Windows blocked the input ({sent}/{total} events sent); the foreground window may be running as administrator",
   "err.unknown_key": "Unknown key: {key}",

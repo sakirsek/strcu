@@ -265,6 +265,8 @@
   #text { height: 96px; min-height: 96px; }
   .typebtns { display: grid; grid-template-columns: 2fr 3fr; gap: 8px; }
   .clipbtns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  /* Nobody is signed in to Windows: what is left is the sentence saying so */
+  .nouser .fbtns, .nouser .fsel, .nouser .fchips, .nouser .fcrumb, .nouser .fget, .nouser .search { display: none; }
   /* ---- files ---- */
   .files { display: flex; flex-direction: column; gap: 10px; }
   .fbtns { display: grid; gap: 8px; }
@@ -1034,7 +1036,12 @@ async function api(path, body) {
   const r = await fetch(path, opt);
   const data = (r.headers.get('content-type') || '').includes('json') ? await r.json() : null;
   if (r.status === 401 && path !== '/api/login' && path !== '/api/passkey/login') { showLogin(); throw authError(); }
-  if (!r.ok) throw new Error(data && data.error ? tm(data.error) : 'HTTP ' + r.status);
+  if (!r.ok) {
+    const e = new Error(data && data.error ? tm(data.error) : 'HTTP ' + r.status);
+    // The code as well as the sentence: a tab that needs somebody signed in to Windows looks different
+    if (data && data.error) e.code = data.error.code;
+    throw e;
+  }
   return data;
 }
 
@@ -2147,7 +2154,8 @@ function renderWl() {
   $('#wlOpen').hidden = S.wl !== 'open';
   $('#wlApps').hidden = S.wl !== 'apps';
   if (S.wl === 'open') loadWindows().catch(e => toast(e.message, true));
-  else loadApps().catch(e => toast(e.message, true));
+  // loadApps says what went wrong where the list would be
+  else loadApps();
 }
 $$('[data-wl]').forEach(b => b.onclick = () => { S.wl = b.dataset.wl; store.set('wl', S.wl); renderWl(); });
 
@@ -2155,7 +2163,15 @@ $$('[data-wl]').forEach(b => b.onclick = () => { S.wl = b.dataset.wl; store.set(
 
 async function loadApps() {
   if (!S.apps) $('#appList').replaceChildren(h('li', { class: 'empty' }, t('common.loading')));
-  S.apps = await api('/api/apps');
+  try {
+    S.apps = await api('/api/apps');
+  } catch (e) {
+    // The Start menu is the signed-in person's own (agent.rs): with nobody there, there is no list to show
+    $('#wlApps').classList.toggle('nouser', e.code === 'err.no_user');
+    $('#appList').replaceChildren(h('li', { class: 'empty' }, e.message));
+    return;
+  }
+  $('#wlApps').classList.remove('nouser');
   renderApps();
 }
 
@@ -2583,12 +2599,16 @@ async function loadFiles() {
       return h('li', null, h('button', { type: 'button', 'data-name': e.name, 'aria-pressed': 'false', 'aria-label': t('files.select_label', { name: e.name }),
         onclick: () => { F.sel = F.sel && F.sel.name === e.name ? null : { at: here, name: e.name, size: e.size }; renderFileSel(); } }, ...inner));
     });
+    $('#p-files').classList.remove('nouser');
     if (!rows.length) rows.push(h('li', null, h('p', { class: 'fnote' }, t('files.empty'))));
     if (r.cut) rows.push(h('li', null, h('p', { class: 'fnote' }, t('files.cut', { n: r.entries.length }))));
     $('#fileList').replaceChildren(...rows);
   } catch (e) {
     if (seq !== F.seq) return;
     F.sel = null;
+    // These folders belong to whoever is signed in to Windows, so without them there is nothing to send
+    // either: the buttons and the folder chips go, and the sentence stands on its own
+    $('#p-files').classList.toggle('nouser', e.code === 'err.no_user');
     $('#fileList').replaceChildren(h('li', null, h('p', { class: 'fnote' }, e.message)));
   }
   renderFileSel();

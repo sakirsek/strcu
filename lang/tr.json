@@ -573,7 +573,7 @@
   "err.no_icon": "Simge yok",
   "err.missing": "{name} gerekli",
   "err.no_app": "Bu kimlikte bir uygulama yok",
-  "err.no_user": "Bu bilgisayarda oturum açmış kimse yok",
+  "err.no_user": "Windows'ta kimse oturum açmamış. Ekran, klavye ve fare çalışır; uygulamalar, dosyalar ve pano için oturum açılması gerekir.",
   "err.launch_failed": "Uygulama açılamadı",
   "err.input_blocked": "Windows girdiyi engelledi ({sent}/{total} olay gönderildi); öndeki pencere yönetici yetkisiyle çalışıyor olabilir",
   "err.unknown_key": "Bilinmeyen tuş: {key}",

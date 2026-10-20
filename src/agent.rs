@@ -908,6 +908,25 @@ mod tests {
     }
 
     #[test]
+    fn with_nobody_signed_in_every_job_says_so() {
+        // What the computer sees at the sign-in screen: no agent, and no account of its own to fall back on
+        let hand = Hand(Arc::new(Held { kept: Mutex::new(Kept::default()), mine: None }));
+        assert!(!hand.here());
+        assert_eq!(hand.user(), None);
+        let jobs = [
+            Job::Apps,
+            Job::Launch { id: "whatever".into() },
+            Job::Folder { root: files::Root::Documents, path: String::new() },
+            Job::Clip,
+            Job::Icon { path: "whatever".into(), size: 64 },
+        ];
+        for job in jobs {
+            let e = hand.ask(job).expect_err("nobody to do it as");
+            assert_eq!(i18n::from_error(&e), Msg::new("err.no_user"));
+        }
+    }
+
+    #[test]
     fn without_an_agent_the_work_is_done_here() {
         // Tests do not run as the computer, so the hand is the person running them
         let hand = Hand::new();
