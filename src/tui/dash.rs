@@ -60,7 +60,12 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
         span(Tone::Bad, format!("● {}", t.t("dash.stopped")))
     };
     // The version of the StrCu that answers, which after an update is not always this window's own
-    header(&mut f, "", vec![state, span(Tone::Dim, format!(" · v{}", v.state.version))]);
+    let mut top = vec![state, span(Tone::Dim, format!(" · v{}", v.state.version))];
+    // Whose apps, files and clipboard the phone reaches: the agent's account (agent.rs), or none yet
+    if let Some(user) = &v.state.agent {
+        top.push(span(Tone::Dim, format!(" · {}", t.render(&Msg::new("dash.as_user").with("user", user)))));
+    }
+    header(&mut f, "", top);
 
     f.text(Tone::Strong, t.t("dash.open_from_phone"));
     if let Some(reason) = &v.state.listen_error {

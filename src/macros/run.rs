@@ -19,7 +19,8 @@ use super::*;
 use crate::i18n::Arg;
 use crate::log::{ActionLog, local_time};
 use crate::sys::power::{self, SHUTDOWN_SECS};
-use crate::sys::{Rect, apps, input, screen, window};
+use crate::agent;
+use crate::sys::{Rect, input, screen, window};
 use crate::worker::{Ctx, Worker};
 
 /// How long a step looks for its window or element (the app may still be opening or drawing)
@@ -67,6 +68,8 @@ type Steps<'a> = Pin<Box<dyn Future<Output = Result<Flow, (usize, Halt)>> + Send
 
 pub struct Engine {
     worker: Worker,
+    /// Opening a program or a file is the user's own work, not the computer's (agent.rs)
+    agent: agent::Hand,
     log: Arc<ActionLog>,
     shutdown_at: Arc<Mutex<Option<Instant>>>,
     list: Mutex<Vec<Macro>>,
@@ -92,9 +95,15 @@ fn failed(e: anyhow::Error) -> Halt {
 }
 
 impl Engine {
-    pub fn new(worker: Worker, log: Arc<ActionLog>, shutdown_at: Arc<Mutex<Option<Instant>>>) -> Arc<Engine> {
+    pub fn new(
+        worker: Worker,
+        agent: agent::Hand,
+        log: Arc<ActionLog>,
+        shutdown_at: Arc<Mutex<Option<Instant>>>,
+    ) -> Arc<Engine> {
         Arc::new(Engine {
             worker,
+            agent,
             log,
             shutdown_at,
             list: Mutex::new(read_all()),
@@ -470,13 +479,17 @@ impl Engine {
                 Flow::Next
             }
             Act::Launch { id, .. } => {
-                let id = id.clone();
-                tokio::task::spawn_blocking(move || apps::launch(&id)).await.map_err(|e| failed(e.into()))?.map_err(failed)?;
+                let did = self.agent.job(agent::Job::Launch { id: id.clone() }).await.map_err(failed)?;
+                if !matches!(did, agent::Did::Launched { .. }) {
+                    return Err(failed(did.wrong()));
+                }
                 Flow::Next
             }
             Act::Open { path } => {
-                let p = path.clone();
-                tokio::task::spawn_blocking(move || apps::open(&p)).await.map_err(|e| failed(e.into()))?.map_err(failed)?;
+                let did = self.agent.job(agent::Job::Open { path: path.clone() }).await.map_err(failed)?;
+                if did != agent::Did::Done {
+                    return Err(failed(did.wrong()));
+                }
                 Flow::Next
             }
             Act::Window { app, op } => {

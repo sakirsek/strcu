@@ -47,6 +47,38 @@ pub fn en() -> &'static Lang {
     get("en").expect("lang/en.json is missing")
 }
 
+/// A key as a lasting string. The language files are built into StrCu and live as long as it runs, so their
+/// own keys are what a `Msg` can keep. It is for a key that arrived as text - from the agent, which cannot
+/// send a `Msg` of its own (agent.rs) - and None for a key no file has, so a made-up one never becomes text.
+pub fn code(key: &str) -> Option<&'static str> {
+    LANGS.iter().find_map(|l| l.dict.get_key_value(key)).map(|(k, _)| k.as_str())
+}
+
+/// The placeholder names in a key's English text ("path" for "Could not open {path}"), as lasting strings.
+/// An argument the text does not name changes nothing when it is shown, so this is also the list of what a
+/// key may be given.
+pub fn args_of(key: &str) -> Vec<&'static str> {
+    let texts: Vec<&'static str> = match en().lookup(key) {
+        Some(Value::String(s)) => vec![s.as_str()],
+        Some(Value::Object(forms)) => forms.values().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    };
+    let mut out = Vec::new();
+    for text in texts {
+        let mut rest = text;
+        while let Some(i) = rest.find('{') {
+            rest = &rest[i + 1..];
+            let Some(j) = rest.find('}') else { break };
+            let name = &rest[..j];
+            if !name.is_empty() && !out.contains(&name) {
+                out.push(name);
+            }
+            rest = &rest[j + 1..];
+        }
+    }
+    out
+}
+
 /// First supported language among language tags ("tr-TR", "en"), by full code or primary subtag.
 pub fn pick<'a>(tags: impl IntoIterator<Item = &'a str>) -> Option<&'static Lang> {
     tags.into_iter().find_map(|t| {
@@ -408,6 +440,19 @@ mod tests {
             serde_json::to_string(&nested).unwrap(),
             r#"{"code":"ev.titled","args":{"action":{"code":"ev.front"},"title":"Notepad"}}"#
         );
+    }
+
+    #[test]
+    fn a_key_that_came_back_as_text() {
+        assert_eq!(code("err.no_app"), Some("err.no_app"));
+        // Built, not written: a quoted key in our own source is one the language files must have
+        assert_eq!(code(&["err", "no", "such", "key"].join(".")), None);
+        assert_eq!(args_of("err.open_failed"), ["path"]);
+        assert_eq!(args_of("err.detail"), ["msg", "detail"]);
+        assert!(args_of("err.internal").is_empty());
+        // Both plural forms of a text are looked at
+        assert_eq!(args_of("ev.typed"), ["n"]);
+        assert!(args_of("no.such.key").is_empty());
     }
 
     #[test]

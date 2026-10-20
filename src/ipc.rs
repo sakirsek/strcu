@@ -460,6 +460,13 @@ fn allowed(pipe: HANDLE) -> Result<()> {
     Ok(())
 }
 
+/// Are we running as the computer rather than as a person? That is the service and its worker; StrCu
+/// started by hand is the person who started it, which changes what it can do and what it has to leave to
+/// the agent (agent.rs).
+pub fn as_system() -> bool {
+    own_sid().is_some_and(|sid| sid == SYSTEM)
+}
+
 /// Who may open the pipe: the system (the service, the worker, the agent), whoever is signed in at this
 /// computer, and the account StrCu runs under - the system again once it is a service, the user while it is
 /// being developed. `D:` on its own leaves everyone else out. No owner is named: it is whoever creates the

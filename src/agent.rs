@@ -11,12 +11,17 @@
 //! The worker starts it and talks to it over its stdin and stdout: two pipes made for it and handed over as
 //! handles, so there is no name for anything else to take or listen on. If it stops, the worker starts it
 //! again; while nobody is signed in there is none, and the panel says so instead (B7).
+//!
+//! StrCu started by a person is already that person: there is nothing an agent could do that it cannot do
+//! itself, and Windows would not give it anybody's token anyway. Then the jobs are simply done in place
+//! (`Hand::ask`), which is also how a development build behaves without a service behind it.
 
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::windows::io::FromRawHandle;
+use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use windows::Win32::Foundation::{
     CloseHandle, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation, WAIT_OBJECT_0,
@@ -33,6 +38,10 @@ use windows::Win32::System::Threading::{
 use windows::Win32::System::WindowsProgramming::GetUserNameW;
 use windows::core::{HSTRING, PWSTR};
 
+use crate::i18n::{self, Arg, Msg};
+use crate::ipc;
+use crate::sys::apps;
+
 /// The biggest job or answer. The lists and files the agent will carry later are the long ones.
 const MAX_FRAME: u32 = 8 << 20;
 
@@ -44,6 +53,12 @@ pub enum Job {
     /// Who the agent runs as. It is asked first thing, which is also how the worker knows the agent is up
     /// and talking, and it is the answer to "is this really the user and not the computer".
     Who,
+    /// The Start menu list, as the user has it: their installed programs and their apps from the Store.
+    Apps,
+    /// Opens one of them, by the id the list gave it.
+    Launch { id: String },
+    /// Opens a file, a folder or a web page the way a double-click would (what a macro step does).
+    Open { path: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -57,8 +72,92 @@ pub enum Did {
         /// screen, which is the filtered one unless they turned that off themselves.
         elevated: bool,
     },
-    /// The job could not be done. The text is for the log, not for the panel.
-    Failed { reason: String },
+    Apps {
+        apps: Vec<apps::App>,
+    },
+    /// What was opened: the panel writes its name in the log and a recording remembers it.
+    Launched {
+        app: apps::App,
+    },
+    /// Done, with nothing to say about it.
+    Done,
+    /// The job could not be done, in words the panel can show in its own language.
+    Failed {
+        why: Why,
+    },
+}
+
+impl Did {
+    /// The answer as an error, for a caller that asked for another one: a failure carries the reason the
+    /// agent gave, and any other answer can only be a mistake of ours.
+    pub fn wrong(self) -> anyhow::Error {
+        match self {
+            Did::Failed { why } => why.msg().into(),
+            other => anyhow!("the agent answered {other:?}"),
+        }
+    }
+}
+
+/// Why a job could not be done, in a form the panel reads in its own language. A `Msg` itself cannot travel,
+/// because its key is a `&'static str`, so the key goes as text and finds its way back to a `Msg` through
+/// the texts StrCu was built with (`i18n::code`). A key no language file has, or an argument its text does
+/// not name, is left out, and what is left to show is "something went wrong" with the key behind it.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct Why {
+    code: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    args: Vec<(String, Said)>,
+}
+
+/// An argument of such a text. A number stays a number, because that is what chooses between "1 file" and
+/// "5 files".
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[serde(untagged)]
+enum Said {
+    Num(i64),
+    Text(String),
+}
+
+impl Why {
+    /// What went wrong, from the error a job gave up with.
+    fn of(e: &anyhow::Error) -> Why {
+        Why::told(&i18n::from_error(e))
+    }
+
+    fn told(m: &Msg) -> Why {
+        let args = m
+            .args
+            .iter()
+            .map(|(name, value)| {
+                let said = match value {
+                    Arg::Num(n) => Said::Num(*n),
+                    Arg::Text(t) => Said::Text(t.clone()),
+                    // A text inside a text: in English, which is what such a detail is anyway
+                    Arg::Msg(inner) => Said::Text(inner.to_string()),
+                };
+                (name.to_string(), said)
+            })
+            .collect();
+        Why { code: m.code.to_string(), args }
+    }
+
+    /// The text to show, for whoever renders it in their own language.
+    pub fn msg(&self) -> Msg {
+        let Some(code) = i18n::code(&self.code) else {
+            return Msg::new("err.detail").with("msg", Msg::new("err.internal")).with("detail", self.code.clone());
+        };
+        let names = i18n::args_of(code);
+        let mut m = Msg::new(code);
+        for (name, said) in &self.args {
+            if let Some(&name) = names.iter().find(|n| **n == *name) {
+                m = m.with(name, match said {
+                    Said::Num(n) => Arg::Num(*n),
+                    Said::Text(t) => Arg::Text(t.clone()),
+                });
+            }
+        }
+        m
+    }
 }
 
 // ---------- the agent itself ----------
@@ -68,11 +167,12 @@ pub enum Did {
 pub fn run() -> Result<()> {
     let mut jobs = std::io::stdin().lock();
     let mut answers = std::io::stdout().lock();
+    let mut known = Vec::new();
     while let Some(frame) = read_frame(&mut jobs)? {
         let answer = match serde_json::from_slice::<Job>(&frame) {
-            Ok(job) => done(job),
+            Ok(job) => done(job, &mut known),
             // Only the worker is at the other end, so this is a mistake of ours
-            Err(e) => Did::Failed { reason: e.to_string() },
+            Err(e) => Did::Failed { why: Why::of(&anyhow::Error::new(e)) },
         };
         write_frame(&mut answers, &serde_json::to_vec(&answer)?)?;
         answers.flush()?;
@@ -80,13 +180,30 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-fn done(job: Job) -> Did {
-    match job {
-        Job::Who => match who() {
-            Ok(did) => did,
-            Err(e) => Did::Failed { reason: format!("{e:#}") },
-        },
+/// One job. `known` is the app list the last `Apps` job read, kept because launching looks an id up in it.
+fn done(job: Job, known: &mut Vec<apps::App>) -> Did {
+    let did = match job {
+        Job::Who => who(),
+        Job::Apps => apps::list().map(|list| {
+            *known = list.clone();
+            Did::Apps { apps: list }
+        }),
+        Job::Launch { id } => launch(&id, known).map(|app| Did::Launched { app }),
+        Job::Open { path } => apps::open(&path).map(|()| Did::Done),
+    };
+    did.unwrap_or_else(|e| Did::Failed { why: Why::of(&e) })
+}
+
+/// Opens an app from the list. The id has to be in it, so nothing but what the phone was shown can be
+/// started; the list from the last `Apps` job is used, and read again when the id is not in it - an app
+/// installed since then, or a launch from a macro that never asked for the list.
+fn launch(id: &str, known: &mut Vec<apps::App>) -> Result<apps::App> {
+    if !known.iter().any(|a| a.id == id) {
+        *known = apps::list()?;
     }
+    let app = known.iter().find(|a| a.id == id).cloned().context(Msg::new("err.no_app"))?;
+    apps::start(&app)?;
+    Ok(app)
 }
 
 fn who() -> Result<Did> {
@@ -224,7 +341,7 @@ impl Agent {
             // Asking who it is proves it is up, talking, and the user rather than the computer
             agent.user = match agent.ask(Job::Who)? {
                 Did::Who { user, .. } => user,
-                Did::Failed { reason } => bail!(reason),
+                other => return Err(other.wrong()),
             };
             Ok(agent)
         }
@@ -251,6 +368,103 @@ impl Drop for Agent {
             let _ = TerminateProcess(self.process, 0);
             let _ = CloseHandle(self.process);
         }
+    }
+}
+
+// ---------- the way to the agent ----------
+
+/// A hand on the agent: the worker keeps one running (app.rs `keep_agent`) and everything that belongs to
+/// the person signed in - their apps, their files, their clipboard - is given to it through a clone of this.
+///
+/// Where there is no agent the hand still answers. A StrCu started by a person does the job itself, since it
+/// is that person already; as the computer with nobody signed in there is nobody to do it as, and every job
+/// says so (`err.no_user`), which is what the panel shows before sign-in (B7).
+#[derive(Clone)]
+pub struct Hand(Arc<Held>);
+
+struct Held {
+    kept: Mutex<Kept>,
+    /// The account StrCu itself runs as, when that is a person rather than the computer
+    mine: Option<String>,
+}
+
+#[derive(Default)]
+struct Kept {
+    agent: Option<Agent>,
+    /// The app list, for the jobs this StrCu does itself
+    known: Vec<apps::App>,
+}
+
+impl Default for Hand {
+    fn default() -> Self {
+        Hand::new()
+    }
+}
+
+impl Hand {
+    pub fn new() -> Hand {
+        let mine = match ipc::as_system() {
+            true => None,
+            false => match who() {
+                Ok(Did::Who { user, .. }) => Some(user),
+                _ => None,
+            },
+        };
+        Hand(Arc::new(Held { kept: Mutex::new(Kept::default()), mine }))
+    }
+
+    /// Who the user's work is done as: the agent's account, or ours when StrCu does it itself. None while
+    /// nobody is signed in at the screen.
+    pub fn user(&self) -> Option<String> {
+        let kept = self.0.kept.lock().unwrap();
+        kept.agent.as_ref().map(|a| a.user.clone()).or_else(|| self.0.mine.clone())
+    }
+
+    /// Is the work done here? Then there is no agent to start or to miss.
+    pub fn here(&self) -> bool {
+        self.0.mine.is_some()
+    }
+
+    pub fn has_agent(&self) -> bool {
+        self.0.kept.lock().unwrap().agent.is_some()
+    }
+
+    /// Takes out an agent that has stopped so another can take its place; the account is for the log.
+    pub fn take_stopped(&self) -> Option<String> {
+        let mut kept = self.0.kept.lock().unwrap();
+        kept.agent.take_if(|a| a.has_stopped()).map(|a| a.user.clone())
+    }
+
+    /// The agent the worker has just started.
+    pub fn put(&self, agent: Agent) {
+        self.0.kept.lock().unwrap().agent = Some(agent);
+    }
+
+    /// One job, one answer, one at a time: there is a single agent at the other end of a single pipe. An
+    /// agent that cannot be talked to any more is dropped here, and the worker starts another one within a
+    /// couple of seconds.
+    pub fn ask(&self, job: Job) -> Result<Did> {
+        let mut kept = self.0.kept.lock().unwrap();
+        if let Some(agent) = kept.agent.as_mut() {
+            return match agent.ask(job) {
+                Ok(did) => Ok(did),
+                Err(e) => {
+                    kept.agent = None;
+                    Err(e)
+                }
+            };
+        }
+        if self.0.mine.is_none() {
+            bail!(Msg::new("err.no_user"));
+        }
+        Ok(done(job, &mut kept.known))
+    }
+
+    /// The same, off the threads that serve the panel: a job can take a moment (reading the app list takes
+    /// about a second).
+    pub async fn job(&self, job: Job) -> Result<Did> {
+        let hand = self.clone();
+        tokio::task::spawn_blocking(move || hand.ask(job)).await?
     }
 }
 
@@ -329,5 +543,52 @@ mod tests {
         let Did::Who { user, session, .. } = who().unwrap() else { panic!("another answer") };
         assert!(!user.is_empty());
         assert_ne!(session, u32::MAX);
+    }
+
+    #[test]
+    fn a_failure_keeps_its_text_across_the_pipe() {
+        let said = Why::told(&Msg::new("err.open_failed").with("path", r"C:\Users\me\rapor.xlsx"));
+        let read: Why = serde_json::from_str(&serde_json::to_string(&said).unwrap()).unwrap();
+        assert_eq!(read, said);
+        assert_eq!(i18n::en().render(&read.msg()), r"Could not open C:\Users\me\rapor.xlsx");
+        // A number stays a number, so the plural forms still work
+        let counted = Why::told(&Msg::new("ev.typed").with("n", 1));
+        assert_eq!(i18n::en().render(&counted.msg()), "Typed 1 character");
+        // A key this StrCu does not have cannot become a text of its own
+        // Built, not written: a quoted key in our own source is a key the language files must have
+        let made_up = Why { code: ["err", "from_the_future"].join("."), args: Vec::new() };
+        assert_eq!(i18n::en().render(&made_up.msg()), "Something went wrong: err.from_the_future");
+        // An error without a text of its own arrives as the detail behind "something went wrong"
+        let why = Why::of(&anyhow!("boom"));
+        assert_eq!(i18n::en().render(&why.msg()), "Something went wrong: boom");
+    }
+
+    #[test]
+    fn the_jobs_and_answers_as_they_travel() {
+        let launch = Job::Launch { id: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".to_string() };
+        let text = serde_json::to_string(&launch).unwrap();
+        assert_eq!(text, r#"{"job":"launch","with":{"id":"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"}}"#);
+        assert_eq!(serde_json::from_str::<Job>(&text).unwrap(), launch);
+        assert_eq!(serde_json::to_string(&Job::Apps).unwrap(), r#"{"job":"apps"}"#);
+        let did = Did::Launched {
+            app: apps::App { name: "Hesap Makinesi".to_string(), id: "Calc!App".to_string(), store: true },
+        };
+        let text = serde_json::to_string(&did).unwrap();
+        assert_eq!(serde_json::from_str::<Did>(&text).unwrap(), did);
+    }
+
+    #[test]
+    fn without_an_agent_the_work_is_done_here() {
+        // Tests do not run as the computer, so the hand is the person running them
+        let hand = Hand::new();
+        assert!(hand.here());
+        assert!(!hand.has_agent());
+        let Did::Who { user, .. } = hand.ask(Job::Who).unwrap() else { panic!("another answer") };
+        assert_eq!(Some(user), hand.user());
+        // An id nothing has is turned down with a text, not with a program opening
+        let Did::Failed { why } = hand.ask(Job::Launch { id: "strcu.test.no.such.app".to_string() }).unwrap() else {
+            panic!("another answer")
+        };
+        assert_eq!(why.msg(), Msg::new("err.no_app"));
     }
 }

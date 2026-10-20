@@ -53,8 +53,6 @@ pub struct Urls {
 
 pub struct App {
     pub panel: Panel,
-    /// The part that works with the signed-in user's own rights (agent.rs), while there is a user
-    agent: Option<agent::Agent>,
     /// What the control window has started on the way to remote access
     setup: Setup,
     listener: Option<Listener>,
@@ -101,7 +99,6 @@ impl App {
     pub async fn start(bind: Option<SocketAddr>, tunnel: bool) -> Result<App> {
         let mut app = App {
             panel: Panel::new()?,
-            agent: None,
             setup: Setup::default(),
             listener: None,
             listen_error: None,
@@ -198,17 +195,22 @@ impl App {
     /// Keeps the agent running while somebody is signed in at the screen. It is looked at every couple of
     /// seconds, because a user may sign in long after StrCu started - it serves the sign-in screen too - and
     /// the agent comes and goes with them. While there is nobody there is nothing to start, which is not an
-    /// error and says itself in the state the window reads.
+    /// error and says itself in the state the window reads. A StrCu started by a person needs none at all:
+    /// it does that work itself.
     pub fn keep_agent(&mut self) {
-        if let Some(gone) = self.agent.take_if(|a| a.has_stopped()) {
-            self.panel.log().add(Msg::new("ev.agent_gone").with("user", gone.user.clone()), false);
+        let hand = self.panel.agent();
+        if hand.here() {
+            return;
         }
-        if self.agent.is_some() {
+        if let Some(gone) = hand.take_stopped() {
+            self.panel.log().add(Msg::new("ev.agent_gone").with("user", gone), false);
+        }
+        if hand.has_agent() {
             return;
         }
         if let Ok(agent) = agent::Agent::start(crate::svc::console_session()) {
             self.panel.log().add(Msg::new("ev.agent_started").with("user", agent.user.clone()), true);
-            self.agent = Some(agent);
+            hand.put(agent);
         }
     }
 
@@ -438,7 +440,7 @@ async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> (ipc::An
                 remote_url: urls.remote,
                 remote: state,
                 remote_why: why,
-                agent: app.agent.as_ref().map(|a| a.user.clone()),
+                agent: app.panel.agent().user(),
                 log_count: count,
                 events: events(&entries, lang),
             })

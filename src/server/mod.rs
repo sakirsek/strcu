@@ -29,6 +29,7 @@ use axum::{Json, Router};
 use serde_json::json;
 
 use crate::access::{AccessConfig, Verifier};
+use crate::agent;
 use crate::auth::{self, Auth};
 use crate::files;
 use crate::i18n::{self, Msg};
@@ -53,6 +54,8 @@ type PrivateCache = Arc<tokio::sync::Mutex<Option<(Instant, Arc<Vec<Ipv4Addr>>)>
 #[derive(Clone)]
 struct AppState {
     worker: Worker,
+    /// The part that does what belongs to the person signed in (agent.rs): their apps, their files
+    agent: agent::Hand,
     auth: Arc<Auth>,
     log: Arc<ActionLog>,
     /// Changes when remote access is set up or removed while running
@@ -132,10 +135,12 @@ impl Panel {
     pub fn new() -> Result<Panel> {
         let cfg = crate::config::load();
         let (worker, log, shutdown_at) = (Worker::spawn(), Arc::new(ActionLog::new()), Arc::new(Mutex::new(None)));
-        let macros = macros::Engine::new(worker.clone(), log.clone(), shutdown_at.clone());
+        let agent = agent::Hand::new();
+        let macros = macros::Engine::new(worker.clone(), agent.clone(), log.clone(), shutdown_at.clone());
         macros.start_scheduler();
         let state = AppState {
             worker,
+            agent,
             auth: Arc::new(Auth::from_config()?),
             log,
             access: Arc::new(RwLock::new(cfg.access.map(|a| Arc::new(Verifier::new(a))))),
@@ -155,6 +160,11 @@ impl Panel {
             usage: Arc::default(),
         };
         Ok(Panel { state })
+    }
+
+    /// The way to the part that works as the signed-in user; the worker keeps it filled (app.rs).
+    pub fn agent(&self) -> agent::Hand {
+        self.state.agent.clone()
     }
 
     /// Where the tunnel watcher records cloudflared's process id.

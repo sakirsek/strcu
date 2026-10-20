@@ -7,7 +7,7 @@
 use std::process::Command;
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize, IBindCtx};
 use windows::Win32::UI::Shell::{
     BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, KF_FLAG_DEFAULT, SHGetKnownFolderItem, SIGDN,
@@ -18,7 +18,8 @@ use windows::core::{HSTRING, PCWSTR, w};
 
 use crate::i18n::Msg;
 
-#[derive(Debug, Clone, Serialize)]
+/// Read back as well, because the list comes from the agent (agent.rs).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct App {
     pub name: String,
     /// AppUserModelID or program path; used when launching
