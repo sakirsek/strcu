@@ -214,7 +214,7 @@
   "files.get_label": "Download {name}",
   "files.select_label": "Select {name}",
   "more.local_who": "Connected from this computer",
-  "more.local": "Local connection, no sign-in needed",
+  "more.local": "Signed in from this computer",
   "more.left_hm": "{h} h {m} min left",
   "more.left_m": "{m} min left",
   "more.logout": "Sign out",

@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::via::{Via, host_name};
-use super::{AccessUser, ApiError, ApiResult, AppState, local_needs_signin};
+use super::{AccessUser, ApiError, ApiResult, AppState};
 use crate::auth::{self, Check};
 use crate::i18n::{self, Msg};
 use crate::log::local_time;
@@ -273,8 +273,7 @@ pub(super) async fn me(State(st): State<AppState>, req: Request) -> Json<Value> 
         Via::Home(ip) => Some(ip.to_string()),
         _ => None,
     };
-    let signin = via != Via::Local || local_needs_signin();
-    Json(json!({ "via": via.name(), "ip": ip, "signin": signin, "email": email, "passkey": passkey }))
+    Json(json!({ "via": via.name(), "ip": ip, "email": email, "passkey": passkey }))
 }
 
 fn mask_email(e: &str) -> String {

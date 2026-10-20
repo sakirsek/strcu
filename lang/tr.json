@@ -208,7 +208,7 @@
   "files.get_label": "{name} dosyasını indir",
   "files.select_label": "{name} dosyasını seç",
   "more.local_who": "Bu bilgisayardan bağlısın",
-  "more.local": "Yerel bağlantı, giriş gerekmez",
+  "more.local": "Bu bilgisayardan giriş yapıldı",
   "more.left_hm": "{h} sa {m} dk kaldı",
   "more.left_m": "{m} dk kaldı",
   "more.logout": "Çıkış yap",

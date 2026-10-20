@@ -2234,8 +2234,7 @@ function renderSession() {
   else if (me.via === 'home') { who = t('more.home_who'); line = t('more.home', { ip: me.ip }); }
   else if (email) { who = email; line = 'Cloudflare Access'; }
   $('#sessWho').textContent = who;
-  // Nothing to sign out of on this computer
-  $('#logoutBtn').hidden = left == null && !dev && me.signin === false;
+  $('#logoutBtn').hidden = left == null && !dev;
   $('#logoutLbl').textContent = dev ? t('more.unpair') : t('more.logout');
   if (left != null && !dev) {
     const hh = Math.floor(left / 3600), mm = Math.floor(left % 3600 / 60);

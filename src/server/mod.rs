@@ -357,11 +357,9 @@ async fn require_access(State(st): State<AppState>, ConnectInfo(c): ConnectInfo<
 }
 
 impl AppState {
-    /// Whose meter a request counts on: this computer, a sign-in or a paired phone; None before sign-in.
-    fn usage_key(&self, via: &Via, h: &HeaderMap) -> Option<String> {
-        if *via == Via::Local && !local_needs_signin() {
-            return Some("local".into());
-        }
+    /// Whose meter a request counts on: a sign-in or a paired phone; None before sign-in. A browser on this
+    /// computer has one of those like any other, so it has a meter like any other.
+    fn usage_key(&self, _via: &Via, h: &HeaderMap) -> Option<String> {
         let cookies = h.get(header::COOKIE).and_then(|v| v.to_str().ok())?;
         if let Some(t) = auth::token_from_cookie(cookies).filter(|t| self.auth.check(t)) {
             return Some(format!("s:{t}"));
@@ -408,18 +406,13 @@ async fn kick_stream(State(st): State<AppState>, req: Request, next: Next) -> Re
     r
 }
 
-/// Tests in debug builds can ask for sign-in from this computer too, to go through the sign-in screens.
-fn local_needs_signin() -> bool {
-    cfg!(debug_assertions) && std::env::var_os("STRCU_DEV_LOCAL_SIGNIN").is_some()
-}
-
-/// A session, a paired phone's cookie, or this computer. A paired phone's cookie is sent again now and then,
-/// so its 30 days start over while it is used.
+/// A session or a paired phone's cookie - from this computer as well as from anywhere else. A browser here
+/// used to get in without either, which StrCu 2.0 cannot allow: the panel types on the lock screen and into
+/// windows running as administrator, and a program running as the user would otherwise reach all of that
+/// just by opening a web page. A paired phone's cookie is sent again now and then, so its 30 days start over
+/// while it is used.
 async fn require_session(State(st): State<AppState>, req: Request, next: Next) -> Response {
     let via = req.extensions().get::<Via>().cloned().unwrap_or(Via::Remote);
-    if via == Via::Local && !local_needs_signin() {
-        return next.run(req).await;
-    }
     let cookies = req.headers().get(header::COOKIE).and_then(|v| v.to_str().ok()).unwrap_or_default().to_string();
     if auth::token_from_cookie(&cookies).is_some_and(|t| st.auth.check(t)) {
         return next.run(req).await;

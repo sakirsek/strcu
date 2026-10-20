@@ -45,7 +45,10 @@ impl Connected<axum::serve::IncomingStream<'_, tokio::net::TcpListener>> for Con
 /// Where a request comes from; that decides what it needs to get in.
 #[derive(Clone, Debug, PartialEq)]
 pub(super) enum Via {
-    /// A program in this Windows session on this computer: no sign-in needed
+    /// A program in this Windows session on this computer. It signs in like everything else (the panel can
+    /// do what the computer can do, which is more than the person running that program may); what it still
+    /// decides is the name in the log, the brake wrong passwords count against, and that a fingerprint is
+    /// offered on `localhost`.
     Local,
     /// The home network: sign-in needed
     Home(IpAddr),
