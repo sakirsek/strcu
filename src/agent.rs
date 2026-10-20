@@ -18,13 +18,15 @@
 
 use std::fs::File;
 use std::io::{Read, Write};
-use std::os::windows::io::FromRawHandle;
+use std::os::windows::io::{FromRawHandle, IntoRawHandle};
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use windows::Win32::Foundation::{
-    CloseHandle, GENERIC_WRITE, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation, WAIT_OBJECT_0,
+    CloseHandle, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, DuplicateHandle, GENERIC_WRITE, HANDLE,
+    HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation, WAIT_OBJECT_0,
 };
 use windows::Win32::Security::{GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_WRITE, OPEN_EXISTING};
@@ -38,6 +40,7 @@ use windows::Win32::System::Threading::{
 use windows::Win32::System::WindowsProgramming::GetUserNameW;
 use windows::core::{HSTRING, PWSTR};
 
+use crate::files;
 use crate::i18n::{self, Arg, Msg};
 use crate::ipc;
 use crate::sys::apps;
@@ -59,6 +62,15 @@ pub enum Job {
     Launch { id: String },
     /// Opens a file, a folder or a web page the way a double-click would (what a macro step does).
     Open { path: String },
+    /// What a folder under one of the user's own folders holds (files.rs): their Desktop, Documents,
+    /// Downloads, Pictures or Videos, which are theirs and not the computer's.
+    Folder { root: files::Root, path: String },
+    /// Opens a file in one of those to send to the phone.
+    Take { root: files::Root, path: String },
+    /// What is selected in the File Explorer window in front.
+    Selected,
+    /// Opens the n-th of those, which must still be called `name`.
+    TakeSelected { at: usize, name: String },
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
@@ -78,6 +90,21 @@ pub enum Did {
     /// What was opened: the panel writes its name in the log and a recording remembers it.
     Launched {
         app: apps::App,
+    },
+    Folder {
+        entries: Vec<files::Entry>,
+        /// There was more than a listing holds
+        cut: bool,
+    },
+    /// A file that is open for reading. `file` is a handle in whoever answered: `Agent::ask` brings it over,
+    /// so what the caller is given is a file of its own, to be taken with `file_of` or closed.
+    Opened {
+        file: isize,
+        name: String,
+        size: u64,
+    },
+    Selected {
+        items: Vec<files::Picked>,
     },
     /// Done, with nothing to say about it.
     Done,
@@ -190,8 +217,26 @@ fn done(job: Job, known: &mut Vec<apps::App>) -> Did {
         }),
         Job::Launch { id } => launch(&id, known).map(|app| Did::Launched { app }),
         Job::Open { path } => apps::open(&path).map(|()| Did::Done),
+        Job::Folder { root, path } => files::resolve(root, &path)
+            .and_then(|dir| files::list(&dir))
+            .map(|(entries, cut)| Did::Folder { entries, cut }),
+        Job::Take { root, path } => files::resolve(root, &path).and_then(|p| opened(&p)),
+        Job::Selected => files::selected().map(|items| Did::Selected { items }),
+        Job::TakeSelected { at, name } => files::picked(at, &name).and_then(|p| opened(&p)),
     };
     did.unwrap_or_else(|e| Did::Failed { why: Why::of(&e) })
+}
+
+/// Opens a file and hands it over as it is. The handle is left open on purpose: it belongs to whoever asked
+/// for it from here on (`Agent::ask` brings it over, `file_of` turns it back into a file).
+fn opened(path: &Path) -> Result<Did> {
+    let (file, name, size) = files::open_read(path)?;
+    Ok(Did::Opened { file: file.into_raw_handle() as isize, name, size })
+}
+
+/// The file behind a handle an answer carried, now that it is ours.
+pub fn file_of(handle: isize) -> File {
+    unsafe { File::from_raw_handle(handle as *mut _) }
 }
 
 /// Opens an app from the list. The id has to be in it, so nothing but what the phone was shown can be
@@ -357,7 +402,70 @@ impl Agent {
         write_frame(&mut self.jobs, &serde_json::to_vec(&job)?)?;
         self.jobs.flush()?;
         let Some(frame) = read_frame(&mut self.answers)? else { bail!("the agent stopped without answering") };
-        Ok(serde_json::from_slice(&frame)?)
+        self.adopt(serde_json::from_slice(&frame)?)
+    }
+
+    /// A file in an answer is a handle in the agent, which means nothing here. It is duplicated into this
+    /// process and closed there (`DUPLICATE_CLOSE_SOURCE`), so the caller is handed a file of its own and
+    /// nothing is left open on the other side. Everything else about the answer is passed through.
+    fn adopt(&self, did: Did) -> Result<Did> {
+        match did {
+            Did::Opened { file, name, size } => {
+                let mut ours = HANDLE::default();
+                unsafe {
+                    DuplicateHandle(
+                        self.process,
+                        HANDLE(file as *mut _),
+                        GetCurrentProcess(),
+                        &mut ours,
+                        0,
+                        false,
+                        DUPLICATE_CLOSE_SOURCE | DUPLICATE_SAME_ACCESS,
+                    )
+                }
+                .context("taking over the file the agent opened")?;
+                Ok(Did::Opened { file: ours.0 as isize, name, size })
+            }
+            other => Ok(other),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Agent {
+    /// An agent started as ourselves, for the tests. It is the same program answering the same jobs over the
+    /// same two pipes; what it does not do is take another account's token, which only the computer may ask
+    /// for. That is the one part of `start` the tests cannot reach, and B11 tries it on a real service.
+    fn as_ourselves() -> Option<Agent> {
+        use std::os::windows::io::AsRawHandle;
+        use std::process::{Command, Stdio};
+
+        // The test runs from target/<profile>/deps; the program itself is one folder up
+        let exe = std::env::current_exe().ok()?.parent()?.parent()?.join("strcu.exe");
+        if !exe.exists() {
+            eprintln!("{} is not built: skipping", exe.display());
+            return None;
+        }
+        let mut child = Command::new(exe)
+            .arg("agent")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let (jobs, answers) = (child.stdin.take()?, child.stdout.take()?);
+        let process = HANDLE(child.as_raw_handle());
+        // The agent owns the process handle from here on, and closes it when it is dropped
+        std::mem::forget(child);
+        let mut agent = Agent {
+            process,
+            jobs: unsafe { File::from_raw_handle(jobs.into_raw_handle()) },
+            answers: unsafe { File::from_raw_handle(answers.into_raw_handle()) },
+            user: String::new(),
+        };
+        let Did::Who { user, .. } = agent.ask(Job::Who).ok()? else { return None };
+        agent.user = user;
+        Some(agent)
     }
 }
 
@@ -575,6 +683,61 @@ mod tests {
         };
         let text = serde_json::to_string(&did).unwrap();
         assert_eq!(serde_json::from_str::<Did>(&text).unwrap(), did);
+    }
+
+    #[test]
+    fn a_file_of_our_own_travels_as_an_open_file() {
+        use std::io::Read as _;
+
+        let hand = Hand::new();
+        let name = format!("strcu-test-{}.txt", std::process::id());
+        let dir = files::root_dir(files::Root::Downloads).unwrap();
+        std::fs::write(dir.join(&name), b"merhaba").unwrap();
+        let Did::Folder { entries, cut } = hand.ask(Job::Folder { root: files::Root::Downloads, path: String::new() }).unwrap()
+        else {
+            panic!("another answer")
+        };
+        assert!(!cut);
+        assert!(entries.iter().any(|e| e.name == name && !e.dir && e.size == 7), "{name} is not in the listing");
+        let taken = hand.ask(Job::Take { root: files::Root::Downloads, path: name.clone() }).unwrap();
+        let Did::Opened { file, name: told, size } = taken else { panic!("another answer") };
+        assert_eq!((told, size), (name.clone(), 7));
+        let mut read = String::new();
+        file_of(file).read_to_string(&mut read).unwrap();
+        assert_eq!(read, "merhaba");
+        std::fs::remove_file(dir.join(&name)).unwrap();
+        // A path that leads out of the folder is refused before anything is opened
+        let Did::Failed { why } = hand.ask(Job::Take { root: files::Root::Downloads, path: "../x".into() }).unwrap()
+        else {
+            panic!("another answer")
+        };
+        assert!(["err.file_path", "err.file_none"].contains(&why.msg().code));
+    }
+
+    #[test]
+    fn an_agent_of_its_own_answers_over_the_two_pipes() {
+        use std::io::Read as _;
+
+        let Some(mut agent) = Agent::as_ourselves() else { return };
+        assert!(!agent.user.is_empty());
+        assert!(!agent.has_stopped());
+        // A file of ours, opened there and read here: the handle is brought over by `adopt`
+        let name = format!("strcu-agent-test-{}.txt", std::process::id());
+        let dir = files::root_dir(files::Root::Downloads).unwrap();
+        std::fs::write(dir.join(&name), b"iki ucundan").unwrap();
+        let taken = agent.ask(Job::Take { root: files::Root::Downloads, path: name.clone() });
+        std::fs::remove_file(dir.join(&name)).unwrap();
+        let Did::Opened { file, name: told, size } = taken.unwrap() else { panic!("another answer") };
+        assert_eq!((told, size), (name, 11));
+        let mut read = String::new();
+        file_of(file).read_to_string(&mut read).unwrap();
+        assert_eq!(read, "iki ucundan");
+        // Many jobs on one pair of pipes, and a failure comes back as a text
+        let Did::Failed { why } = agent.ask(Job::Launch { id: "strcu.test.no.such.app".into() }).unwrap() else {
+            panic!("another answer")
+        };
+        assert_eq!(why.msg(), Msg::new("err.no_app"));
+        drop(agent);
     }
 
     #[test]

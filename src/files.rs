@@ -23,6 +23,7 @@ use windows::Win32::UI::Shell::{
 };
 
 use crate::i18n::Msg;
+use crate::sys::explorer;
 
 /// Size of the pieces a file from the phone comes in.
 pub const CHUNK: usize = 4 * 1024 * 1024;
@@ -31,7 +32,8 @@ const MAX_ENTRIES: usize = 1000;
 /// A file from the phone that stops arriving for this long is given up and its piece deleted.
 const STALE: Duration = Duration::from_secs(3600);
 
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+/// Written as well as read, because the panel asks the agent for a folder by it (agent.rs).
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Root {
     Desktop,
@@ -75,7 +77,8 @@ pub fn resolve(root: Root, rel: &str) -> Result<PathBuf> {
     Ok(real)
 }
 
-#[derive(Serialize, Debug)]
+/// Read back as well, because a listing comes from the agent.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
 pub struct Entry {
     pub name: String,
     pub dir: bool,
@@ -108,6 +111,51 @@ pub fn list(dir: &Path) -> Result<(Vec<Entry>, bool)> {
     let cut = out.len() > MAX_ENTRIES;
     out.truncate(MAX_ENTRIES);
     Ok((out, cut))
+}
+
+/// A file selected in File Explorer, as the phone is shown it.
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct Picked {
+    /// Which of the selected files this is, for asking for it afterwards
+    pub i: usize,
+    pub name: String,
+    pub dir: bool,
+    pub size: u64,
+}
+
+/// What is selected in the File Explorer window in front. Only the user's own session has an Explorer, so
+/// this is work for the agent (agent.rs).
+pub fn selected() -> Result<Vec<Picked>> {
+    Ok(explorer::selected()?
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let m = std::fs::metadata(p).ok();
+            let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            Picked { i, name, dir: m.as_ref().is_none_or(|m| m.is_dir()), size: m.map_or(0, |m| m.len()) }
+        })
+        .collect())
+}
+
+/// The n-th selected file, which must still be called `name` - the selection may have changed while the
+/// phone was looking at it.
+pub fn picked(at: usize, name: &str) -> Result<PathBuf> {
+    let sel = explorer::selected()?;
+    let same = sel.get(at).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy() == name));
+    same.cloned().ok_or_else(|| Msg::new("err.file_changed").into())
+}
+
+/// Opens a file to send to the phone, with the rights of whoever opens it: in the agent that is the user, so
+/// a file they may not read never opens. The open file itself is what goes back (agent.rs `Did::Opened`),
+/// not the path, so nothing is opened twice and nothing is opened as the computer.
+pub fn open_read(path: &Path) -> Result<(std::fs::File, String, u64)> {
+    let meta = std::fs::metadata(path).map_err(|_| Msg::new("err.file_none"))?;
+    if !meta.is_file() {
+        bail!(Msg::new("files.only_files"));
+    }
+    let file = std::fs::File::open(path).map_err(|_| Msg::new("err.file_none"))?;
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    Ok((file, name, meta.len()))
 }
 
 /// A name the phone gave, made safe for a file in Downloads: no folders, no characters Windows refuses, not a
