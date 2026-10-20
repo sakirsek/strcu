@@ -64,7 +64,8 @@ use crate::passkey::Passkey;
 ///
 /// 2: `Stop` lost its `until_restart`. Stopping StrCu always means until the computer starts again - the
 /// service is the one that stops, and Windows starts it at the next boot.
-pub const VERSION: u32 = 2;
+/// 3: `Tunnel` for setting remote access up, and two more fields in `Settings` for the screen that shows it.
+pub const VERSION: u32 = 3;
 
 /// The system account, which is what StrCu runs as once it is a service.
 const SYSTEM: &str = "S-1-5-18";
@@ -102,6 +103,8 @@ pub enum Ask {
     Pair(Pair),
     /// Stop StrCu until the computer starts again.
     Stop,
+    /// Remote access: the steps that need StrCu itself (see [`Tunnel`]).
+    Tunnel(Tunnel),
 }
 
 impl Ask {
@@ -109,7 +112,7 @@ impl Ask {
     pub fn needs_token(&self) -> bool {
         match self {
             Ask::Status { .. } | Ask::Settings | Ask::SignIn { .. } => false,
-            Ask::Change(_) | Ask::Pair(_) | Ask::Stop => true,
+            Ask::Change(_) | Ask::Pair(_) | Ask::Stop | Ask::Tunnel(_) => true,
         }
     }
 }
@@ -129,6 +132,55 @@ pub enum Change {
     Port(u16),
     /// A phone paired with a code, or a registered fingerprint, by its id.
     Forget { id: String },
+}
+
+/// Setting remote access up walks through the Cloudflare dashboard, and the window leads the way: it asks
+/// for the token, reads the sign-in redirect of the address and opens the dashboard in a browser itself.
+/// What it cannot do is here, because it needs the settings folder or the rights of the computer: downloading
+/// cloudflared, running it, and keeping what was found.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+#[serde(tag = "tunnel", content = "with", rename_all = "snake_case")]
+pub enum Tunnel {
+    /// Start downloading cloudflared; nothing happens when the right version is already there.
+    Install,
+    /// Start the pasted token's tunnel to see whether it connects. The saved one closes first: they share
+    /// the port cloudflared reports its state on.
+    Try { token: String },
+    /// Keep what the setup found, and open the real tunnel with it. The token is None when the saved one
+    /// stays.
+    Save { token: Option<String>, access: crate::access::AccessConfig },
+    /// Forget the token and the Access settings.
+    Remove,
+    /// Where the above has got to.
+    State,
+    /// The setup was left: close the trial and put the saved tunnel back.
+    Cancel,
+}
+
+/// What came of the asks above. One shape for all of them, because the window draws one screen from it.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Default)]
+pub struct TunnelState {
+    /// cloudflared's version here, None when it is not installed yet
+    pub version: Option<String>,
+    /// While it is being downloaded
+    pub downloading: Option<Downloading>,
+    /// A tunnel token is saved already, so the setup may keep it instead of asking for a new one
+    pub has_token: bool,
+    /// The pasted token's tunnel: None not started, Some(false) running without a connection yet,
+    /// Some(true) connected to Cloudflare
+    pub trial: Option<bool>,
+    /// What went wrong last, ready to show
+    pub failed: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, PartialEq)]
+pub struct Downloading {
+    pub have: u64,
+    pub total: u64,
+    /// Bytes a second
+    pub speed: f64,
+    /// A step worth its own line: resuming, retrying, done
+    pub note: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
@@ -158,6 +210,7 @@ pub enum Answer {
     /// The password was right: a session for the asks that change something.
     SignedIn { token: String },
     Pair(PairState),
+    Tunnel(TunnelState),
     /// Done, nothing to report.
     Done,
     /// This ask changes something, and the window has not signed in or its session has run out.
@@ -240,6 +293,10 @@ pub struct Settings {
     pub port: u16,
     /// The address remote access answers on.
     pub remote_host: Option<String>,
+    /// The one email Cloudflare Access lets in.
+    pub remote_email: Option<String>,
+    /// cloudflared's version here, None when it is not installed.
+    pub cloudflared: Option<String>,
     /// A password is set, so the window must sign in before it changes anything.
     pub password_set: bool,
     pub phones: Vec<Phone>,
@@ -702,7 +759,7 @@ mod tests {
         // An ask that only reads carries no token at all. The shape is pinned on purpose: it is what
         // `VERSION` promises, and a change to it that forgets to raise the version breaks here.
         let plain = Request { v: VERSION, token: None, ask: Ask::Status { log_since: 7 } };
-        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":2,"ask":"status","with":{"log_since":7}}"#);
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":3,"ask":"status","with":{"log_since":7}}"#);
         let reply = Reply {
             v: VERSION,
             answer: Answer::Status(Status {

@@ -23,7 +23,7 @@ use windows::Win32::Security::{
 };
 use windows::Win32::System::RemoteDesktop::WTSGetActiveConsoleSessionId;
 use windows::Win32::System::Threading::{
-    CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken,
+    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, GetCurrentProcess, OpenProcessToken,
     PROCESS_INFORMATION, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
 };
 use windows::core::PWSTR;
@@ -190,7 +190,9 @@ fn start_worker(session: u32) -> Result<Worker> {
                 None,
                 None,
                 false,
-                CREATE_UNICODE_ENVIRONMENT | CREATE_NEW_CONSOLE,
+                // A console of its own for what it writes, with no window on anyone's screen: StrCu runs
+                // with the rights of the computer here, and such a program shows nothing (S7 in the plan)
+                CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
                 None,
                 None,
                 &si,

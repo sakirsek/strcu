@@ -23,7 +23,10 @@ use crate::{config, download, sys};
 /// The cloudflared version strcu is tested with.
 pub const CLOUDFLARED_TAG: &str = "2026.9.3";
 /// Local address where we ask cloudflared whether it is ready (/ready).
-const METRICS: &str = "127.0.0.1:8092";
+/// Where cloudflared reports its state; the address is built once, from brand.rs.
+fn metrics() -> String {
+    format!("127.0.0.1:{}", crate::brand::METRICS)
+}
 
 fn dir() -> PathBuf {
     config::data_dir().join("cloudflared")
@@ -146,9 +149,29 @@ impl Tunnel {
     }
 }
 
+/// Starts cloudflared and comes back at once, without waiting for a connection: whoever asked watches
+/// `connected` and `exited` itself. The control window does, through the pipe, so it keeps drawing while the
+/// tunnel of a freshly pasted token comes up.
+pub fn spawn_with(token: &str) -> Result<Tunnel> {
+    if !exe().exists() {
+        bail!(Msg::new("err.cloudflared_missing"));
+    }
+    let log = std::fs::File::create(log_path())?;
+    let child = Command::new(exe())
+        .args(["tunnel", "--no-autoupdate", "--metrics", &metrics(), "run"])
+        .env("TUNNEL_TOKEN", token)
+        .stdin(Stdio::null())
+        .stdout(Stdio::from(log.try_clone()?))
+        .stderr(Stdio::from(log))
+        .spawn()
+        .context(Msg::new("err.cloudflared_start"))?;
+    sys::proc::tie(&child);
+    Ok(Tunnel { child, ready: false })
+}
+
 /// Does cloudflared have at least one connection to Cloudflare?
 pub async fn connected(http: &reqwest::Client) -> bool {
-    match http.get(format!("http://{METRICS}/ready")).timeout(Duration::from_secs(2)).send().await {
+    match http.get(format!("http://{}/ready", metrics())).timeout(Duration::from_secs(2)).send().await {
         Ok(r) => r.status().is_success(),
         Err(_) => false,
     }
@@ -162,21 +185,7 @@ pub async fn start() -> Result<Tunnel> {
 
 /// The same with a token not saved yet: the setup tries it right after it is pasted.
 pub async fn start_with(token: &str) -> Result<Tunnel> {
-    if !exe().exists() {
-        bail!(Msg::new("err.cloudflared_missing"));
-    }
-    let log = std::fs::File::create(log_path())?;
-    let child = Command::new(exe())
-        .args(["tunnel", "--no-autoupdate", "--metrics", METRICS, "run"])
-        .env("TUNNEL_TOKEN", token)
-        .stdin(Stdio::null())
-        .stdout(Stdio::from(log.try_clone()?))
-        .stderr(Stdio::from(log))
-        .spawn()
-        .context(Msg::new("err.cloudflared_start"))?;
-    sys::proc::tie(&child);
-    let mut tunnel = Tunnel { child, ready: false };
-
+    let mut tunnel = spawn_with(token)?;
     let http = reqwest::Client::new();
     for _ in 0..40 {
         tokio::time::sleep(Duration::from_millis(500)).await;

@@ -88,9 +88,7 @@ pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
             Step::Done(1) => language(io, live).await?,
             Step::Done(2) => password(io, live).await?,
             Step::Done(3) => lan(io, live, v.lan).await?,
-            // Setting remote access up walks through the Cloudflare dashboard step by step, which needs asks
-            // of its own on the pipe
-            Step::Done(4) => Step::Done(Some(Notice::Warn(Msg::new("set.remote_later")))),
+            Step::Done(4) => super::remote::screen(io, live).await?.map(|()| None),
             Step::Done(5) => Step::Done(Some(Notice::Warn(Msg::new("set.autostart_service")))),
             Step::Done(6) => phones(io, live).await?,
             Step::Done(7) => port(io, live, v.port, v.remote.is_some()).await?,

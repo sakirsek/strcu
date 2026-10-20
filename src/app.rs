@@ -2,7 +2,7 @@
 //! `strcu serve` both drive it.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
@@ -10,10 +10,12 @@ use anyhow::{Result, bail};
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 
+use crate::access::AccessConfig;
 use crate::auth::Check;
 use crate::i18n::{self, Lang, Msg};
 use crate::log::{ActionLog, LogEntry};
 use crate::pair::Code;
+use crate::download::Progress;
 use crate::server::{Listener, Panel};
 use crate::{config, ipc, sys, tunnel};
 
@@ -50,6 +52,8 @@ pub struct Urls {
 
 pub struct App {
     pub panel: Panel,
+    /// What the control window has started on the way to remote access
+    setup: Setup,
     listener: Option<Listener>,
     /// Why the panel is not listening (port in use ...)
     pub listen_error: Option<Msg>,
@@ -63,11 +67,38 @@ pub struct App {
 /// Pause before cloudflared is started again after it stopped.
 const RETRY: Duration = Duration::from_secs(30);
 
+/// What the control window has started on the way to remote access (ipc.rs `Tunnel`): the cloudflared
+/// download and the tunnel of a token that is not saved yet. It lasts while the setup screen is open.
+#[derive(Default)]
+struct Setup {
+    /// The download and how far it has got; it keeps running if the window is closed, and what arrived is
+    /// kept for the next time.
+    downloading: Option<Arc<Mutex<Downloading>>>,
+    /// The pasted token's tunnel
+    trial: Option<tunnel::Tunnel>,
+    /// The saved tunnel was closed to make room for the trial
+    paused: bool,
+    /// What went wrong last
+    failed: Option<Msg>,
+}
+
+/// Shared with the task doing the downloading.
+#[derive(Default)]
+struct Downloading {
+    have: u64,
+    total: u64,
+    speed: f64,
+    note: Option<Msg>,
+    done: bool,
+    failed: Option<Msg>,
+}
+
 impl App {
     /// `bind` replaces the address from the settings; `tunnel` false keeps remote access closed.
     pub async fn start(bind: Option<SocketAddr>, tunnel: bool) -> Result<App> {
         let mut app = App {
             panel: Panel::new()?,
+            setup: Setup::default(),
             listener: None,
             listen_error: None,
             bind,
@@ -158,6 +189,116 @@ impl App {
         }
         self.panel.tunnel_pid().store(0, Ordering::Relaxed);
         self.remote.send_replace(Remote::Off);
+    }
+
+    /// Starts downloading cloudflared, unless the right version is already here. It runs on its own: the
+    /// window asks how far it has got, and a window that closes does not stop it.
+    fn install_cloudflared(&mut self) {
+        if tunnel::installed_version().as_deref() == Some(tunnel::CLOUDFLARED_TAG) || self.setup.downloading.is_some() {
+            return;
+        }
+        let shared = Arc::new(Mutex::new(Downloading::default()));
+        self.setup.failed = None;
+        self.setup.downloading = Some(shared.clone());
+        tokio::spawn(async move {
+            let report = |p: Progress| {
+                let mut d = shared.lock().unwrap();
+                match p {
+                    Progress::Note(m) => d.note = Some(m),
+                    Progress::Bytes { have, total, speed } => (d.have, d.total, d.speed) = (have, total, speed),
+                }
+            };
+            let r = tunnel::install(&report).await;
+            let mut d = shared.lock().unwrap();
+            d.done = true;
+            d.failed = r.err().map(|e| i18n::from_error(&e));
+        });
+    }
+
+    /// Starts the tunnel of a token that is not saved yet. The saved one closes first - they share the port
+    /// cloudflared reports its state on - and comes back when the setup is left (`end_setup`).
+    async fn try_token(&mut self, token: &str) {
+        // An earlier try closes first, for the same reason
+        self.setup.trial = None;
+        if !self.setup.paused {
+            self.pause_remote().await;
+            self.setup.paused = true;
+        }
+        match tunnel::spawn_with(token) {
+            Ok(trial) => {
+                // Its connections count as remote, as the real tunnel's do
+                self.panel.tunnel_pid().store(trial.pid(), Ordering::Relaxed);
+                self.setup.trial = Some(trial);
+                self.setup.failed = None;
+            }
+            Err(e) => self.setup.failed = Some(i18n::from_error(&e)),
+        }
+    }
+
+    /// Keeps what the setup found and opens the real tunnel with it.
+    async fn save_remote(&mut self, token: Option<String>, access: AccessConfig) -> Result<()> {
+        if let Some(token) = &token {
+            tunnel::save_token(token)?;
+        }
+        config::update(|c| c.access = Some(access))?;
+        self.end_setup().await;
+        Ok(())
+    }
+
+    /// Forgets the token and the Access settings; remote access is off afterwards.
+    async fn forget_remote(&mut self) -> Result<()> {
+        let r = tunnel::forget_token().and_then(|()| config::update(|c| c.access = None));
+        self.end_setup().await;
+        r
+    }
+
+    /// The setup is over, one way or another: the trial closes and the saved tunnel is opened again from
+    /// whatever the settings now say.
+    async fn end_setup(&mut self) {
+        self.setup.trial = None;
+        self.setup.failed = None;
+        if self.setup.paused {
+            self.setup.paused = false;
+            self.restart_remote().await;
+        }
+    }
+
+    /// Where the setup has got to, for the window to draw.
+    async fn setup_state(&mut self, lang: &Lang) -> ipc::TunnelState {
+        let mut state = ipc::TunnelState {
+            version: tunnel::installed_version(),
+            has_token: tunnel::saved_tunnel_id().is_some(),
+            ..ipc::TunnelState::default()
+        };
+        if let Some(shared) = &self.setup.downloading {
+            let d = shared.lock().unwrap();
+            if d.done {
+                state.failed = d.failed.as_ref().map(|m| lang.render(m));
+                drop(d);
+                self.setup.downloading = None;
+            } else {
+                state.downloading = Some(ipc::Downloading {
+                    have: d.have,
+                    total: d.total,
+                    speed: d.speed,
+                    note: d.note.as_ref().map(|m| lang.render(m)),
+                });
+            }
+        }
+        if let Some(trial) = &mut self.setup.trial {
+            match trial.exited() {
+                // cloudflared stopped by itself: the token is wrong, or Cloudflare turned it away
+                Some(why) => {
+                    self.setup.failed = Some(why);
+                    self.setup.trial = None;
+                }
+                None => state.trial = Some(tunnel::connected(&reqwest::Client::new()).await),
+            }
+        }
+        if state.failed.is_none() {
+            state.failed = self.setup.failed.as_ref().map(|m| lang.render(m));
+        }
+        state
     }
 
     pub async fn stop(mut self) {
@@ -284,6 +425,7 @@ async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> (ipc::An
         ipc::Ask::SignIn { password } => sign_in(app, &password),
         ipc::Ask::Change(what) => change(app, shown, what, lang).await,
         ipc::Ask::Pair(ask) => ipc::Answer::Pair(pairing(app, ask)),
+        ipc::Ask::Tunnel(ask) => ipc::Answer::Tunnel(remote_setup(app, shown, ask, lang).await),
         // Taken care of above, before the password was even looked at
         ipc::Ask::Stop => ipc::Answer::Done,
     };
@@ -376,6 +518,26 @@ async fn listen_again(
     }
 }
 
+/// Remote access: the steps of the setup that the window cannot take itself, because they need the settings
+/// folder or the rights of the computer. Everything comes back as one picture of where it has got to.
+async fn remote_setup(app: &mut App, shown: &mut Shown, ask: ipc::Tunnel, lang: &Lang) -> ipc::TunnelState {
+    match ask {
+        ipc::Tunnel::Install => app.install_cloudflared(),
+        ipc::Tunnel::Try { token } => app.try_token(&token).await,
+        ipc::Tunnel::Save { token, access } => {
+            app.setup.failed = app.save_remote(token, access).await.err().map(|e| i18n::from_error(&e));
+            shown.stale = true;
+        }
+        ipc::Tunnel::Remove => {
+            app.setup.failed = app.forget_remote().await.err().map(|e| i18n::from_error(&e));
+            shown.stale = true;
+        }
+        ipc::Tunnel::Cancel => app.end_setup().await,
+        ipc::Tunnel::State => {}
+    }
+    app.setup_state(lang).await
+}
+
 /// Pairing a phone: the window opens a code, watches it, and closes it again.
 fn pairing(app: &App, ask: ipc::Pair) -> ipc::PairState {
     let pairing = app.panel.pairing();
@@ -425,7 +587,9 @@ fn settings(app: &App) -> ipc::Settings {
         language: cfg.language,
         lan: cfg.lan,
         port: cfg.port,
-        remote_host: cfg.access.map(|a| a.hostname),
+        remote_host: cfg.access.as_ref().map(|a| a.hostname.clone()),
+        remote_email: cfg.access.map(|a| a.email),
+        cloudflared: tunnel::installed_version(),
         password_set: cfg.password_hash.is_some(),
         phones: devices.iter().map(ipc::Phone::from_device).chain(keys.iter().map(ipc::Phone::from_passkey)).collect(),
     }

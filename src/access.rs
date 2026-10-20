@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::i18n::Msg;
 
-#[derive(Serialize, Deserialize, Clone)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct AccessConfig {
     /// Public address of the panel, e.g. strcu.example.com
     pub hostname: String,

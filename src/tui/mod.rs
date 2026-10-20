@@ -10,9 +10,6 @@ mod html;
 mod live;
 mod pair;
 mod preview;
-// Setting remote access up walks through the Cloudflare dashboard, which needs asks of its own on the pipe:
-// its screens are drawn in `strcu dev preview` but not reachable from the settings yet.
-#[allow(dead_code)]
 mod remote;
 mod settings;
 mod term;

@@ -9,7 +9,7 @@ use super::frame::{Frame, Tone, span};
 use super::{Io, Notice, Step, choose, footer, header, hint_back, hint_quit, option, prompt, read_line};
 use crate::auth;
 use crate::i18n::{self, Lang, Msg};
-use crate::{config, sys, tunnel};
+use crate::{config, sys};
 
 const STEPS: usize = 5;
 
@@ -276,16 +276,16 @@ pub fn remote_view(t: &Lang, host: Option<&str>, typed: &str) -> Frame {
     f.blank();
     f.text(Tone::Plain, t.t("setup.remote_text"));
     f.blank();
+    // Setting it up needs the StrCu that is running, which the setup has not met yet: it is one screen away,
+    // in the settings
     match host {
         None => {
             option(&mut f, 1, &t.t("setup.remote_later"), None);
-            option(&mut f, 2, &t.t("setup.remote_setup"), None);
         }
         Some(h) => {
             f.push(vec![span(Tone::Plain, t.t("setup.remote_done")), span(Tone::Accent, format!(" https://{h}"))]);
             f.blank();
             option(&mut f, 1, &t.t("ui.keep"), None);
-            option(&mut f, 2, &t.t("remote.redo"), None);
             option(&mut f, 3, &t.t("remote.remove"), None);
         }
     }
@@ -296,30 +296,9 @@ pub fn remote_view(t: &Lang, host: Option<&str>, typed: &str) -> Frame {
 }
 
 async fn remote(io: &mut impl Io, start: &mut Start) -> Step<()> {
-    loop {
-        let t = i18n::term();
-        let count = if start.remote.is_some() { 3 } else { 2 };
-        let host = start.remote.clone();
-        match choose(io, count, Some(1), |typed| remote_view(t, host.as_deref(), typed)).await {
-            Step::Done(1) => return Step::Done(()),
-            Step::Done(2) => match super::remote::setup(io, None).await {
-                Step::Done(h) => {
-                    start.remote = Some(h);
-                    return Step::Done(());
-                }
-                Step::Back => {}
-                Step::Quit => return Step::Quit,
-            },
-            Step::Done(_) => {
-                // Removing: the token and the Access settings go; cloudflared stays for a later setup
-                let _ = tunnel::forget_token();
-                let _ = config::update(|c| c.access = None);
-                start.remote = None;
-            }
-            Step::Back => return Step::Back,
-            Step::Quit => return Step::Quit,
-        }
-    }
+    let t = i18n::term();
+    let host = start.remote.clone();
+    choose(io, 1, Some(1), |typed| remote_view(t, host.as_deref(), typed)).await.map(|_| ())
 }
 
 // ---------- 5: starting with Windows ----------

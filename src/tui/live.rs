@@ -101,6 +101,15 @@ impl Live {
         }))
     }
 
+    /// One step of setting remote access up (ipc.rs `Tunnel`), and where it has got to.
+    pub fn tunnel(&mut self, ask: ipc::Tunnel) -> Result<Said<ipc::TunnelState>> {
+        let answer = self.ask(Ask::Tunnel(ask))?;
+        Ok(self.said(answer, |a| match a {
+            Answer::Tunnel(state) => Some(state),
+            _ => None,
+        }))
+    }
+
     /// Stops StrCu until the computer starts again. Nothing can be asked after this.
     pub fn stop(&mut self) -> Result<Said<()>> {
         let answer = self.ask(Ask::Stop)?;

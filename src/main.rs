@@ -6,8 +6,6 @@ mod config;
 mod download;
 mod files;
 mod i18n;
-// The pipe between the parts of 2.0; the window and the worker are wired to it in the next step
-#[allow(dead_code)]
 mod ipc;
 mod licenses;
 mod log;

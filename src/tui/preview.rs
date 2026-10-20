@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 
 use super::frame::Frame;
-use super::remote::{Download, Field, StatusView};
+use super::remote::{Field, StatusView};
 use super::settings::Values;
 use super::{Notice, dash, html, pair, remote, settings, wizard};
 use crate::access::AccessConfig;
@@ -146,12 +146,28 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("11-settings", settings::menu_view(t, &values, "", Some(&Notice::Ok(Msg::new("set.saved"))))),
         (
             "12-settings-remote",
-            remote::status_view(t, &StatusView { access: Some(&access), state: &Remote::Up, version: Some("2026.9.3") }, "", None),
+            remote::status_view(
+                t,
+                &StatusView {
+                    host: Some(&access.hostname),
+                    email: &access.email,
+                    state: ipc::RemoteState::Up,
+                    why: None,
+                    version: Some("2026.9.3"),
+                },
+                "",
+                None,
+            ),
         ),
         ("13-remote-intro", remote::intro_view(t, "", None)),
         (
             "13b-remote-download",
-            remote::download_view(t, &Download { note: None, have: 13_002_342, total: 39_845_888, speed: 3_355_443.0 }, None, ""),
+            remote::download_view(
+                t,
+                Some(&ipc::Downloading { note: None, have: 13_002_342, total: 39_845_888, speed: 3_355_443.0 }),
+                None,
+                "",
+            ),
         ),
         (
             "14-remote-token",

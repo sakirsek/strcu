@@ -2,17 +2,36 @@
 //! Cloudflare dashboard step by step and checks each step: the pasted token's tunnel is started at once, and
 //! the Access team domain and application tag are read from the address's own sign-in redirect.
 
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+use anyhow::Result;
+
 use super::frame::{Frame, Span, Tone, span};
+use super::live::{Live, Said};
 use super::{Io, Key, Notice, Step, choose, footer, header, hint_back, option, prompt, read_line};
 use crate::access::{self, AccessConfig};
-use crate::app::{App, Remote};
-use crate::download::{self, Progress};
+use crate::download;
 use crate::i18n::{self, Lang, Msg};
-use crate::ipc;
-use crate::{config, tunnel};
+use crate::{ipc, tunnel};
+
+/// Asks StrCu for one step of the setup, and for the panel password first when it wants it. None means the
+/// user went back.
+async fn ask_strcu(io: &mut impl Io, live: &mut Live, what: ipc::Tunnel) -> Result<Step<ipc::TunnelState>> {
+    for _ in 0..2 {
+        match live.tunnel(what.clone())? {
+            Said::Done(state) => return Ok(Step::Done(state)),
+            Said::Failed(said) => {
+                return Ok(Step::Done(ipc::TunnelState { failed: Some(said), ..ipc::TunnelState::default() }));
+            }
+            Said::SignInNeeded => match super::sign_in(io, live).await? {
+                Step::Done(true) => {}
+                Step::Done(false) | Step::Back => return Ok(Step::Back),
+                Step::Quit => return Ok(Step::Quit),
+            },
+        }
+    }
+    Ok(Step::Back)
+}
 
 /// "● connected" in its colour.
 pub fn state_spans(t: &Lang, state: ipc::RemoteState) -> Vec<Span> {
@@ -31,25 +50,31 @@ pub fn state_spans(t: &Lang, state: ipc::RemoteState) -> Vec<Span> {
 // ---------- state ----------
 
 pub struct StatusView<'a> {
-    pub access: Option<&'a AccessConfig>,
-    pub state: &'a Remote,
+    /// The address remote access answers on, when it is set up
+    pub host: Option<&'a str>,
+    /// The one email Cloudflare Access lets in
+    pub email: &'a str,
+    pub state: ipc::RemoteState,
+    /// Why it is not working, ready to show
+    pub why: Option<&'a str>,
+    /// cloudflared's version on this computer
     pub version: Option<&'a str>,
 }
 
 pub fn status_view(t: &Lang, v: &StatusView, typed: &str, notice: Option<&Notice>) -> Frame {
     let mut f = Frame::default();
     header(&mut f, &format!("{} · {}", t.t("set.title"), t.t("set.remote")), Vec::new());
-    match v.access {
+    match v.host {
         None => {
             f.text(Tone::Plain, t.t("setup.remote_text"));
-            if *v.state == Remote::Incomplete {
+            if v.state == ipc::RemoteState::Incomplete {
                 f.blank();
                 f.text(Tone::Warn, t.t("remote.incomplete"));
             }
             f.blank();
             option(&mut f, 1, &t.t("setup.remote_setup"), None);
         }
-        Some(a) => {
+        Some(host) => {
             let labels = [t.t("remote.address"), t.t("remote.email"), t.t("remote.state"), "cloudflared".to_string()];
             let w = labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) + 2;
             let row = |f: &mut Frame, i: usize, value: Vec<Span>| {
@@ -57,11 +82,10 @@ pub fn status_view(t: &Lang, v: &StatusView, typed: &str, notice: Option<&Notice
                 spans.extend(value);
                 f.push(spans);
             };
-            row(&mut f, 0, vec![span(Tone::Accent, format!("https://{}", a.hostname))]);
-            row(&mut f, 1, vec![span(Tone::Plain, &a.email)]);
-            let (state, why) = crate::app::remote_state(v.state, t);
-            row(&mut f, 2, state_spans(t, state));
-            if let Some(why) = why {
+            row(&mut f, 0, vec![span(Tone::Accent, format!("https://{host}"))]);
+            row(&mut f, 1, vec![span(Tone::Plain, v.email)]);
+            row(&mut f, 2, state_spans(t, v.state));
+            if let Some(why) = v.why {
                 f.hang(vec![span(Tone::Plain, format!("  {}", " ".repeat(w)))], vec![span(Tone::Bad, why)]);
             }
             row(&mut f, 3, vec![span(Tone::Plain, v.version.unwrap_or("-"))]);
@@ -79,45 +103,60 @@ pub fn status_view(t: &Lang, v: &StatusView, typed: &str, notice: Option<&Notice
 }
 
 /// The remote access screen in the settings. Returns Quit on Ctrl+C.
-pub async fn screen(io: &mut impl Io, app: &mut App) -> Step<()> {
+pub async fn screen(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
     let mut notice: Option<Notice> = None;
-    let mut state = app.remote();
     loop {
         let t = i18n::term();
-        let access = config::load().access;
-        let version = tunnel::installed_version();
-        let current = state.borrow_and_update().clone();
-        let v = StatusView { access: access.as_ref(), state: &current, version: version.as_deref() };
-        let count = if access.is_some() { 2 } else { 1 };
-        io.draw(&status_view(t, &v, "", notice.as_ref()));
+        let settings = live.settings()?;
+        let host = settings.remote_host.clone();
+        let count = if host.is_some() { 2 } else { 1 };
+        let frame = {
+            let state = live.state();
+            let v = StatusView {
+                host: host.as_deref(),
+                email: settings.remote_email.as_deref().unwrap_or("-"),
+                state: state.remote,
+                why: state.remote_why.as_deref(),
+                version: settings.cloudflared.as_deref(),
+            };
+            status_view(t, &v, "", notice.as_ref())
+        };
+        io.draw(&frame);
         let key = tokio::select! {
             k = io.key() => k,
-            Ok(()) = state.changed() => continue,
+            // The tunnel comes and goes while this screen is open
+            _ = tokio::time::sleep(super::live::POLL) => {
+                live.refresh()?;
+                continue;
+            }
         };
         let Some(key) = key else { continue };
         let n = match key {
-            Key::Interrupt => return Step::Quit,
-            Key::Esc | Key::Char('0') => return Step::Back,
+            Key::Interrupt => return Ok(Step::Quit),
+            Key::Esc | Key::Char('0') => return Ok(Step::Back),
             Key::Char(c @ '1'..='9') if (c as usize - '0' as usize) <= count => c as usize - '0' as usize,
             _ => continue,
         };
         notice = None;
-        match (access.is_some(), n) {
-            (false, _) | (true, 1) => match setup(io, Some(app)).await {
+        match (host.is_some(), n) {
+            (false, _) | (true, 1) => match setup(io, live).await? {
                 Step::Done(_) | Step::Back => {}
-                Step::Quit => return Step::Quit,
+                Step::Quit => return Ok(Step::Quit),
             },
             _ => match confirm_remove(io).await {
                 Step::Done(true) => {
-                    let r = tunnel::forget_token().and_then(|()| config::update(|c| c.access = None));
-                    app.restart_remote().await;
-                    notice = Some(match r {
-                        Ok(()) => Notice::Ok(Msg::new("remote.removed")),
-                        Err(e) => Notice::Err(i18n::from_error(&e)),
+                    notice = Some(match ask_strcu(io, live, ipc::Tunnel::Remove).await? {
+                        Step::Done(state) => match state.failed {
+                            None => Notice::Ok(Msg::new("remote.removed")),
+                            Some(said) => Notice::Err(Msg::new("ui.said").with("text", said)),
+                        },
+                        Step::Back => continue,
+                        Step::Quit => return Ok(Step::Quit),
                     });
+                    live.refresh()?;
                 }
                 Step::Done(false) | Step::Back => {}
-                Step::Quit => return Step::Quit,
+                Step::Quit => return Ok(Step::Quit),
             },
         }
     }
@@ -223,43 +262,37 @@ async fn intro(io: &mut impl Io) -> Step<()> {
     }
 }
 
-#[derive(Default, Clone)]
-pub struct Download {
-    pub note: Option<Msg>,
-    pub have: u64,
-    pub total: u64,
-    pub speed: f64,
-}
-
-pub fn download_view(t: &Lang, d: &Download, error: Option<&Msg>, typed: &str) -> Frame {
+pub fn download_view(t: &Lang, d: Option<&ipc::Downloading>, error: Option<&str>, typed: &str) -> Frame {
     let mut f = setup_frame(t, 1);
     f.text(Tone::Strong, t.render(&Msg::new("remote.downloading").with("version", tunnel::CLOUDFLARED_TAG)));
     f.blank();
     f.text(Tone::Plain, t.t("remote.download_text"));
     f.blank();
-    if d.total > 0 {
-        const CELLS: usize = 30;
-        let done = ((d.have as f64 / d.total as f64) * CELLS as f64).round().min(CELLS as f64) as usize;
-        let pct = d.have * 100 / d.total;
-        f.push(vec![
-            span(Tone::Plain, "  "),
-            span(Tone::Accent, "━".repeat(done)),
-            span(Tone::Dim, "━".repeat(CELLS - done)),
-            span(Tone::Plain, format!("  {pct}%")),
-            span(Tone::Dim, format!(
-                "  {} / {} · {:.1} MB/s",
-                download::human(d.have),
-                download::human(d.total),
-                d.speed / (1u64 << 20) as f64
-            )),
-        ]);
-    }
-    if let Some(n) = &d.note {
-        f.text(Tone::Dim, format!("  {}", t.render(n)));
+    if let Some(d) = d {
+        if d.total > 0 {
+            const CELLS: usize = 30;
+            let done = ((d.have as f64 / d.total as f64) * CELLS as f64).round().min(CELLS as f64) as usize;
+            let pct = d.have * 100 / d.total;
+            f.push(vec![
+                span(Tone::Plain, "  "),
+                span(Tone::Accent, "━".repeat(done)),
+                span(Tone::Dim, "━".repeat(CELLS - done)),
+                span(Tone::Plain, format!("  {pct}%")),
+                span(Tone::Dim, format!(
+                    "  {} / {} · {:.1} MB/s",
+                    download::human(d.have),
+                    download::human(d.total),
+                    d.speed / (1u64 << 20) as f64
+                )),
+            ]);
+        }
+        if let Some(note) = &d.note {
+            f.text(Tone::Dim, format!("  {note}"));
+        }
     }
     if let Some(e) = error {
         f.blank();
-        f.text(Tone::Bad, t.render(&Msg::new("remote.download_failed").with("reason", e.clone())));
+        f.text(Tone::Bad, t.render(&Msg::new("remote.download_failed").with("reason", e)));
         f.blank();
         option(&mut f, 1, &t.t("remote.retry"), None);
         option(&mut f, 0, &t.t("ui.back"), None);
@@ -270,50 +303,41 @@ pub fn download_view(t: &Lang, d: &Download, error: Option<&Msg>, typed: &str) -
     f
 }
 
-async fn install(io: &mut impl Io) -> Step<()> {
-    if tunnel::installed_version().as_deref() == Some(tunnel::CLOUDFLARED_TAG) {
-        return Step::Done(());
-    }
+/// Step 1: cloudflared. StrCu downloads it - it goes in the folder only StrCu may write - and the window
+/// watches. Leaving does not stop it: what has arrived is kept, and the next time it carries on.
+async fn install(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
+    let mut started = false;
+    let mut tick = tokio::time::interval(Duration::from_millis(250));
     loop {
         let t = i18n::term();
-        let progress = Arc::new(Mutex::new(Download::default()));
-        let p = progress.clone();
-        let report = move |r: Progress| {
-            let mut d = p.lock().unwrap();
-            match r {
-                Progress::Note(m) => d.note = Some(m),
-                Progress::Bytes { have, total, speed } => (d.have, d.total, d.speed) = (have, total, speed),
-            }
+        let ask = if started { ipc::Tunnel::State } else { ipc::Tunnel::Install };
+        let state = match ask_strcu(io, live, ask).await? {
+            Step::Done(state) => state,
+            Step::Back => return Ok(Step::Back),
+            Step::Quit => return Ok(Step::Quit),
         };
-        let result = {
-            let fut = tunnel::install(&report);
-            tokio::pin!(fut);
-            let mut tick = tokio::time::interval(Duration::from_millis(250));
-            loop {
-                tokio::select! {
-                    r = &mut fut => break r,
-                    _ = tick.tick() => {
-                        let d = progress.lock().unwrap().clone();
-                        io.draw(&download_view(t, &d, None, ""));
-                    }
-                    // Leaving stops the download; what arrived is kept and continued next time
-                    k = io.key() => match k {
-                        Some(Key::Esc) => return Step::Back,
-                        Some(Key::Interrupt) => return Step::Quit,
-                        _ => {}
-                    },
+        started = true;
+        if state.version.as_deref() == Some(tunnel::CLOUDFLARED_TAG) {
+            return Ok(Step::Done(()));
+        }
+        if let Some(failed) = &state.failed {
+            match choose(io, 1, Some(1), |typed| download_view(t, None, Some(failed), typed)).await {
+                Step::Done(_) => {
+                    started = false;
+                    continue;
                 }
+                Step::Back => return Ok(Step::Back),
+                Step::Quit => return Ok(Step::Quit),
             }
-        };
-        let error = match result {
-            Ok(()) => return Step::Done(()),
-            Err(e) => i18n::from_error(&e),
-        };
-        let d = progress.lock().unwrap().clone();
-        match choose(io, 1, Some(1), |typed| download_view(t, &d, Some(&error), typed)).await {
-            Step::Done(_) => {}
-            Step::Back => return Step::Back,
-            Step::Quit => return Step::Quit,
+        }
+        io.draw(&download_view(t, state.downloading.as_ref(), None, ""));
+        tokio::select! {
+            _ = tick.tick() => {}
+            k = io.key() => match k {
+                Some(Key::Esc) => return Ok(Step::Back),
+                Some(Key::Interrupt) => return Ok(Step::Quit),
+                _ => {}
+            },
         }
     }
 }
@@ -401,39 +425,50 @@ pub fn trial_view(t: &Lang) -> Frame {
     f
 }
 
-/// The tunnel of a pasted token, run while the setup goes on: the dashboard waits for it to connect before
-/// it goes on. In the settings the running tunnel is closed meanwhile and comes back if the setup is left.
-#[derive(Default)]
-struct Trial {
-    tunnel: Option<tunnel::Tunnel>,
-    paused: bool,
-}
+/// How long the window waits for the pasted token's tunnel to connect.
+const TRIAL_WAIT: Duration = Duration::from_secs(20);
 
-/// Starts the pasted token's tunnel and waits for it to connect (20 s at most).
-async fn try_token(io: &mut impl Io, token: &str) -> Step<anyhow::Result<tunnel::Tunnel>> {
+/// Starts the pasted token's tunnel in StrCu and watches it come up. The notice is what it came to.
+async fn try_token(io: &mut impl Io, live: &mut Live, token: &str) -> Result<Step<Notice>> {
     io.draw(&trial_view(i18n::term()));
-    let fut = tunnel::start_with(token);
-    tokio::pin!(fut);
+    let mut state = match ask_strcu(io, live, ipc::Tunnel::Try { token: token.to_string() }).await? {
+        Step::Done(state) => state,
+        Step::Back => return Ok(Step::Back),
+        Step::Quit => return Ok(Step::Quit),
+    };
+    let until = Instant::now() + TRIAL_WAIT;
+    let mut tick = tokio::time::interval(Duration::from_millis(500));
     loop {
+        if let Some(failed) = state.failed {
+            return Ok(Step::Done(Notice::Err(Msg::new("ui.said").with("text", failed))));
+        }
+        if state.trial == Some(true) {
+            return Ok(Step::Done(Notice::Ok(Msg::new("remote.trial_up"))));
+        }
+        if Instant::now() > until {
+            // cloudflared keeps trying by itself; the setup can go on meanwhile
+            return Ok(Step::Done(Notice::Warn(Msg::new("remote.trial_waiting"))));
+        }
+        io.draw(&trial_view(i18n::term()));
         tokio::select! {
-            r = &mut fut => return Step::Done(r),
+            _ = tick.tick() => {}
             k = io.key() => match k {
-                Some(Key::Esc) => return Step::Back,
-                Some(Key::Interrupt) => return Step::Quit,
+                Some(Key::Esc) => return Ok(Step::Back),
+                Some(Key::Interrupt) => return Ok(Step::Quit),
                 _ => {}
             },
         }
+        state = match ask_strcu(io, live, ipc::Tunnel::State).await? {
+            Step::Done(state) => state,
+            Step::Back => return Ok(Step::Back),
+            Step::Quit => return Ok(Step::Quit),
+        };
     }
 }
 
 /// Step 2: the tunnel's token, tried at once. Returns the new token (None: the saved one stays) and how the
 /// try went.
-async fn token_step(
-    io: &mut impl Io,
-    mut app: Option<&mut App>,
-    trial: &mut Trial,
-    had_token: bool,
-) -> Step<(Option<String>, Option<Notice>)> {
+async fn token_step(io: &mut impl Io, live: &mut Live, had_token: bool) -> Result<Step<(Option<String>, Option<Notice>)>> {
     let t = i18n::term();
     let pc = std::env::var("COMPUTERNAME").unwrap_or_else(|_| "pc".into()).to_lowercase();
     let mut error = None;
@@ -446,6 +481,7 @@ async fn token_step(
             before: None,
             error: error.take(),
         };
+        // The token is read here, where it was pasted: finding it in the pasted command is only text work
         let pasted = ask(io, a, "", true, |s| {
             if s.trim().is_empty() && had_token {
                 return Ok(None);
@@ -455,35 +491,15 @@ async fn token_step(
         .await;
         let token = match pasted {
             Step::Done(Some(token)) => token,
-            Step::Done(None) => return Step::Done((None, None)),
-            Step::Back => return Step::Back,
-            Step::Quit => return Step::Quit,
+            Step::Done(None) => return Ok(Step::Done((None, None))),
+            Step::Back => return Ok(Step::Back),
+            Step::Quit => return Ok(Step::Quit),
         };
-        // An earlier try closes first; they share the metrics port
-        trial.tunnel = None;
-        if let Some(app) = app.as_deref_mut()
-            && !trial.paused
-        {
-            app.pause_remote().await;
-            trial.paused = true;
-        }
-        match try_token(io, &token).await {
-            Step::Done(Ok(tun)) => {
-                let notice = if tun.ready {
-                    Notice::Ok(Msg::new("remote.trial_up"))
-                } else {
-                    Notice::Warn(Msg::new("remote.trial_waiting"))
-                };
-                // Its connections count as remote, like the real tunnel's
-                if let Some(app) = app.as_deref_mut() {
-                    app.panel.tunnel_pid().store(tun.pid(), std::sync::atomic::Ordering::Relaxed);
-                }
-                trial.tunnel = Some(tun);
-                return Step::Done((Some(token), Some(notice)));
-            }
-            Step::Done(Err(e)) => error = Some(i18n::from_error(&e)),
+        match try_token(io, live, &token).await? {
+            Step::Done(Notice::Err(why)) => error = Some(why),
+            Step::Done(notice) => return Ok(Step::Done((Some(token), Some(notice)))),
             Step::Back => {}
-            Step::Quit => return Step::Quit,
+            Step::Quit => return Ok(Step::Quit),
         }
     }
 }
@@ -529,8 +545,9 @@ pub fn access_view(t: &Lang, host: &str, seen: Option<&Seen>, typed: &str) -> Fr
 }
 
 /// Step 4: the Access team domain and AUD tag, read from the address's sign-in redirect, or typed by hand.
-/// The last value says whether they were found.
-async fn find_access(io: &mut impl Io, host: &str, old: Option<&AccessConfig>) -> Step<(String, String, bool)> {
+/// The last value says whether they were found. The window reads the redirect itself: it is one request to
+/// the address anyone can make.
+async fn find_access(io: &mut impl Io, host: &str) -> Step<(String, String, bool)> {
     let t = i18n::term();
     let mut shown: Option<Seen> = None;
     loop {
@@ -560,7 +577,7 @@ async fn find_access(io: &mut impl Io, host: &str, old: Option<&AccessConfig>) -
         };
         match choose(io, 2, Some(1), |typed| access_view(t, host, Some(&seen), typed)).await {
             Step::Done(1) => {}
-            Step::Done(_) => match by_hand(io, old).await {
+            Step::Done(_) => match by_hand(io).await {
                 Step::Done((team, aud)) => return Step::Done((team, aud, false)),
                 Step::Back => shown = Some(seen),
                 Step::Quit => return Step::Quit,
@@ -571,19 +588,19 @@ async fn find_access(io: &mut impl Io, host: &str, old: Option<&AccessConfig>) -
     }
 }
 
-/// The team domain and AUD tag typed in, as before they could be found.
-async fn by_hand(io: &mut impl Io, old: Option<&AccessConfig>) -> Step<(String, String)> {
+/// The team domain and AUD tag typed in, as before they could be found. They start empty: StrCu keeps them
+/// but does not hand them to the window, which only ever needs to put them there.
+async fn by_hand(io: &mut impl Io) -> Step<(String, String)> {
     let t = i18n::term();
     let field = |title, text: &str| Ask { step: 4, title, text: t.t(text), hint: None, before: None, error: None };
-    let mut team = old.map(|a| a.team_domain.clone()).unwrap_or_default();
+    let mut team = String::new();
     loop {
         team = match ask(io, field("remote.team_title", "remote.team_text"), &team, false, access::clean_team).await {
             Step::Done(v) => v,
             Step::Back => return Step::Back,
             Step::Quit => return Step::Quit,
         };
-        let aud = old.map(|a| a.aud.as_str()).unwrap_or_default();
-        match ask(io, field("remote.aud_title", "remote.aud_text"), aud, false, access::clean_aud).await {
+        match ask(io, field("remote.aud_title", "remote.aud_text"), "", false, access::clean_aud).await {
             Step::Done(aud) => return Step::Done((team, aud)),
             Step::Back => {}
             Step::Quit => return Step::Quit,
@@ -592,19 +609,23 @@ async fn by_hand(io: &mut impl Io, old: Option<&AccessConfig>) -> Step<(String, 
 }
 
 /// The steps of the form; returns the settings and the new token (None: the saved one stays).
-async fn form(io: &mut impl Io, mut app: Option<&mut App>, trial: &mut Trial) -> Step<(AccessConfig, Option<String>)> {
+async fn form(io: &mut impl Io, live: &mut Live) -> Result<Step<(AccessConfig, Option<String>)>> {
     let t = i18n::term();
-    let old = config::load().access;
-    let had_token = tunnel::saved_tunnel_id().is_some();
-    let port = config::load().port;
-    let mut host = old.as_ref().map(|a| a.hostname.clone()).unwrap_or_default();
+    let settings = live.settings()?;
+    let port = settings.port;
+    let had_token = match ask_strcu(io, live, ipc::Tunnel::State).await? {
+        Step::Done(state) => state.has_token,
+        Step::Back => return Ok(Step::Back),
+        Step::Quit => return Ok(Step::Quit),
+    };
+    let mut host = settings.remote_host.clone().unwrap_or_default();
     let (mut token, mut tried, mut found) = (None, None, None);
     let mut step = 0;
     loop {
         let r = match step {
             0 => intro(io).await,
-            1 => install(io).await,
-            2 => token_step(io, app.as_deref_mut(), trial, had_token).await.map(|(tk, notice)| {
+            1 => install(io, live).await?,
+            2 => token_step(io, live, had_token).await?.map(|(tk, notice)| {
                 (token, tried) = (tk, notice);
             }),
             3 => {
@@ -618,9 +639,9 @@ async fn form(io: &mut impl Io, mut app: Option<&mut App>, trial: &mut Trial) ->
                 };
                 ask(io, a, &host, false, access::clean_host).await.map(|h| host = h)
             }
-            4 => find_access(io, &host, old.as_ref()).await.map(|f| found = Some(f)),
+            4 => find_access(io, &host).await.map(|f| found = Some(f)),
             _ => {
-                let Some((team, aud, auto)) = found.clone() else { return Step::Back };
+                let Some((team, aud, auto)) = found.clone() else { return Ok(Step::Back) };
                 let a = Ask {
                     step: 5,
                     title: "remote.email_title",
@@ -629,11 +650,11 @@ async fn form(io: &mut impl Io, mut app: Option<&mut App>, trial: &mut Trial) ->
                     before: auto.then(|| Notice::Ok(Msg::new("remote.access_found").with("team", team.as_str()))),
                     error: None,
                 };
-                let initial = old.as_ref().map(|a| a.email.clone()).unwrap_or_default();
+                let initial = settings.remote_email.clone().unwrap_or_default();
                 match ask(io, a, &initial, false, access::clean_email).await {
                     Step::Done(email) => {
                         let cfg = AccessConfig { hostname: host, team_domain: team, aud, email };
-                        return Step::Done((cfg, token));
+                        return Ok(Step::Done((cfg, token)));
                     }
                     other => other.map(|_| ()),
                 }
@@ -641,74 +662,62 @@ async fn form(io: &mut impl Io, mut app: Option<&mut App>, trial: &mut Trial) ->
         };
         match r {
             Step::Done(()) => step += 1,
-            Step::Back if step == 0 => return Step::Back,
+            Step::Back if step == 0 => return Ok(Step::Back),
             // Step 1 passes by itself once cloudflared is there: back from 2 goes to the overview
             Step::Back => step = if step == 2 { 0 } else { step - 1 },
-            Step::Quit => return Step::Quit,
+            Step::Quit => return Ok(Step::Quit),
         }
     }
 }
 
-/// Sets remote access up and returns the hostname. With `app` (in the settings) the tunnel starts right away;
-/// in the first-start setup it starts with the main screen.
-pub async fn setup(io: &mut impl Io, mut app: Option<&mut App>) -> Step<String> {
-    let mut trial = Trial::default();
-    let r = form(io, app.as_deref_mut(), &mut trial).await;
-    // The trial tunnel closes before the real one starts: they share the metrics port
-    let paused = trial.paused;
-    drop(trial);
-    let (cfg, token) = match r {
-        Step::Done(v) => v,
+/// Sets remote access up and returns the hostname. StrCu keeps what was found and opens the tunnel with it;
+/// the window watches it come up.
+pub async fn setup(io: &mut impl Io, live: &mut Live) -> Result<Step<String>> {
+    let (access, token) = match form(io, live).await? {
+        Step::Done(found) => found,
         left => {
-            // Left halfway: the saved settings (and their tunnel, if any) come back
-            if let Some(app) = app
-                && paused
-            {
-                app.restart_remote().await;
-            }
-            return left.map(|_| String::new());
+            // Left halfway: the trial closes and the tunnel of the saved settings comes back
+            let _ = live.tunnel(ipc::Tunnel::Cancel);
+            return Ok(left.map(|_| String::new()));
         }
     };
-    let host = cfg.hostname.clone();
-    let saved = match &token {
-        Some(tk) => tunnel::save_token(tk).map(|_| ()),
-        None => Ok(()),
-    }
-    .and_then(|()| config::update(|c| c.access = Some(cfg)));
+    let host = access.hostname.clone();
+    let failed = match ask_strcu(io, live, ipc::Tunnel::Save { token, access }).await? {
+        Step::Done(state) => state.failed,
+        Step::Back => return Ok(Step::Back),
+        Step::Quit => return Ok(Step::Quit),
+    };
     let t = i18n::term();
-    let result = match (saved, app) {
-        (Err(e), Some(app)) => {
-            app.restart_remote().await;
-            Notice::Err(i18n::from_error(&e))
-        }
-        (Err(e), None) => Notice::Err(i18n::from_error(&e)),
-        (Ok(()), None) => Notice::Ok(Msg::new("remote.saved_later")),
-        (Ok(()), Some(app)) => connect(io, app, &host).await,
+    let result = match failed {
+        Some(said) => Notice::Err(Msg::new("ui.said").with("text", said)),
+        None => connect(io, live, &host).await?,
     };
     let ok = !matches!(result, Notice::Err(_));
     let _ = choose(io, 1, Some(1), |typed| result_view(t, &result, typed)).await;
-    if ok { Step::Done(host) } else { Step::Back }
+    Ok(if ok { Step::Done(host) } else { Step::Back })
 }
 
-/// Starts the tunnel and waits a little for it to connect.
-async fn connect(io: &mut impl Io, app: &mut App, host: &str) -> Notice {
+/// Waits a little for the tunnel StrCu has just opened to connect.
+async fn connect(io: &mut impl Io, live: &mut Live, host: &str) -> Result<Notice> {
     let t = i18n::term();
-    app.restart_remote().await;
-    let mut state = app.remote();
     let until = Instant::now() + Duration::from_secs(25);
     loop {
-        let now = state.borrow_and_update().clone();
-        match now {
-            Remote::Up => return Notice::Ok(Msg::new("remote.ok").with("host", host)),
-            Remote::Failed(why) => return Notice::Err(Msg::new("ev.tunnel_failed").with("reason", why)),
-            Remote::Incomplete | Remote::Off => return Notice::Err(Msg::new("remote.incomplete")),
-            _ if Instant::now() > until => return Notice::Warn(Msg::new("remote.waiting")),
+        live.refresh()?;
+        let state = live.state();
+        match state.remote {
+            ipc::RemoteState::Up => return Ok(Notice::Ok(Msg::new("remote.ok").with("host", host))),
+            ipc::RemoteState::Failed => {
+                let why = state.remote_why.clone().unwrap_or_default();
+                return Ok(Notice::Err(Msg::new("ev.tunnel_failed").with("reason", why)));
+            }
+            ipc::RemoteState::Incomplete | ipc::RemoteState::Off => return Ok(Notice::Err(Msg::new("remote.incomplete"))),
+            _ if Instant::now() > until => return Ok(Notice::Warn(Msg::new("remote.waiting"))),
             _ => {}
         }
         let mut f = setup_frame(t, SETUP_STEPS);
         f.text(Tone::Plain, t.t("remote.connecting"));
         io.draw(&f);
-        let _ = tokio::time::timeout(Duration::from_secs(1), state.changed()).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 }
 
