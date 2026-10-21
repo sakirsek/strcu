@@ -65,6 +65,13 @@ pub fn follow() -> Option<String> {
     Some(want)
 }
 
+/// Whether the desktop in front is one Windows keeps to itself: the lock screen, the sign-in screen, the
+/// "do you want to allow this app" prompt. Everyday work happens on `Default`, and anything else is one of
+/// those - which only a StrCu running as the computer sees at all, so for 1.x this was never true.
+pub fn secure_in_front() -> bool {
+    input_desktop_name().is_some_and(|name| name != "Default")
+}
+
 /// The name of the desktop in front ("Default", "Winlogon"), read with the least rights there are, so it
 /// also answers where the thread may not go.
 pub fn input_desktop_name() -> Option<String> {
@@ -91,6 +98,12 @@ mod tests {
         if let Some(name) = input_desktop_name() {
             assert!(!name.is_empty());
         }
+    }
+
+    #[test]
+    fn the_everyday_desktop_is_not_one_of_the_closed_ones() {
+        // Tests run on the desktop a person works on, whatever its name turns out to be
+        assert_eq!(secure_in_front(), input_desktop_name().as_deref() != Some("Default"));
     }
 
     #[test]

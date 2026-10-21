@@ -20,7 +20,7 @@ use crate::log::LogEntry;
 use crate::macros::{self, Act};
 use crate::pair;
 use crate::sys::power::{self, SHUTDOWN_SECS};
-use crate::sys::{Rect, input, screen, uia, window};
+use crate::sys::{Rect, desk, input, screen, uia, window};
 use crate::usage::{self, Tap};
 
 pub(super) async fn status(State(st): State<AppState>, headers: HeaderMap) -> ApiResult<Json<Value>> {
@@ -36,6 +36,8 @@ pub(super) async fn status(State(st): State<AppState>, headers: HeaderMap) -> Ap
         .unwrap()
         .and_then(|t| t.checked_duration_since(Instant::now()))
         .map(|d| d.as_secs_f64().ceil() as u64);
+    // Who StrCu can work as, and whether Windows has the desktop to itself: both change what the panel says
+    let user = st.agent.user();
     let v = st
         .worker
         .run(move |_| {
@@ -43,6 +45,8 @@ pub(super) async fn status(State(st): State<AppState>, headers: HeaderMap) -> Ap
             let fg = window::foreground().filter(|w| !w.title.is_empty() && !matches!(w.class.as_str(), "Progman" | "WorkerW"));
             Ok(json!({
                 "lock": power::lock_state(),
+                "secure_desk": desk::secure_in_front(),
+                "user": user,
                 "screen": screen::virtual_screen(),
                 "foreground": fg.as_ref().map(|w| w.title.clone()),
                 "foreground_hwnd": fg.as_ref().map(|w| w.hwnd),

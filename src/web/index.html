@@ -400,6 +400,9 @@
   ol.log li.err .m { stroke: var(--bad-soft); }
 
   /* ---- macros ---- */
+  .secbar { display: flex; align-items: center; gap: 10px; margin: 0 0 10px; padding: 6px 6px 6px 12px; border-radius: 14px; border: 1px solid var(--acc); background: var(--panel); }
+  .secbar span { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.35; }
+  .secbar .btn { flex: none; min-height: 40px; padding: 0 12px; font-size: 14px; white-space: nowrap; }
   .macbar { flex: none; display: flex; align-items: center; gap: 10px; margin: 0 12px 8px; padding: 6px 6px 6px 12px; border-radius: 14px; border: 1px solid var(--acc); background: var(--panel); }
   .macbar[data-mode="rec"] { border-color: var(--bad-line); background: var(--bad-bg); }
   .mbtext { flex: 1; min-width: 0; font-size: 14px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
@@ -548,6 +551,10 @@
   <main id="main">
     <!-- SCREEN -->
     <section class="panel" id="p-screen">
+      <div id="secBar" class="secbar" role="status" hidden>
+        <span id="secText"></span>
+        <button type="button" id="wakeBtn" class="btn" data-i18n="screen.wake"></button>
+      </div>
       <div class="view" id="view">
         <div class="stage">
           <canvas id="shot" class="shot-img" width="0" height="0" role="img" data-i18n-label="screen.image"></canvas>
@@ -1350,11 +1357,22 @@ async function refresh(why) {
 async function status() {
   try {
     S.status = await api('/api/status');
-    renderFg(); renderQtPlaceholder();
+    renderFg(); renderQtPlaceholder(); renderSecure();
     syncShutdown(S.status.shutdown_in);
     renderSession();
   } catch (_) {}
 }
+
+// Windows keeps the lock screen, the sign-in screen and the approval prompt on a desktop of its own. StrCu
+// 2.0 sees and types on it, which is worth saying, because what you can do there depends on whether anybody
+// is signed in: a PIN at the sign-in screen, everything else once somebody is.
+function renderSecure() {
+  const s = S.status || {}, on = !!s.secure_desk;
+  $('#secBar').hidden = !on;
+  if (on) $('#secText').textContent = t(s.user ? 'screen.secure_locked' : 'screen.secure_signin');
+}
+// A key nothing is bound to: it wakes a screen that went dark and brings up the PIN box, and types nothing
+$('#wakeBtn').onclick = () => sendKey('shift');
 
 // Foreground window in the header: app icon and title; a red lock when locked
 function renderFg() {
