@@ -2134,7 +2134,7 @@ async function loadWindows() {
     const badges = [
       w.foreground ? h('span', { class: 'badge acc' }, t('win.badge_front')) : null,
       w.minimized ? h('span', { class: 'badge' }, t('win.badge_min')) : null,
-      w.elevated ? h('span', { class: 'badge bad' }, t('win.badge_admin')) : null,
+      w.elevated ? h('span', { class: 'badge' }, t('win.badge_admin')) : null,
       w.own ? h('span', { class: 'badge' }, t('win.badge_own')) : null,
     ];
     return h('li', {},

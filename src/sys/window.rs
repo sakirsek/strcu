@@ -38,7 +38,8 @@ pub struct WindowInfo {
     pub minimized: bool,
     pub maximized: bool,
     pub foreground: bool,
-    /// A normal process cannot send input to windows running as administrator (UIPI).
+    /// Whether the window runs as administrator. StrCu 2.0 can click and type into one all the same - it
+    /// runs with the rights of the computer - but it is worth knowing which window that is.
     pub elevated: Option<bool>,
     /// strcu's own window: closing it also closes strcu and remote access.
     pub own: bool,
