@@ -1,7 +1,7 @@
 //! Macros: steps that click, type and open things on this computer, started from the panel or on a schedule.
 //!
 //! They run inside StrCu, so a scheduled one runs while the phone is off; the panel only edits, starts and
-//! watches them. Kept in %LOCALAPPDATA%\strcu\macros.json.
+//! watches them. Kept in %ProgramData%\StrCu\macros.json.
 
 mod run;
 mod schedule;

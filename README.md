@@ -17,6 +17,10 @@ program, click there". It is a single exe that serves a web panel; the phone nee
   key), F1–F12; get the computer's clipboard text or put text on it.
 - **Know what you are about to click.** Windows' own accessibility data (UI Automation) names the element under
   the crosshair and lists everything clickable in the window. No AI, no GPU, no extra install.
+- **Nothing on the screen is out of reach.** The lock screen, the Windows sign-in screen, the "do you want to
+  allow this app" prompt and windows running as administrator come through like any other window, keyboard
+  included - so a computer that is locked, or that nobody has signed in to yet, is still yours from the phone.
+  Your own things - apps, files, the clipboard - are done as you, never as the computer.
 - **Windows and apps:** bring a window to the front, maximize or close it; open any app from the Start menu.
 - **Files:** download from Downloads, Desktop, Documents, Pictures and Videos, or the file selected in File
   Explorer; send files from the phone into Downloads.
@@ -29,16 +33,17 @@ program, click there". It is a single exe that serves a web panel; the phone nee
 
 ## Install
 
-In PowerShell (Windows 10 or 11, no administrator rights needed):
+In PowerShell (Windows 10 or 11). It asks for administrator approval once:
 
 ```
 irm https://github.com/sakirsek/strcu/releases/latest/download/install.ps1 | iex
 ```
 
-It downloads the latest release, checks its SHA-256 checksum, installs it to `%LOCALAPPDATA%\strcu`, adds
-StrCu to the Start menu and the desktop, and opens it for the first-start setup. Running the same line again
-updates StrCu (a running StrCu is closed and started again; settings stay). To remove StrCu with all its
-settings, shortcuts and its start with Windows:
+It downloads the latest release, checks its SHA-256 checksum, installs it to `%ProgramFiles%\StrCu`, sets it
+up as a Windows service, adds StrCu to the Start menu and the desktop, and opens the first-start setup. The
+settings live in `%ProgramData%\StrCu`, which only administrators may write to; an older StrCu's settings are
+copied over at the first start, so nothing has to be set up again. Running the same line again updates StrCu
+(settings stay). To remove StrCu with all its settings, shortcuts and its service:
 
 ```
 & ([scriptblock]::Create((irm https://github.com/sakirsek/strcu/releases/latest/download/install.ps1))) -Uninstall
@@ -51,7 +56,7 @@ are not marked as coming from the internet.
 
 ## First start
 
-<img src="docs/setup.png" alt="StrCu's first-start setup in the terminal, step 2 of 5: the panel password" width="560">
+<img src="docs/setup.png" alt="StrCu's first-start setup in the terminal, step 2 of 4: the panel password" width="560">
 
 StrCu opens in a terminal window. The first start is a short setup:
 
@@ -60,19 +65,23 @@ StrCu opens in a terminal window. The first start is a short setup:
 3. **Home network:** whether phones on your Wi-Fi may reach the panel. Windows then asks once whether StrCu may
    accept connections; with "Private networks" selected, choose Allow.
 4. **Remote access** through Cloudflare, optional and possible later ([below](#remote-access-optional)).
-5. **Start with Windows** (minimized).
+
+StrCu itself starts with Windows, before anyone signs in, and keeps running when you sign out. Nothing is
+asked about that, because the service is what StrCu is.
 
 <img src="docs/terminal.png" alt="StrCu's main screen: the addresses to open on the phone (home network, remote, this computer) and recent events such as a phone paired, sign-ins and a wrong password" width="640">
 
 After that the main screen shows where the phone can open the panel and the important events: sign-ins and
 failed attempts with where they came from, phones paired, fingerprints added, the computer locked, files sent or
 received, the clipboard read, the tunnel coming and going. **P** pairs a phone, **S** opens the settings
-(language, password, home network, remote access, start with Windows, paired phones and fingerprints, port),
-**L** shows the full log and **Q** quits.
+(language, password, home network, remote access, this install, paired phones and fingerprints, port),
+**L** shows the full log and **Q** closes the window.
 
-Only one StrCu runs at a time; starting it again brings the running one's window to the front. Closing the
-window stops the panel and the tunnel. While StrCu runs, the computer does not go to sleep (the display may
-still turn off). For a laptop that works with its lid closed, set Windows to do nothing when the lid is closed.
+The window is a window onto the StrCu that is running, not StrCu itself: closing it leaves the panel and the
+tunnel as they are, and opening it again shows the same StrCu. Settings → **This install** says how StrCu
+starts and where it keeps things; Settings → **Stop StrCu** stops it until the computer starts again. While
+StrCu runs, the computer does not go to sleep (the display may still turn off). For a laptop that works with
+its lid closed, set Windows to do nothing when the lid is closed.
 
 ## Connect a phone
 
@@ -95,6 +104,8 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
   live, red when it is paused or when the image in view lags.
 - **Screen:** a tap aims the crosshair; a bar with Click / Double / Right, ↑ / ↓ (scroll) and ✕ appears next to
   it. Below the image, a magnifier and the element's name. A typing box and eight common keys sit underneath.
+  When the lock screen, the sign-in screen or an approval prompt is in front, a line above the image says so,
+  with one key that wakes a screen that went dark and brings the PIN box up.
 - **Quick** (the switch under the image) skips the crosshair. A tap clicks, a quarter of a second later in case
   a second tap follows; two taps double-click. Hold a finger still for half a second: lifting it right-clicks,
   moving it drags with the left button held. If the phone loses its connection mid-drag, StrCu lets go of the
@@ -191,21 +202,24 @@ times on chosen days. Schedules use the computer's clock and run on the computer
 A scheduled start is skipped and logged when the computer is locked, someone is using it at that moment, or
 another macro is running or being recorded. A run stops as soon as someone uses the mouse or keyboard at the
 computer or uses the panel; a step that fails stops it too, and a screenshot of that moment is kept with the
-macro. Each macro lists its last runs. Macros are kept in `%LOCALAPPDATA%\strcu\macros.json`.
+macro. Each macro lists its last runs. Macros are kept in `%ProgramData%\StrCu\macros.json`.
 
 ### What it cannot do
 
-- Unlock the computer. A locked computer shows as locked; locking works, unlocking needs someone at the desk.
-- Click or type into windows that run as administrator (often Task Manager and installers): Windows does not
-  let a normal program do that. The same goes for the UAC prompt.
-- Run a macro while the computer is locked: Windows shows nothing to click until someone unlocks it.
+- Turn the computer on. It has to be running; StrCu can lock it or shut it down, not wake it from off.
+- Send Ctrl+Alt+Del. Windows keeps that key for the person at the keyboard, and StrCu does not change the
+  Windows settings that would let a program send it.
+- Run a macro while the computer is locked. It could, but a macro that types into a locked computer is not
+  something to start by a timer: a scheduled run is skipped and written to the log instead.
+- Show what Windows itself hides. Video with copy protection comes out black: the picture is taken the way
+  Windows hands the desktop over.
 
 ## Remote access (optional)
 
 From outside the home, the panel is reached through a Cloudflare Tunnel protected by Cloudflare Access. You need
-a Cloudflare account and a domain whose DNS is on Cloudflare; the tunnel and Access are free. No Windows service
-or administrator rights: StrCu runs cloudflared as its own child process, watches its connection, starts it
-again if it stops, and closes it with the panel.
+a Cloudflare account and a domain whose DNS is on Cloudflare; the tunnel and Access are free. cloudflared is
+StrCu's own child process: StrCu watches its connection, starts it again if it stops, and closes it with the
+panel. Nothing is installed for it.
 
 It is set up from the terminal (in the first-start setup, or Settings → Remote access), which walks through the
 Cloudflare dashboard and checks each step:
@@ -232,9 +246,10 @@ password (added under More, which asks for the password once).
 Every request is placed by where its connection really comes from (the socket's addresses and, for one from
 this computer, the program that opened it), not only by its headers.
 
-- **This computer:** a browser in the same Windows session gets in without signing in. A connection opened by
-  another Windows user signed in to the same computer is refused. Only `localhost` as the address: a site
-  that points its own name at 127.0.0.1 is treated as remote (DNS rebinding).
+- **This computer:** a browser here signs in with the panel password like any other, and gets an ordinary
+  session. StrCu runs with the rights of the computer, so a program on this computer that was let in without
+  signing in would be handed those rights. Only `localhost` as the address: a site that points its own name at
+  127.0.0.1 is treated as remote (DNS rebinding).
 - **Home network** (when turned on): private addresses (192.168.x, 10.x, 172.16-31.x) on a network Windows
   counts as *Private*. The address typed must be the computer's IP or its name. Sign-in with the panel password
   or a paired phone. The connection is plain HTTP, so anyone on the same Wi-Fi could read it; browsers offer no
@@ -269,9 +284,13 @@ strcu                             # the terminal app: setup on the first start, 
 strcu serve [--bind 127.0.0.1:8765] [--no-tunnel]   # no screens, status lines only (scripts, services)
 strcu passwd                      # panel password from the command line
 strcu tunnel install | token | setup --hostname <host> --email <email> | status
-strcu doctor                      # inspect the system, write %LOCALAPPDATA%\strcu\profile.json
+strcu doctor                      # inspect the system, write %ProgramData%\StrCu\profile.json
 strcu licenses                    # licenses of the third-party software built in
 ```
+
+`strcu service`, `strcu worker` and `strcu agent` are the three parts StrCu runs itself: Windows starts the
+service, the service starts a worker on the screen's session, and the worker starts an agent with the signed-in
+user's own rights. They are not meant to be started by hand.
 
 Developer tools drive the operating system layer directly (coordinates are physical pixels everywhere):
 
@@ -310,8 +329,11 @@ and placeholders as `lang/en.json`.
 
 ## Layout
 
+- `src/svc.rs` the Windows service, which keeps a worker running on the session that has the screen;
+  `src/agent.rs` the part that runs with the signed-in user's own rights, for their apps, files and clipboard;
+  `src/paths.rs` the settings folder and who may write there
 - `src/sys/` operating system layer (screen, input, windows, UI Automation, clipboard, File Explorer, power,
-  apps, icons, discovery, child processes)
+  apps, icons, discovery, child processes, the desktop in front)
 - `src/server/` + `src/web/` the panel: who gets in (`mod.rs`, `via.rs`, `signin.rs`), the page, and the
   endpoints by what they do (`control.rs`, `desktop.rs`, `transfer.rs`, `automation.rs`); `src/worker.rs` runs
   operating system work in order on one thread; `src/log.rs` the log of what was done
