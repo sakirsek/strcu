@@ -102,6 +102,35 @@ fn set_dacl(dir: &Path, sddl: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+/// The rule that is on a file or folder now, as SDDL: "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)".
+///
+/// The tests ask Windows what it wrote down rather than whether this process can read the folder. That
+/// second question has a different answer for different people - an administrator is let in by the very
+/// rule that shuts everybody else out - and the tests run as a person here and as an administrator on the
+/// build server.
+fn dacl_of(path: &Path) -> Result<String> {
+    use windows::Win32::Security::Authorization::{
+        ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
+    };
+    use windows::core::PWSTR;
+
+    let name = HSTRING::from(path.as_os_str());
+    unsafe {
+        let mut sd = PSECURITY_DESCRIPTOR::default();
+        GetNamedSecurityInfoW(PCWSTR(name.as_ptr()), SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, None, None, None, None, &mut sd)
+            .ok()
+            .with_context(|| format!("{}", path.display()))?;
+        let mut text = PWSTR::null();
+        let r = ConvertSecurityDescriptorToStringSecurityDescriptorW(sd, SDDL_REVISION_1, DACL_SECURITY_INFORMATION, &mut text, None);
+        let _ = windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(sd.0)));
+        r?;
+        let out = text.to_string()?;
+        let _ = windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(text.0.cast())));
+        Ok(out)
+    }
+}
+
 /// Copies what 1.x left in `old` into `new`, once: a file already in `new` is never overwritten, so a
 /// second start changes nothing. Returns the names copied.
 fn migrate(old: &Path, new: &Path) -> Result<Vec<String>> {
@@ -170,10 +199,14 @@ mod tests {
         assert!(std::fs::read_dir(&mine).is_ok());
         std::fs::remove_dir_all(&mine).unwrap();
 
-        // As the computer: closed to everyone else, which here means to the very user who made it
+        // As the computer: the system and the administrators, and nobody else at all
         let theirs = temp("theirs");
         prepare_in(&theirs, &nothing, true).unwrap();
-        assert!(std::fs::read_dir(&theirs).is_err(), "the folder is still open");
+        let rule = dacl_of(&theirs).unwrap();
+        assert!(rule.starts_with("D:P"), "what the parent folder allows must not reach in: {rule}");
+        assert!(rule.contains("(A;OICI;FA;;;SY)"), "the system may do anything: {rule}");
+        assert!(rule.contains("(A;OICI;FA;;;BA)"), "so may the administrators: {rule}");
+        assert_eq!(rule.matches('(').count(), 2, "and there is nobody else in there: {rule}");
         // Opening it again takes the ownership we have, which is what an administrator would use
         set_dacl(&theirs, "D:P(A;OICI;FA;;;WD)").unwrap();
         std::fs::remove_dir_all(&theirs).unwrap();
@@ -191,14 +224,20 @@ mod tests {
 
         // Then the computer takes the folder, which closes what is in it as well
         set_dacl(&dir, CLOSED).unwrap();
-        assert!(std::fs::read_to_string(&note).is_err(), "it starts out as closed as the folder");
+        for f in [&note, &settings] {
+            let rule = dacl_of(f).unwrap();
+            assert!(!rule.contains(";BU)"), "it starts out as closed as the folder: {rule}");
+        }
 
         // The handover file alone is opened for reading, and the settings beside it are not
         let_anyone_read(&note).unwrap();
+        let opened = dacl_of(&note).unwrap();
+        assert!(opened.contains("(A;;FR;;;BU)"), "everybody who uses this computer may read it: {opened}");
+        assert!(!opened.contains("FA;;;BU"), "reading only: {opened}");
+        assert!(opened.contains("(A;;FA;;;SY)") && opened.contains("(A;;FA;;;BA)"), "{opened}");
+        assert!(!dacl_of(&settings).unwrap().contains(";BU)"), "the settings are still the computer's own");
+        // It is readable here as well, since this is the file the window has to be able to read
         assert_eq!(std::fs::read_to_string(&note).unwrap(), line);
-        assert!(std::fs::read_to_string(&settings).is_err(), "the settings are still the computer's own");
-        // Reading only: a program running as a person must not be able to write the service's own words
-        assert!(std::fs::OpenOptions::new().append(true).open(&note).is_err(), "it is not ours to write");
 
         set_dacl(&dir, "D:P(A;OICI;FA;;;WD)").unwrap();
         let _ = std::fs::remove_dir_all(&dir);
