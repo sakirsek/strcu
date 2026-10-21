@@ -71,6 +71,9 @@ pub const VERSION: u32 = 5;
 
 /// The system account, which is what StrCu runs as once it is a service.
 const SYSTEM: &str = "S-1-5-18";
+/// The administrators. A service makes its pipe as the computer, but what it makes comes out owned by this
+/// group rather than by the system itself, which is what the window sees when it looks at who answers.
+const ADMINS: &str = "S-1-5-32-544";
 
 /// `\\.\pipe\StrCu`, or `StrCuDev` in a development build, so the two never meet.
 pub fn path() -> String {
@@ -584,8 +587,9 @@ pub struct Link {
 }
 
 impl Link {
-    /// Connects to the running StrCu. It also makes sure the pipe belongs to the system or to our own
-    /// account: without that, something that had claimed the name first would be handed the password.
+    /// Connects to the running StrCu. It also makes sure the pipe belongs to somebody who could only be
+    /// StrCu (see `ours`): without that, something that had claimed the name first would be handed the
+    /// password.
     pub fn connect() -> Result<Link> {
         Self::connect_named(&path())
     }
@@ -608,8 +612,8 @@ impl Link {
                 Ok(h) => {
                     let pipe = Pipe(h);
                     let owner = owner_sid(pipe.0).context("who answers on the pipe")?;
-                    if owner != SYSTEM && Some(&owner) != own_sid().as_ref() {
-                        bail!("the pipe belongs to {owner}, which is neither the system nor us");
+                    if !ours(&owner) {
+                        bail!("the pipe belongs to {owner}, which is neither the computer nor us");
                     }
                     return Ok(Link { pipe });
                 }
@@ -715,6 +719,14 @@ fn own_sid() -> Option<String> {
     }
 }
 
+/// Whose pipe we are willing to talk to: the computer itself, the administrators - which is what a service
+/// gives what it makes - or ourselves, while StrCu is started by hand. A program running as a person cannot
+/// hand the ownership of what it makes to either of the first two, so a pipe owned by them was made by
+/// something that already had the rights StrCu runs with.
+fn ours(owner: &str) -> bool {
+    owner == SYSTEM || owner == ADMINS || own_sid().as_deref() == Some(owner)
+}
+
 /// Who created this pipe.
 fn owner_sid(pipe: HANDLE) -> Result<String> {
     unsafe {
@@ -770,6 +782,16 @@ mod tests {
         assert!(Ask::Change(Change::Lan(true)).needs_token());
         assert!(Ask::Pair(Pair::Open).needs_token());
         assert!(Ask::Stop.needs_token());
+    }
+
+    #[test]
+    fn only_a_pipe_of_the_computers_or_our_own_is_talked_to() {
+        assert!(ours(SYSTEM), "the computer itself");
+        assert!(ours(ADMINS), "what a service makes comes out owned by the administrators");
+        assert!(own_sid().is_some_and(|sid| ours(&sid)), "a StrCu started by hand is ours");
+        // Another account on this computer could claim the name first; its pipe is not talked to
+        assert!(!ours("S-1-5-21-1111111111-2222222222-3333333333-1001"));
+        assert!(!ours("S-1-1-0"), "everyone");
     }
 
     #[test]
