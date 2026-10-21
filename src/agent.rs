@@ -42,7 +42,7 @@ use windows::Win32::System::WindowsProgramming::GetUserNameW;
 use windows::core::{HSTRING, PWSTR};
 
 use crate::files;
-use crate::i18n::{self, Arg, Msg};
+use crate::i18n::{Msg, Written};
 use crate::ipc;
 use crate::sys::{apps, clipboard, icons};
 
@@ -144,7 +144,7 @@ pub enum Did {
     Done,
     /// The job could not be done, in words the panel can show in its own language.
     Failed {
-        why: Why,
+        why: Written,
     },
 }
 
@@ -156,68 +156,6 @@ impl Did {
             Did::Failed { why } => why.msg().into(),
             other => anyhow!("the agent answered {other:?}"),
         }
-    }
-}
-
-/// Why a job could not be done, in a form the panel reads in its own language. A `Msg` itself cannot travel,
-/// because its key is a `&'static str`, so the key goes as text and finds its way back to a `Msg` through
-/// the texts StrCu was built with (`i18n::code`). A key no language file has, or an argument its text does
-/// not name, is left out, and what is left to show is "something went wrong" with the key behind it.
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-pub struct Why {
-    code: String,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    args: Vec<(String, Said)>,
-}
-
-/// An argument of such a text. A number stays a number, because that is what chooses between "1 file" and
-/// "5 files".
-#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
-#[serde(untagged)]
-enum Said {
-    Num(i64),
-    Text(String),
-}
-
-impl Why {
-    /// What went wrong, from the error a job gave up with.
-    fn of(e: &anyhow::Error) -> Why {
-        Why::told(&i18n::from_error(e))
-    }
-
-    fn told(m: &Msg) -> Why {
-        let args = m
-            .args
-            .iter()
-            .map(|(name, value)| {
-                let said = match value {
-                    Arg::Num(n) => Said::Num(*n),
-                    Arg::Text(t) => Said::Text(t.clone()),
-                    // A text inside a text: in English, which is what such a detail is anyway
-                    Arg::Msg(inner) => Said::Text(inner.to_string()),
-                };
-                (name.to_string(), said)
-            })
-            .collect();
-        Why { code: m.code.to_string(), args }
-    }
-
-    /// The text to show, for whoever renders it in their own language.
-    pub fn msg(&self) -> Msg {
-        let Some(code) = i18n::code(&self.code) else {
-            return Msg::new("err.detail").with("msg", Msg::new("err.internal")).with("detail", self.code.clone());
-        };
-        let names = i18n::args_of(code);
-        let mut m = Msg::new(code);
-        for (name, said) in &self.args {
-            if let Some(&name) = names.iter().find(|n| **n == *name) {
-                m = m.with(name, match said {
-                    Said::Num(n) => Arg::Num(*n),
-                    Said::Text(t) => Arg::Text(t.clone()),
-                });
-            }
-        }
-        m
     }
 }
 
@@ -233,7 +171,7 @@ pub fn run() -> Result<()> {
         let answer = match serde_json::from_slice::<Job>(&frame) {
             Ok(job) => done(job, &mut mind),
             // Only the worker is at the other end, so this is a mistake of ours
-            Err(e) => Did::Failed { why: Why::of(&anyhow::Error::new(e)) },
+            Err(e) => Did::Failed { why: Written::of(&anyhow::Error::new(e)) },
         };
         write_frame(&mut answers, &serde_json::to_vec(&answer)?)?;
         answers.flush()?;
@@ -284,7 +222,7 @@ fn done(job: Job, mind: &mut Mind) -> Did {
         Job::Copy { text } => clipboard::set(&text).map(|()| Did::Done),
         Job::Icon { path, size } => icons::png(&path, size).map(|png| Did::Icon { png }),
     };
-    did.unwrap_or_else(|e| Did::Failed { why: Why::of(&e) })
+    did.unwrap_or_else(|e| Did::Failed { why: Written::of(&e) })
 }
 
 /// Makes the file a phone is about to send, under a name no finished file has: there is nothing half
@@ -748,6 +686,7 @@ fn read_frame(from: &mut impl Read) -> Result<Option<Vec<u8>>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n;
 
     #[test]
     fn a_job_and_its_answer_read_back_as_they_were_sent() {
@@ -787,24 +726,6 @@ mod tests {
         let Did::Who { user, session, .. } = who().unwrap() else { panic!("another answer") };
         assert!(!user.is_empty());
         assert_ne!(session, u32::MAX);
-    }
-
-    #[test]
-    fn a_failure_keeps_its_text_across_the_pipe() {
-        let said = Why::told(&Msg::new("err.open_failed").with("path", r"C:\Users\me\rapor.xlsx"));
-        let read: Why = serde_json::from_str(&serde_json::to_string(&said).unwrap()).unwrap();
-        assert_eq!(read, said);
-        assert_eq!(i18n::en().render(&read.msg()), r"Could not open C:\Users\me\rapor.xlsx");
-        // A number stays a number, so the plural forms still work
-        let counted = Why::told(&Msg::new("ev.typed").with("n", 1));
-        assert_eq!(i18n::en().render(&counted.msg()), "Typed 1 character");
-        // A key this StrCu does not have cannot become a text of its own
-        // Built, not written: a quoted key in our own source is a key the language files must have
-        let made_up = Why { code: ["err", "from_the_future"].join("."), args: Vec::new() };
-        assert_eq!(i18n::en().render(&made_up.msg()), "Something went wrong: err.from_the_future");
-        // An error without a text of its own arrives as the detail behind "something went wrong"
-        let why = Why::of(&anyhow!("boom"));
-        assert_eq!(i18n::en().render(&why.msg()), "Something went wrong: boom");
     }
 
     #[test]

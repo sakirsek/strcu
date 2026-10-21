@@ -136,6 +136,8 @@ impl Panel {
     pub fn new() -> Result<Panel> {
         let cfg = crate::config::load();
         let (worker, log, shutdown_at) = (Worker::spawn(), Arc::new(ActionLog::new()), Arc::new(Mutex::new(None)));
+        // What the service said before this worker was born, including why an earlier one would not start
+        log.adopt(crate::log::handed_over());
         let agent = agent::Hand::new();
         let macros = macros::Engine::new(worker.clone(), agent.clone(), log.clone(), shutdown_at.clone());
         macros.start_scheduler();

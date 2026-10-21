@@ -264,6 +264,70 @@ macro_rules! num_arg {
 }
 num_arg!(u16, i32, i64, u32, u64, usize);
 
+/// A `Msg` written down: the key as text with its arguments beside it, for the places a `Msg` itself cannot
+/// go. Its key is a `&'static str`, so nothing that arrives at runtime can build one; a key that comes back
+/// finds its `Msg` again among the texts StrCu was built with (`code`). A key no language file has, or an
+/// argument its text does not name, is left out, and what is left to show is "something went wrong" with the
+/// key behind it. It travels the agent's two pipes (agent.rs) and the file the service leaves its log in
+/// (log.rs).
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone)]
+pub struct Written {
+    code: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    args: Vec<(String, Said)>,
+}
+
+/// An argument of such a text. A number stays a number, because that is what chooses between "1 file" and
+/// "5 files".
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Clone)]
+#[serde(untagged)]
+pub enum Said {
+    Num(i64),
+    Text(String),
+}
+
+impl Written {
+    /// What went wrong, from the error something gave up with.
+    pub fn of(e: &anyhow::Error) -> Written {
+        Written::told(&from_error(e))
+    }
+
+    pub fn told(m: &Msg) -> Written {
+        let args = m
+            .args
+            .iter()
+            .map(|(name, value)| {
+                let said = match value {
+                    Arg::Num(n) => Said::Num(*n),
+                    Arg::Text(t) => Said::Text(t.clone()),
+                    // A text inside a text: in English, which is what such a detail is anyway
+                    Arg::Msg(inner) => Said::Text(inner.to_string()),
+                };
+                (name.to_string(), said)
+            })
+            .collect();
+        Written { code: m.code.to_string(), args }
+    }
+
+    /// The text to show, for whoever renders it in their own language.
+    pub fn msg(&self) -> Msg {
+        let Some(code) = code(&self.code) else {
+            return Msg::new("err.detail").with("msg", Msg::new("err.internal")).with("detail", self.code.clone());
+        };
+        let names = args_of(code);
+        let mut m = Msg::new(code);
+        for (name, said) in &self.args {
+            if let Some(&name) = names.iter().find(|n| **n == *name) {
+                m = m.with(name, match said {
+                    Said::Num(n) => Arg::Num(*n),
+                    Said::Text(t) => Arg::Text(t.clone()),
+                });
+            }
+        }
+        m
+    }
+}
+
 impl Serialize for Msg {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         let mut m = s.serialize_map(None)?;
@@ -331,6 +395,24 @@ mod tests {
     use anyhow::Context;
 
     use super::*;
+
+    #[test]
+    fn a_text_keeps_its_meaning_when_it_is_written_down() {
+        let said = Written::told(&Msg::new("err.open_failed").with("path", r"C:\Users\me\rapor.xlsx"));
+        let read: Written = serde_json::from_str(&serde_json::to_string(&said).unwrap()).unwrap();
+        assert_eq!(read, said);
+        assert_eq!(en().render(&read.msg()), r"Could not open C:\Users\me\rapor.xlsx");
+        // A number stays a number, so the plural forms still work
+        let counted = Written::told(&Msg::new("ev.typed").with("n", 1));
+        assert_eq!(en().render(&counted.msg()), "Typed 1 character");
+        // A key this StrCu does not have cannot become a text of its own
+        // Built, not written: a quoted key in our own source is a key the language files must have
+        let made_up = Written { code: ["err", "from_the_future"].join("."), args: Vec::new() };
+        assert_eq!(en().render(&made_up.msg()), "Something went wrong: err.from_the_future");
+        // An error without a text of its own arrives as the detail behind "something went wrong"
+        let boom = Written::of(&anyhow::anyhow!("boom"));
+        assert_eq!(en().render(&boom.msg()), "Something went wrong: boom");
+    }
 
     fn placeholders(v: &Value) -> BTreeSet<String> {
         let mut out = BTreeSet::new();

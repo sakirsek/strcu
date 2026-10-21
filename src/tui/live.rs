@@ -208,8 +208,10 @@ fn unexpected(_answer: Answer) -> anyhow::Error {
     anyhow::Error::from(Msg::new("err.internal"))
 }
 
+/// The pipe of the StrCu that is running. Finding none is the one error a person is likely to meet, so it
+/// comes with whatever can be found out about why (`svc::not_running`).
 fn link() -> Result<Link> {
-    Link::connect().map_err(|e| e.context(Msg::new("term.not_running")))
+    Link::connect().map_err(|e| e.context(crate::svc::not_running()))
 }
 
 /// What has just arrived goes in front of what the window had, and the oldest fall off the end.

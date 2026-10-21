@@ -62,7 +62,18 @@ fn prepare_in(dir: &Path, old: &Path, close: bool) -> Result<Vec<String>> {
 /// parent out.
 const CLOSED: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 
-/// Replaces whatever the folder inherited from `%ProgramData%` with `sddl`.
+/// The same, with reading added for everybody who uses this computer (`BU`). `P` again, so the folder's own
+/// rule - which shuts them out - does not come back by inheritance.
+const READABLE: &str = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)";
+
+/// Lets anybody on this computer read one file in the closed folder. It is for the file the service hands
+/// its log over in (log.rs): the control window runs as a person, and when the worker never came up that
+/// file is the only place that says why. Nothing in it was ever secret.
+pub fn let_anyone_read(file: &Path) -> Result<()> {
+    set_dacl(file, READABLE)
+}
+
+/// Replaces whatever a file or folder inherited from `%ProgramData%` with `sddl`.
 fn set_dacl(dir: &Path, sddl: &str) -> Result<()> {
     let sddl = HSTRING::from(sddl);
     let mut sd = PSECURITY_DESCRIPTOR::default();
@@ -166,6 +177,31 @@ mod tests {
         // Opening it again takes the ownership we have, which is what an administrator would use
         set_dacl(&theirs, "D:P(A;OICI;FA;;;WD)").unwrap();
         std::fs::remove_dir_all(&theirs).unwrap();
+    }
+
+    #[test]
+    fn one_file_in_the_closed_folder_is_left_open_to_read() {
+        // The two files first, while the folder is still open, because closing it shuts this test out too
+        let (dir, nothing) = (temp("open-one"), temp("no-1x"));
+        prepare_in(&dir, &nothing, false).unwrap();
+        let (note, settings) = (dir.join("service.log"), dir.join("config.json"));
+        let line = "a line the window has to be able to read";
+        std::fs::write(&note, line).unwrap();
+        std::fs::write(&settings, "{}").unwrap();
+
+        // Then the computer takes the folder, which closes what is in it as well
+        set_dacl(&dir, CLOSED).unwrap();
+        assert!(std::fs::read_to_string(&note).is_err(), "it starts out as closed as the folder");
+
+        // The handover file alone is opened for reading, and the settings beside it are not
+        let_anyone_read(&note).unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), line);
+        assert!(std::fs::read_to_string(&settings).is_err(), "the settings are still the computer's own");
+        // Reading only: a program running as a person must not be able to write the service's own words
+        assert!(std::fs::OpenOptions::new().append(true).open(&note).is_err(), "it is not ours to write");
+
+        set_dacl(&dir, "D:P(A;OICI;FA;;;WD)").unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

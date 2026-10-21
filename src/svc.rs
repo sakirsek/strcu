@@ -72,7 +72,9 @@ pub fn stop() -> Result<()> {
 define_windows_service!(ffi_service_main, service_main);
 
 fn service_main(_args: Vec<OsString>) {
-    let log = ActionLog::new();
+    // What this service says from here on is also left in a file, for the parts of StrCu that cannot ask it
+    crate::log::start_handover();
+    let log = ActionLog::for_service();
     if let Err(e) = serve(&log) {
         log.add(Msg::new("ev.service_error").with("msg", format!("{e:#}")), false);
     }
@@ -107,6 +109,8 @@ fn serve(log: &ActionLog) -> Result<()> {
     log.add(Msg::new("ev.service_started"), true);
 
     let mut worker: Option<Worker> = None;
+    // The same failure every two seconds is one thing to know, not a hundred lines of log
+    let mut failed_with: Option<String> = None;
     loop {
         let session = console_session();
         if let Some(w) = worker.take_if(|w| w.session != session || w.has_stopped()) {
@@ -118,8 +122,15 @@ fn serve(log: &ActionLog) -> Result<()> {
                 Ok(w) => {
                     log.add(Msg::new("ev.worker_started").with("session", session.to_string()), true);
                     worker = Some(w);
+                    failed_with = None;
                 }
-                Err(e) => log.add(Msg::new("ev.worker_failed").with("msg", format!("{e:#}")), false),
+                Err(e) => {
+                    let why = format!("{e:#}");
+                    if failed_with.as_deref() != Some(why.as_str()) {
+                        log.add(Msg::new("ev.worker_failed").with("msg", why.clone()), false);
+                        failed_with = Some(why);
+                    }
+                }
             }
         }
         match events.recv_timeout(LOOK) {
@@ -134,6 +145,42 @@ fn serve(log: &ActionLog) -> Result<()> {
     log.add(Msg::new("ev.service_stopped"), true);
     status.set_service_status(report(ServiceState::Stopped, ServiceControlAccept::empty()))?;
     Ok(())
+}
+
+/// Why nothing answered the control window, in words to show: what Windows says about the service, and the
+/// last thing the service itself said (log.rs). StrCu started by hand is no service and hands nothing over,
+/// and then there is nothing to add to "StrCu is not running".
+pub fn not_running() -> Msg {
+    why(state(), crate::log::handed_over().into_iter().next_back().map(|e| e.msg))
+}
+
+/// What Windows says about the service, or `None` when StrCu is not installed as one at all. Asking takes
+/// no rights worth having, so the window may ask as whoever opened it.
+fn state() -> Option<ServiceState> {
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).ok()?;
+    let service = manager.open_service(crate::brand::KEY, ServiceAccess::QUERY_STATUS).ok()?;
+    service.query_status().ok().map(|s| s.current_state)
+}
+
+/// The two halves put together, kept apart from the asking so it can be tried on its own.
+fn why(state: Option<ServiceState>, said: Option<Msg>) -> Msg {
+    let state = state.map(|s| {
+        Msg::new(match s {
+            ServiceState::Running => "term.service_running",
+            ServiceState::Stopped => "term.service_stopped",
+            _ => "term.service_between",
+        })
+    });
+    let why = match (state, said) {
+        (Some(state), Some(said)) => Some(Msg::new("term.service_said").with("state", state).with("said", said)),
+        (Some(state), None) => Some(state),
+        (None, Some(said)) => Some(said),
+        (None, None) => None,
+    };
+    match why {
+        Some(why) => Msg::new("term.not_running_why").with("why", why),
+        None => Msg::new("term.not_running"),
+    }
 }
 
 enum Event {
@@ -206,5 +253,32 @@ fn start_worker(session: u32) -> Result<Worker> {
             Ok(w) => Ok(w),
             Err(e) => bail!("{e}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::i18n::en;
+
+    #[test]
+    fn what_the_window_is_told_when_nothing_answers() {
+        // StrCu started by hand: no service to ask, and nothing handed over
+        assert_eq!(why(None, None), Msg::new("term.not_running"));
+
+        // A service that is there says what it is doing
+        let stopped = why(Some(ServiceState::Stopped), None);
+        assert_eq!(stopped.code, "term.not_running_why");
+        assert!(en().render(&stopped).contains("stopped"), "{}", en().render(&stopped));
+
+        // And what it last said is the part that tells you why
+        let both = why(Some(ServiceState::Running), Some(Msg::new("ev.worker_failed").with("msg", "boom")));
+        let text = en().render(&both);
+        assert!(text.contains("boom"), "{text}");
+        assert!(text.contains("running"), "{text}");
+
+        // A word with no service behind it still beats saying nothing
+        let said = why(None, Some(Msg::new("ev.service_error").with("msg", "boom")));
+        assert!(en().render(&said).contains("boom"));
     }
 }
