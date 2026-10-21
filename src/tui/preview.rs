@@ -130,7 +130,8 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         lang: t.name.clone(),
         lan: true,
         remote: Some(host.into()),
-        autostart: true,
+        as_computer: true,
+        data_dir: r"C:\ProgramData\StrCu".to_string(),
         passkeys: keys.len() + devices.len(),
         port: 8765,
     };
@@ -222,6 +223,7 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("15c-phones", settings::phones_view(t, &phones, unix_now(), "", None)),
         ("16-port", settings::port_view(t, "8765", None)),
         ("16b-stop", settings::stop_view(t, "")),
+        ("16c-install", settings::install_view(t, &values, "")),
     ];
     std::fs::create_dir_all(dir)?;
     let mut out = Vec::new();

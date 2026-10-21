@@ -1,4 +1,4 @@
-//! Settings: language, password, home network, remote access, starting with Windows, phones, port.
+//! Settings: language, password, home network, remote access, this install, phones, port.
 //!
 //! Nothing here writes the settings any more. The window asks the running StrCu to change them (live.rs) and
 //! StrCu is the only one that may (paths.rs), so every item below sends one ask from the closed list and
@@ -20,7 +20,10 @@ pub struct Values {
     pub lang: String,
     pub lan: bool,
     pub remote: Option<String>,
-    pub autostart: bool,
+    /// StrCu runs with the rights of the computer, which is what the service arranges
+    pub as_computer: bool,
+    /// Where the settings, the macros and the log are kept
+    pub data_dir: String,
     pub passkeys: usize,
     pub port: u16,
 }
@@ -41,7 +44,7 @@ pub fn menu_view(t: &Lang, v: &Values, typed: &str, notice: Option<&Notice>) -> 
             Some(h) => span(Tone::Accent, h),
             None => span(Tone::Dim, t.t("set.not_set")),
         }),
-        ("set.autostart", on_off(v.autostart)),
+        ("set.install", span(Tone::Dim, t.t(if v.as_computer { "set.as_computer" } else { "set.by_hand" }))),
         ("set.phones", span(Tone::Plain, t.render(&Msg::new("set.registered").with("n", v.passkeys)))),
         ("set.port", span(Tone::Plain, v.port.to_string())),
         ("set.stop", span(Tone::Dim, t.t("set.stop_note"))),
@@ -65,11 +68,37 @@ fn values(live: &mut Live) -> Result<Values> {
         lang: language_name(settings.language.as_deref()),
         lan: settings.lan,
         remote: settings.remote_host,
-        // StrCu starts with Windows as a service now, so there is nothing here to turn on or off
-        autostart: true,
+        as_computer: settings.as_computer,
+        data_dir: settings.data_dir,
         passkeys: settings.phones.len(),
         port: settings.port,
     })
+}
+
+/// What this install is: how StrCu starts, what that lets it reach, and where it keeps things. Nothing to
+/// change here - a service decides for itself whether it starts with Windows - so it is a screen to read.
+pub fn install_view(t: &Lang, v: &Values, typed: &str) -> Frame {
+    let mut f = Frame::default();
+    header(&mut f, &title(t, "set.install"), Vec::new());
+    f.text(Tone::Strong, t.t(if v.as_computer { "set.as_computer" } else { "set.by_hand" }));
+    f.text(Tone::Dim, t.t(if v.as_computer { "set.as_computer_note" } else { "set.by_hand_note" }));
+    f.blank();
+    f.text(Tone::Plain, t.t("set.data_dir"));
+    f.text(Tone::Dim, format!("  {}", v.data_dir));
+    f.blank();
+    option(&mut f, 0, &t.t("ui.back"), None);
+    f.blank();
+    prompt(&mut f, t, None, typed);
+    footer(&mut f, &[hint_back(t)]);
+    f
+}
+
+async fn install(io: &mut impl Io, v: &Values) -> Result<Step<Option<Notice>>> {
+    let t = i18n::term();
+    match choose(io, 0, None, |typed| install_view(t, v, typed)).await {
+        Step::Quit => Ok(Step::Quit),
+        _ => Ok(Step::Done(None)),
+    }
 }
 
 /// The name of the language the settings name, or of the one Windows uses.
@@ -89,7 +118,7 @@ pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
             Step::Done(2) => password(io, live).await?,
             Step::Done(3) => lan(io, live, v.lan).await?,
             Step::Done(4) => super::remote::screen(io, live).await?.map(|()| None),
-            Step::Done(5) => Step::Done(Some(Notice::Warn(Msg::new("set.autostart_service")))),
+            Step::Done(5) => install(io, &v).await?,
             Step::Done(6) => phones(io, live).await?,
             Step::Done(7) => port(io, live, v.port, v.remote.is_some()).await?,
             Step::Done(_) => stop(io, live).await?,

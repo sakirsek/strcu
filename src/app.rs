@@ -682,6 +682,8 @@ fn settings(app: &App) -> ipc::Settings {
         cloudflared: tunnel::installed_version(),
         password_set: cfg.password_hash.is_some(),
         setup_done,
+        as_computer: ipc::as_system(),
+        data_dir: crate::paths::data_dir().display().to_string(),
         phones: devices.iter().map(ipc::Phone::from_device).chain(keys.iter().map(ipc::Phone::from_passkey)).collect(),
     }
 }

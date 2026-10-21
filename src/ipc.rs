@@ -67,7 +67,9 @@ use crate::passkey::Passkey;
 /// 3: `Tunnel` for setting remote access up, and two more fields in `Settings` for the screen that shows it.
 /// 4: `Status` says which user the agent runs as, if any.
 /// 5: the first start is done over the pipe (`Setup`), and both `Status` and `Settings` say what is missing.
-pub const VERSION: u32 = 5;
+/// 6: `Settings` says how StrCu was started and where it keeps things, in place of the "start with Windows"
+/// setting, which a service decides for itself.
+pub const VERSION: u32 = 6;
 
 /// The system account, which is what StrCu runs as once it is a service.
 const SYSTEM: &str = "S-1-5-18";
@@ -326,6 +328,11 @@ pub struct Settings {
     /// The setup screens have been through once. Without that the window opens them (and without a password
     /// it has to).
     pub setup_done: bool,
+    /// StrCu runs with the rights of the computer, which only the service can arrange: the lock screen, the
+    /// sign-in screen and administrator windows are reachable. False is a StrCu somebody started by hand.
+    pub as_computer: bool,
+    /// Where the settings, the macros and the log are kept, to show in the window.
+    pub data_dir: String,
     pub phones: Vec<Phone>,
 }
 
@@ -814,7 +821,7 @@ mod tests {
         // An ask that only reads carries no token at all. The shape is pinned on purpose: it is what
         // `VERSION` promises, and a change to it that forgets to raise the version breaks here.
         let plain = Request { v: VERSION, token: None, ask: Ask::Status { log_since: 7 } };
-        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":5,"ask":"status","with":{"log_since":7}}"#);
+        assert_eq!(serde_json::to_string(&plain).unwrap(), r#"{"v":6,"ask":"status","with":{"log_since":7}}"#);
         let reply = Reply {
             v: VERSION,
             answer: Answer::Status(Status {
