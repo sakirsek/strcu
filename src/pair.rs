@@ -9,9 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-
-use crate::auth::random_hex;
+use crate::auth::{random_hex, sha256_hex};
 use crate::i18n::Msg;
 
 pub const COOKIE: &str = "strcu_device";
@@ -91,10 +89,6 @@ pub struct Pairing {
 
 pub fn unix_now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
-}
-
-fn sha256_hex(s: &str) -> String {
-    Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Six random digits.

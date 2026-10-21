@@ -3,19 +3,29 @@
 //!
 //! This layer is the second lock behind Cloudflare Access: even if Access is loosened by mistake,
 //! nothing can be done without the password (or a fingerprint that was added with the password).
+//!
+//! The sessions wait for the next worker in a file. Signing out of Windows, switching users or starting the
+//! computer again takes the worker with the session it belongs to (svc.rs), and that is exactly the moment
+//! the phone is wanted most: in front of the sign-in screen, to type the PIN. Only a hash of each cookie is
+//! written down, as with a paired phone's secret, so the file is no way in by itself.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+use sha2::{Digest, Sha256};
 
 use crate::config;
 use crate::i18n::Msg;
+use crate::pair::unix_now;
 
 pub const COOKIE: &str = "strcu_session";
+/// Where the sessions wait for the next worker, beside the settings.
+const SESSIONS: &str = "sessions.json";
 pub const MIN_PASSWORD: usize = 10;
 const SESSION_TTL: Duration = Duration::from_secs(12 * 3600);
 const MAX_FAILS: u32 = 5;
@@ -44,9 +54,13 @@ pub struct Auth {
     /// None on a computer where StrCu has just been installed: it runs, but lets nobody in until a password
     /// is set from the window (`ipc::Ask::Setup`).
     hash: Mutex<Option<String>>,
-    sessions: Mutex<HashMap<String, Instant>>,
+    /// The hash of each session cookie and when it was opened, in seconds since 1970 - a worker that starts
+    /// again has to tell the time the same way the one before it did.
+    sessions: Mutex<HashMap<String, u64>>,
     /// Wrong attempts per source (an address): how many, and when the last one was
     fails: Mutex<HashMap<String, (u32, Instant)>>,
+    /// The folder the sessions are kept in, so a test keeps its own somewhere of its own
+    dir: PathBuf,
 }
 
 /// Result of a password check.
@@ -58,8 +72,20 @@ pub enum Check {
 
 impl Auth {
     pub fn from_config() -> Auth {
-        let hash = config::load().password_hash;
-        Auth { hash: Mutex::new(hash), sessions: Mutex::default(), fails: Mutex::default() }
+        Auth::in_dir(config::load().password_hash, config::data_dir())
+    }
+
+    fn in_dir(hash: Option<String>, dir: PathBuf) -> Auth {
+        let sessions = kept_in(&dir);
+        Auth { hash: Mutex::new(hash), sessions: Mutex::new(sessions), fails: Mutex::default(), dir }
+    }
+
+    /// Writes the sessions down for the next worker. A failure is nothing to report: the folder belongs to
+    /// the computer, and a session that could not be kept only means signing in again.
+    fn keep(&self, sessions: &HashMap<String, u64>) {
+        if let Ok(text) = serde_json::to_string(sessions) {
+            let _ = std::fs::write(self.dir.join(SESSIONS), text);
+        }
     }
 
     /// Is there a password at all? Without one the panel does not listen: there would be no way to tell the
@@ -68,10 +94,13 @@ impl Auth {
         self.hash.lock().unwrap().is_some()
     }
 
-    /// The password was changed on the computer: the new one applies at once and every session ends.
+    /// The password was changed on the computer: the new one applies at once and every session ends, the
+    /// ones waiting in the file among them.
     pub fn replace_password(&self, hash: String) {
         *self.hash.lock().unwrap() = Some(hash);
-        self.sessions.lock().unwrap().clear();
+        let mut s = self.sessions.lock().unwrap();
+        s.clear();
+        self.keep(&s);
         self.fails.lock().unwrap().clear();
     }
 
@@ -104,29 +133,64 @@ impl Auth {
     /// New session (after the password or a fingerprint was verified).
     pub fn new_session(&self) -> String {
         let token = random_token();
-        self.sessions.lock().unwrap().insert(token.clone(), Instant::now());
+        let mut s = self.sessions.lock().unwrap();
+        let now = unix_now();
+        s.retain(|_, opened| still_open(*opened, now));
+        s.insert(sha256_hex(&token), now);
+        self.keep(&s);
         token
     }
 
     pub fn check(&self, token: &str) -> bool {
         let mut s = self.sessions.lock().unwrap();
-        s.retain(|_, t| t.elapsed() < SESSION_TTL);
-        s.contains_key(token)
+        let now = unix_now();
+        let had = s.len();
+        s.retain(|_, opened| still_open(*opened, now));
+        if s.len() != had {
+            self.keep(&s);
+        }
+        s.contains_key(&sha256_hex(token))
     }
 
     /// Time left in the session (seconds).
     pub fn remaining(&self, token: &str) -> Option<u64> {
+        let now = unix_now();
         let s = self.sessions.lock().unwrap();
-        s.get(token).map(|t| SESSION_TTL.saturating_sub(t.elapsed()).as_secs())
+        s.get(&sha256_hex(token)).map(|opened| SESSION_TTL.as_secs().saturating_sub(now.saturating_sub(*opened)))
     }
 
     pub fn logout(&self, token: &str) {
-        self.sessions.lock().unwrap().remove(token);
+        let mut s = self.sessions.lock().unwrap();
+        s.remove(&sha256_hex(token));
+        self.keep(&s);
     }
 }
 
+/// A session is over twelve hours after it was opened. A clock that went backwards leaves it open, which is
+/// the harmless way round: the password is still the only way to open one.
+fn still_open(opened: u64, now: u64) -> bool {
+    now.saturating_sub(opened) < SESSION_TTL.as_secs()
+}
+
+/// The sessions from the file, without the ones that have run out.
+fn kept_in(dir: &Path) -> HashMap<String, u64> {
+    let Ok(text) = std::fs::read_to_string(dir.join(SESSIONS)) else { return HashMap::new() };
+    let mut kept: HashMap<String, u64> = serde_json::from_str(&text).unwrap_or_default();
+    let now = unix_now();
+    kept.retain(|_, opened| still_open(*opened, now));
+    kept
+}
+
+
+
 fn random_token() -> String {
     random_hex(32)
+}
+
+/// The SHA-256 of a text, as hex. What is written down of a secret - a session cookie here, a paired
+/// phone's secret in pair.rs - is this and never the secret itself.
+pub fn sha256_hex(s: &str) -> String {
+    Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// `bytes` random bytes as hex.
@@ -151,13 +215,21 @@ mod tests {
     use super::*;
     use argon2::{Algorithm, Params, Version};
 
+    /// A folder of this test's own: nothing here writes where the real StrCu keeps its sessions.
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("strcu-auth-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
     #[test]
     fn each_source_has_its_own_brake() {
         // Cheap parameters: the check reads them from the hash
         let salt = SaltString::encode_b64(b"0123456789abcdef").unwrap();
         let fast = Argon2::new(Algorithm::Argon2id, Version::V0x13, Params::new(8, 1, 1, None).unwrap());
         let hash = fast.hash_password(b"right password", &salt).unwrap().to_string();
-        let auth = Auth { hash: Mutex::new(Some(hash)), sessions: Mutex::default(), fails: Mutex::default() };
+        let auth = Auth::in_dir(Some(hash), temp("brake"));
         for _ in 0..MAX_FAILS {
             assert!(matches!(auth.check_password("wrong", "192.168.1.73"), Check::Wrong));
         }
@@ -172,8 +244,35 @@ mod tests {
     }
 
     #[test]
+    fn a_signed_in_phone_waits_in_a_file_for_the_next_worker() {
+        let dir = temp("sessions");
+        let one = Auth::in_dir(Some(String::new()), dir.clone());
+        let token = one.new_session();
+
+        // What is written down is no way in: the cookie itself is not in the file
+        let text = std::fs::read_to_string(dir.join(SESSIONS)).unwrap();
+        assert!(!text.contains(&token), "{text}");
+        assert!(text.contains(&sha256_hex(&token)));
+
+        // The worker is born again: the phone that was signed in still is
+        let next = Auth::in_dir(Some(String::new()), dir.clone());
+        assert!(next.check(&token), "it was signed in before this worker existed");
+        assert!(next.remaining(&token).is_some_and(|left| left > SESSION_TTL.as_secs() - 10));
+
+        // Signing out ends it for the one after that as well
+        next.logout(&token);
+        assert!(!Auth::in_dir(Some(String::new()), dir.clone()).check(&token));
+
+        // And one that has run out is not taken over at all
+        let old = HashMap::from([(sha256_hex("yesterday"), unix_now() - SESSION_TTL.as_secs() - 1)]);
+        one.keep(&old);
+        assert!(kept_in(&dir).is_empty(), "twelve hours are twelve hours");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn before_there_is_a_password_nothing_gets_in() {
-        let auth = Auth { hash: Mutex::new(None), sessions: Mutex::default(), fails: Mutex::default() };
+        let auth = Auth::in_dir(None, temp("no-password"));
         assert!(!auth.is_set());
         assert!(matches!(auth.check_password("", "192.168.1.73"), Check::Wrong));
         assert!(matches!(auth.check_password("anything at all", "192.168.1.73"), Check::Wrong));
