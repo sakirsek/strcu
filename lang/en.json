@@ -761,7 +761,6 @@
   "doctor.session": "Session",
   "doctor.remote": "remote desktop",
   "doctor.tunnel": "Tunnel",
-  "doctor.saved": "Profile saved",
   "dl.present": "{label}: already present ({size})",
   "dl.resume": "{label}: resuming from {size}",
   "dl.retry": "{label}: connection problem ({error}), retrying from {size}",

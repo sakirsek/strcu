@@ -719,7 +719,6 @@
   "doctor.session": "Oturum",
   "doctor.remote": "uzak masaüstü",
   "doctor.tunnel": "Tünel",
-  "doctor.saved": "Profil kaydedildi",
   "dl.present": "{label}: zaten var ({size})",
   "dl.resume": "{label}: {size} üzerinden devam",
   "dl.retry": "{label}: bağlantı sorunu ({error}), {size} üzerinden yeniden deneniyor",

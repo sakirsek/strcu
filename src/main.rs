@@ -73,8 +73,9 @@ enum Cmd {
         #[command(subcommand)]
         cmd: TunnelCmd,
     },
-    /// Inspect the system (operating system, displays, language, tunnel) and save the profile
+    /// Show what StrCu sees of this computer (operating system, displays, language, remote access)
     Doctor {
+        /// The same as JSON
         #[arg(long)]
         json: bool,
     },
@@ -498,20 +499,16 @@ impl Asking {
     }
 }
 
+/// `strcu doctor`: what StrCu sees of this computer, to read or to paste into a report. It is only shown: the
+/// settings folder is no place for a person's command to write, and nothing ever read the file it used to leave.
 fn doctor(json: bool) -> Result<()> {
     let profile = sys::discover::profile();
     let tunnel = match remote_lines() {
         Ok(lines) => lines.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" · "),
         Err(e) => i18n::term().render(&i18n::from_error(&e)),
     };
-    let report = serde_json::json!({ "system": profile, "tunnel": tunnel });
-
-    let dir = config::data_dir();
-    std::fs::create_dir_all(&dir)?;
-    let path = dir.join("profile.json");
-    std::fs::write(&path, serde_json::to_string_pretty(&report)?)?;
-
     if json {
+        let report = serde_json::json!({ "system": profile, "tunnel": tunnel });
         println!("{}", serde_json::to_string_pretty(&report)?);
         return Ok(());
     }
@@ -536,7 +533,6 @@ fn doctor(json: bool) -> Result<()> {
             format!("{:?}{}", p.session.lock, if p.session.remote { format!(" ({})", lang.t("doctor.remote")) } else { String::new() }),
         ),
         (lang.t("doctor.tunnel"), tunnel),
-        (lang.t("doctor.saved"), path.display().to_string()),
     ]);
     let width = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
     for (k, v) in rows {
