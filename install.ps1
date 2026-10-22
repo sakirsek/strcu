@@ -117,8 +117,10 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
     # left running - the service, a worker, a window, and the cloudflared it keeps for the tunnel. A
     # cloudflared left behind would hold the tunnel open on a StrCu that is no longer there.
     function Stop-Under([string]$folder) {
+        # Inside the folder itself, not every folder whose name starts the same way (StrCu and StrCuDev)
+        $inside = $folder.TrimEnd('\') + '\'
         $running = @(Get-Process strcu, cloudflared -ErrorAction SilentlyContinue |
-            Where-Object { $_.Path -and $_.Path.StartsWith($folder, [StringComparison]::OrdinalIgnoreCase) })
+            Where-Object { $_.Path -and $_.Path.StartsWith($inside, [StringComparison]::OrdinalIgnoreCase) })
         if ($running.Count -eq 0) { return }
         $running | Stop-Process -Force -ErrorAction SilentlyContinue
         $running | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue
