@@ -31,12 +31,16 @@ use windows::Win32::Foundation::{
 };
 use windows::Win32::Security::{GetTokenInformation, SECURITY_ATTRIBUTES, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 use windows::Win32::Storage::FileSystem::{CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_WRITE, OPEN_EXISTING};
+use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
 use windows::Win32::System::Environment::{CreateEnvironmentBlock, DestroyEnvironmentBlock};
 use windows::Win32::System::Pipes::CreatePipe;
 use windows::Win32::System::RemoteDesktop::{ProcessIdToSessionId, WTSQueryUserToken};
 use windows::Win32::System::Threading::{
-    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, GetCurrentProcess, GetCurrentProcessId,
-    OpenProcessToken, PROCESS_INFORMATION, STARTF_USESTDHANDLES, STARTUPINFOW, TerminateProcess, WaitForSingleObject,
+    CREATE_NO_WINDOW, CREATE_UNICODE_ENVIRONMENT, CreateProcessAsUserW, DeleteProcThreadAttributeList,
+    EXTENDED_STARTUPINFO_PRESENT, GetCurrentProcess, GetCurrentProcessId, InitializeProcThreadAttributeList,
+    LPPROC_THREAD_ATTRIBUTE_LIST, OpenProcessToken, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROCESS_INFORMATION,
+    STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW, TerminateProcess, UpdateProcThreadAttribute,
+    WaitForSingleObject,
 };
 use windows::Win32::System::WindowsProgramming::GetUserNameW;
 use windows::core::{HSTRING, PWSTR};
@@ -164,6 +168,7 @@ impl Did {
 /// `strcu agent`, started by the worker: jobs come in on stdin, answers go out on stdout, and the end of
 /// stdin is the end of the agent.
 pub fn run() -> Result<()> {
+    keep_to_ourselves();
     let mut jobs = std::io::stdin().lock();
     let mut answers = std::io::stdout().lock();
     let mut mind = Mind::default();
@@ -177,6 +182,69 @@ pub fn run() -> Result<()> {
         answers.flush()?;
     }
     Ok(())
+}
+
+/// Our ends of the two pipes are the agent's alone. They come in inheritable, and anything the agent starts
+/// with inheritance on - an app, a file opened the way a double-click opens it - would otherwise take them
+/// along and hold them open after the agent is gone: the worker would then wait for an answer that never
+/// comes, and could not tell a stuck agent from a slow one.
+fn keep_to_ourselves() {
+    for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+        if let Ok(h) = unsafe { GetStdHandle(which) } {
+            not_inherited(h);
+        }
+    }
+}
+
+fn not_inherited(h: HANDLE) {
+    let _ = unsafe { SetHandleInformation(h, HANDLE_FLAG_INHERIT.0, HANDLE_FLAGS(0)) };
+}
+
+/// Held while the agent is started, and while anything else the worker starts is: the agent's ends of its
+/// pipes are inheritable until it has them, and a cloudflared started in that moment would take them along
+/// (std's `Command` hands on every inheritable handle). It would then hold the agent's answers open for as
+/// long as the tunnel runs, and the worker would wait on an agent that is gone.
+pub(crate) static STARTING: Mutex<()> = Mutex::new(());
+
+/// The list that names the only handles a new process may take with it. Without one, a process started with
+/// inheritance takes every inheritable handle this process holds at that moment - those another thread is
+/// handing to a cloudflared it is starting just then among them - and keeps them for as long as it lives.
+struct OnlyThese {
+    /// Windows reads the handles from here until the list is deleted, so they are kept beside it
+    handles: Box<[HANDLE]>,
+    /// The list itself, in memory aligned for the pointers in it
+    _room: Vec<usize>,
+    list: LPPROC_THREAD_ATTRIBUTE_LIST,
+}
+
+impl OnlyThese {
+    fn new(handles: &[HANDLE]) -> windows::core::Result<OnlyThese> {
+        let mut size = 0usize;
+        // Asked for its size first, which fails by design
+        let _ = unsafe { InitializeProcThreadAttributeList(None, 1, None, &mut size) };
+        let mut room = vec![0usize; size.div_ceil(size_of::<usize>())];
+        let list = LPPROC_THREAD_ATTRIBUTE_LIST(room.as_mut_ptr().cast());
+        unsafe { InitializeProcThreadAttributeList(Some(list), 1, None, &mut size)? };
+        let only = OnlyThese { handles: handles.into(), _room: room, list };
+        unsafe {
+            UpdateProcThreadAttribute(
+                only.list,
+                0,
+                PROC_THREAD_ATTRIBUTE_HANDLE_LIST as usize,
+                Some(only.handles.as_ptr().cast()),
+                size_of_val(&*only.handles),
+                None,
+                None,
+            )?;
+        }
+        Ok(only)
+    }
+}
+
+impl Drop for OnlyThese {
+    fn drop(&mut self) {
+        unsafe { DeleteProcThreadAttributeList(self.list) };
+    }
 }
 
 /// What the agent keeps between jobs.
@@ -359,6 +427,8 @@ impl Agent {
             let mut token = HANDLE::default();
             WTSQueryUserToken(session, &mut token).context("nobody is signed in at the screen")?;
             let started = (|| {
+                // Until the agent has its ends and ours are closed, they are inheritable (see `STARTING`)
+                let _starting = STARTING.lock().unwrap();
                 let sa = SECURITY_ATTRIBUTES {
                     nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
                     lpSecurityDescriptor: std::ptr::null_mut(),
@@ -386,35 +456,51 @@ impl Agent {
                 // at the computer's.
                 let mut env = std::ptr::null_mut();
                 CreateEnvironmentBlock(&mut env, Some(token), false)?;
-                let si = STARTUPINFOW {
-                    cb: size_of::<STARTUPINFOW>() as u32,
-                    lpDesktop: PWSTR(desktop.as_mut_ptr()),
-                    dwFlags: STARTF_USESTDHANDLES,
-                    hStdInput: jobs_read,
-                    hStdOutput: answers_write,
-                    hStdError: nowhere,
-                    ..Default::default()
-                };
-                let mut pi = PROCESS_INFORMATION::default();
-                let created = CreateProcessAsUserW(
-                    Some(token),
-                    None,
-                    Some(PWSTR(cmd.as_mut_ptr())),
-                    None,
-                    None,
-                    true,
-                    CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
-                    Some(env),
-                    None,
-                    &si,
-                    &mut pi,
-                );
+                // These three and nothing else of ours
+                let only = OnlyThese::new(&[jobs_read, answers_write, nowhere]);
+                let created = only.and_then(|only| {
+                    let si = STARTUPINFOEXW {
+                        StartupInfo: STARTUPINFOW {
+                            cb: size_of::<STARTUPINFOEXW>() as u32,
+                            lpDesktop: PWSTR(desktop.as_mut_ptr()),
+                            dwFlags: STARTF_USESTDHANDLES,
+                            hStdInput: jobs_read,
+                            hStdOutput: answers_write,
+                            hStdError: nowhere,
+                            ..Default::default()
+                        },
+                        lpAttributeList: only.list,
+                    };
+                    let mut pi = PROCESS_INFORMATION::default();
+                    CreateProcessAsUserW(
+                        Some(token),
+                        None,
+                        Some(PWSTR(cmd.as_mut_ptr())),
+                        None,
+                        None,
+                        true,
+                        CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT,
+                        Some(env),
+                        None,
+                        &si.StartupInfo,
+                        &mut pi,
+                    )
+                    .map(|()| pi)
+                });
                 let _ = DestroyEnvironmentBlock(env);
                 // The ends the agent took over, and the handles we do not need
                 let _ = CloseHandle(jobs_read);
                 let _ = CloseHandle(answers_write);
                 let _ = CloseHandle(nowhere);
-                created?;
+                let pi = match created {
+                    Ok(pi) => pi,
+                    Err(e) => {
+                        // Our ends as well: there is nobody at the other end of them
+                        let _ = CloseHandle(jobs_write);
+                        let _ = CloseHandle(answers_read);
+                        return Err(e);
+                    }
+                };
                 let _ = CloseHandle(pi.hThread);
                 Ok::<_, windows::core::Error>(Agent {
                     process: pi.hProcess,
@@ -826,6 +912,99 @@ mod tests {
         // Through the wire as base64 and back, byte for byte
         let text = serde_json::to_string(&Did::Icon { png: png.clone() }).unwrap();
         assert_eq!(serde_json::from_str::<Did>(&text).unwrap(), Did::Icon { png });
+    }
+
+    /// An inheritable pipe of this test's own: (read end, write end).
+    fn inheritable_pipe() -> (HANDLE, HANDLE) {
+        let sa = SECURITY_ATTRIBUTES {
+            nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+            lpSecurityDescriptor: std::ptr::null_mut(),
+            bInheritHandle: true.into(),
+        };
+        let (mut read, mut write) = (HANDLE::default(), HANDLE::default());
+        unsafe { CreatePipe(&mut read, &mut write, Some(&sa), 0) }.unwrap();
+        (read, write)
+    }
+
+    #[test]
+    fn the_agents_own_pipes_are_not_handed_on() {
+        use windows::Win32::Foundation::GetHandleInformation;
+        let inherited = |h: HANDLE| {
+            let mut flags = 0u32;
+            unsafe { GetHandleInformation(h, &mut flags) }.unwrap();
+            flags & HANDLE_FLAG_INHERIT.0 != 0
+        };
+        let (read, write) = inheritable_pipe();
+        assert!(inherited(read), "a pipe end the worker hands over comes in inheritable");
+        not_inherited(read);
+        assert!(!inherited(read), "and the agent keeps it to itself");
+        unsafe {
+            let _ = CloseHandle(read);
+            let _ = CloseHandle(write);
+        }
+    }
+
+    #[test]
+    fn a_process_started_with_the_list_takes_nothing_else_of_ours() {
+        use std::time::{Duration, Instant};
+        use windows::Win32::System::Threading::CreateProcessW;
+
+        // How long the read end of an inheritable pipe stays open after we close our write end, while a
+        // program that lives about a second is running: at once if it did not take the write end, after it
+        // ends if it did. The program is given stdin, stdout and stderr of its own either way.
+        let open_for = |listed: bool| unsafe {
+            let (read, write) = inheritable_pipe();
+            let sa = SECURITY_ATTRIBUTES {
+                nLength: size_of::<SECURITY_ATTRIBUTES>() as u32,
+                lpSecurityDescriptor: std::ptr::null_mut(),
+                bInheritHandle: true.into(),
+            };
+            let nowhere = CreateFileW(
+                &HSTRING::from("NUL"),
+                GENERIC_WRITE.0,
+                FILE_SHARE_WRITE,
+                Some(&sa),
+                OPEN_EXISTING,
+                FILE_ATTRIBUTE_NORMAL,
+                None,
+            )
+            .unwrap();
+            let only = OnlyThese::new(&[nowhere]).unwrap();
+            let base = STARTUPINFOW {
+                cb: size_of::<STARTUPINFOEXW>() as u32,
+                dwFlags: STARTF_USESTDHANDLES,
+                hStdInput: nowhere,
+                hStdOutput: nowhere,
+                hStdError: nowhere,
+                ..Default::default()
+            };
+            let si = STARTUPINFOEXW {
+                StartupInfo: base,
+                lpAttributeList: if listed { only.list } else { LPPROC_THREAD_ATTRIBUTE_LIST::default() },
+            };
+            let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
+            let mut cmd: Vec<u16> = format!("\"{windir}\\System32\\PING.EXE\" -n 2 127.0.0.1\0").encode_utf16().collect();
+            let flags = if listed { CREATE_NO_WINDOW | EXTENDED_STARTUPINFO_PRESENT } else { CREATE_NO_WINDOW };
+            let mut pi = PROCESS_INFORMATION::default();
+            CreateProcessW(None, Some(PWSTR(cmd.as_mut_ptr())), None, None, true, flags, None, None, &si.StartupInfo, &mut pi)
+                .unwrap();
+            let _ = CloseHandle(write);
+            let _ = CloseHandle(nowhere);
+            let t = Instant::now();
+            let mut end = File::from_raw_handle(read.0);
+            let _ = end.read(&mut [0u8; 1]);
+            let open = t.elapsed();
+            WaitForSingleObject(pi.hProcess, 10_000);
+            let _ = CloseHandle(pi.hProcess);
+            let _ = CloseHandle(pi.hThread);
+            open
+        };
+        // Without the list it takes the pipe along, which is what this test can see at all
+        let unlisted = open_for(false);
+        assert!(unlisted >= Duration::from_millis(500), "the program never held the pipe: {unlisted:?}");
+        // With it, the pipe ends the moment we let go of it
+        let listed = open_for(true);
+        assert!(listed < Duration::from_millis(300), "the program took a handle it was not given: {listed:?}");
     }
 
     #[test]

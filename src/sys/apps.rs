@@ -4,7 +4,7 @@
 //! together, with their Start menu names. Launching also goes through that folder
 //! (`explorer.exe shell:AppsFolder\<id>`), so one path covers both kinds.
 
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -98,10 +98,14 @@ pub fn launch(id: &str) -> Result<App> {
 }
 
 /// Launches an app taken from `list` (reading the list takes a while; the panel keeps it for a minute).
+/// Nothing of ours goes with it: in the agent, stdin and stdout are the pipes to the worker (agent.rs).
 pub fn start(app: &App) -> Result<()> {
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
     Command::new(format!(r"{windir}\explorer.exe"))
         .arg(format!(r"shell:AppsFolder\{}", app.id))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .spawn()
         .context(Msg::new("err.launch_failed"))?;
     Ok(())
@@ -111,7 +115,13 @@ pub fn start(app: &App) -> Result<()> {
 pub fn open_url(url: &str) -> Result<()> {
     anyhow::ensure!(url.starts_with("https://"), "not a web address");
     let windir = std::env::var("WINDIR").unwrap_or_else(|_| r"C:\Windows".into());
-    Command::new(format!(r"{windir}\explorer.exe")).arg(url).spawn().context(Msg::new("err.launch_failed"))?;
+    Command::new(format!(r"{windir}\explorer.exe"))
+        .arg(url)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .context(Msg::new("err.launch_failed"))?;
     Ok(())
 }
 

@@ -229,6 +229,7 @@ pub fn spawn_with(token: &str) -> Result<Tunnel> {
     // Held until it has started: nothing can change the file between the reading and the running
     let _held = verified(&exe)?;
     let log = std::fs::File::create(log_path())?;
+    let starting = crate::agent::STARTING.lock().unwrap();
     let child = Command::new(&exe)
         .args(["tunnel", "--no-autoupdate", "--metrics", &metrics(), "run"])
         .env("TUNNEL_TOKEN", token)
@@ -237,6 +238,7 @@ pub fn spawn_with(token: &str) -> Result<Tunnel> {
         .stderr(Stdio::from(log))
         .spawn()
         .context(Msg::new("err.cloudflared_start"))?;
+    drop(starting);
     sys::proc::tie(&child);
     Ok(Tunnel { child, ready: false })
 }
