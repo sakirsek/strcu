@@ -441,8 +441,11 @@ mod tests {
         set_dacl(&inside, "D:P(A;OICI;FA;;;WD)").unwrap();
         set_dacl(&file, "D:P(A;;FA;;;WD)").unwrap();
 
-        // With this account in the rule as well, so the test can still look at what it closed
-        let ours: [&str; 1] = [me()];
+        // Whoever Windows wrote down when this folder was made - this account at a person's computer, the
+        // administrators on a build server - so the folder counts as ours and is taken over where it is.
+        // With this account in the rule as well, so the test can still look at what it closed.
+        let owner = owner_of(&dir).unwrap();
+        let ours: [&str; 1] = [&owner];
         let how = Closing { owner: me(), rule: mine_too(), trusted: &ours };
         prepare_in(&dir, &nothing, Some(how)).unwrap();
 
