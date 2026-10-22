@@ -63,6 +63,10 @@ pub struct App {
     tunnel_allowed: bool,
     remote: watch::Sender<Remote>,
     tunnel_task: Option<JoinHandle<()>>,
+    /// An agent being started, off the main loop (`keep_agent`)
+    agent_starting: Option<JoinHandle<Result<agent::Agent>>>,
+    /// Why the last agent could not be started, so the same reason is logged once
+    agent_failed: Option<String>,
 }
 
 /// Pause before cloudflared is started again after it stopped.
@@ -106,6 +110,8 @@ impl App {
             tunnel_allowed: tunnel,
             remote: watch::Sender::new(Remote::Off),
             tunnel_task: None,
+            agent_starting: None,
+            agent_failed: None,
         };
         app.relisten().await;
         app.restart_remote().await;
@@ -208,21 +214,45 @@ impl App {
     /// the agent comes and goes with them. While there is nobody there is nothing to start, which is not an
     /// error and says itself in the state the window reads. A StrCu started by a person needs none at all:
     /// it does that work itself.
-    pub fn keep_agent(&mut self) {
+    ///
+    /// None of it waits: this runs in the loop that also answers the control window. The agent is started on
+    /// a thread of its own, one at a time, and looked at again on the next round.
+    pub async fn keep_agent(&mut self) {
         let hand = self.panel.agent();
         if hand.here() {
             return;
         }
-        if let Some(gone) = hand.take_stopped() {
-            self.panel.log().add(Msg::new("ev.agent_gone").with("user", gone), false);
+        let log = self.panel.log();
+        if let Some((user, job)) = hand.take_stuck() {
+            log.add(Msg::new("ev.agent_stuck").with("user", user).with("job", job), false);
         }
-        if hand.has_agent() {
+        if let Some(gone) = hand.take_stopped() {
+            log.add(Msg::new("ev.agent_gone").with("user", gone), false);
+        }
+        if let Some(started) = self.agent_starting.take_if(|s| s.is_finished()) {
+            match started.await {
+                Ok(Ok(agent)) => {
+                    log.add(Msg::new("ev.agent_started").with("user", agent.user.clone()), true);
+                    hand.put(agent);
+                    self.agent_failed = None;
+                }
+                // Nobody signed in is the sign-in screen, not a fault
+                Ok(Err(e)) if e.downcast_ref::<Msg>().is_some_and(|m| m.code == "err.no_user") => {}
+                Ok(Err(e)) => {
+                    let why = format!("{e:#}");
+                    if self.agent_failed.as_deref() != Some(why.as_str()) {
+                        log.add(Msg::new("ev.agent_failed").with("msg", why.clone()), false);
+                        self.agent_failed = Some(why);
+                    }
+                }
+                Err(_) => {}
+            }
+        }
+        if self.agent_starting.is_some() || hand.has_agent() {
             return;
         }
-        if let Ok(agent) = agent::Agent::start(crate::svc::console_session()) {
-            self.panel.log().add(Msg::new("ev.agent_started").with("user", agent.user.clone()), true);
-            hand.put(agent);
-        }
+        let session = crate::svc::console_session();
+        self.agent_starting = Some(tokio::task::spawn_blocking(move || agent::Agent::start(session)));
     }
 
     /// Starts downloading cloudflared, unless the right version is already here. It runs on its own: the
@@ -744,7 +774,7 @@ pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
-            _ = look.tick() => app.keep_agent(),
+            _ = look.tick() => app.keep_agent().await,
             ipc::Asked(req, back) = asks.next() => {
                 let (answer, after) = answer(&mut app, &mut shown, req).await;
                 let _ = back.send(answer);

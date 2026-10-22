@@ -21,7 +21,10 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::os::windows::io::{FromRawHandle, IntoRawHandle};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+use std::sync::mpsc::{self, RecvTimeoutError};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
@@ -150,6 +153,30 @@ pub enum Did {
     Failed {
         why: Written,
     },
+}
+
+impl Job {
+    /// How long the agent may take over it before it counts as stuck and is stopped (`Watch`). Far more than
+    /// any of them takes: the app list, the slowest, is about a second.
+    fn limit(&self) -> Duration {
+        Duration::from_secs(match self {
+            Job::Who | Job::Clip | Job::Copy { .. } | Job::Icon { .. } => 5,
+            Job::Selected
+            | Job::TakeSelected { .. }
+            | Job::Folder { .. }
+            | Job::Take { .. }
+            | Job::Make { .. }
+            | Job::Keep { .. }
+            | Job::Throw { .. } => 10,
+            Job::Launch { .. } | Job::Open { .. } => 15,
+            Job::Apps => 30,
+        })
+    }
+
+    /// Its name as it travels ("apps", "clip"), for the log.
+    fn name(&self) -> String {
+        serde_json::to_value(self).ok().and_then(|v| v["job"].as_str().map(String::from)).unwrap_or_default()
+    }
 }
 
 impl Did {
@@ -410,6 +437,9 @@ pub struct Agent {
     answers: File,
     /// The account it runs as
     pub user: String,
+    watch: Watch,
+    /// The job it had to be stopped over, for the log
+    stuck: Option<String>,
 }
 
 // The handles belong to the process; the worker uses the agent from one place at a time.
@@ -425,7 +455,8 @@ impl Agent {
         let mut desktop: Vec<u16> = "winsta0\\default\0".encode_utf16().collect();
         unsafe {
             let mut token = HANDLE::default();
-            WTSQueryUserToken(session, &mut token).context("nobody is signed in at the screen")?;
+            // The one failure that is no fault at all: the sign-in screen (app.rs `keep_agent` keeps quiet)
+            WTSQueryUserToken(session, &mut token).context(Msg::new("err.no_user"))?;
             let started = (|| {
                 // Until the agent has its ends and ours are closed, they are inheritable (see `STARTING`)
                 let _starting = STARTING.lock().unwrap();
@@ -502,16 +533,15 @@ impl Agent {
                     }
                 };
                 let _ = CloseHandle(pi.hThread);
-                Ok::<_, windows::core::Error>(Agent {
-                    process: pi.hProcess,
-                    jobs: File::from_raw_handle(jobs_write.0),
-                    answers: File::from_raw_handle(answers_read.0),
-                    user: String::new(),
-                })
+                Ok::<_, windows::core::Error>((
+                    pi.hProcess,
+                    File::from_raw_handle(jobs_write.0),
+                    File::from_raw_handle(answers_read.0),
+                ))
             })();
             let _ = CloseHandle(token);
             let mut agent = match started {
-                Ok(agent) => agent,
+                Ok((process, jobs, answers)) => Agent::new(process, jobs, answers)?,
                 Err(e) => bail!("{e}"),
             };
             // Asking who it is proves it is up, talking, and the user rather than the computer
@@ -523,14 +553,46 @@ impl Agent {
         }
     }
 
+    /// The agent, once it is running: from here on it owns the process handle and closes it when dropped.
+    fn new(process: HANDLE, jobs: File, answers: File) -> Result<Agent> {
+        let watch = match Watch::new(process) {
+            Ok(watch) => watch,
+            Err(e) => {
+                unsafe {
+                    let _ = TerminateProcess(process, 0);
+                    let _ = CloseHandle(process);
+                }
+                return Err(e);
+            }
+        };
+        Ok(Agent { process, jobs, answers, user: String::new(), watch, stuck: None })
+    }
+
     /// Has it stopped? Then the worker starts another one.
     pub fn has_stopped(&self) -> bool {
         unsafe { WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0 }
     }
 
-    /// One job, one answer. An error means the agent is gone or was not understood, and the caller drops it.
+    /// One job, one answer. An error means the agent is gone, was not understood or took too long over it,
+    /// and the caller drops it.
     pub fn ask(&mut self, job: Job) -> Result<Did> {
-        write_frame(&mut self.jobs, &serde_json::to_vec(&job)?)?;
+        let limit = job.limit();
+        self.ask_within(job, limit)
+    }
+
+    fn ask_within(&mut self, job: Job, limit: Duration) -> Result<Did> {
+        let _ = self.watch.arm.send(Some(Instant::now() + limit));
+        let answered = self.exchange(&job);
+        let _ = self.watch.arm.send(None);
+        if answered.is_err() && self.watch.fired.load(SeqCst) {
+            self.stuck = Some(job.name());
+            bail!(Msg::new("err.agent_stuck"));
+        }
+        answered
+    }
+
+    fn exchange(&mut self, job: &Job) -> Result<Did> {
+        write_frame(&mut self.jobs, &serde_json::to_vec(job)?)?;
         self.jobs.flush()?;
         let Some(frame) = read_frame(&mut self.answers)? else { bail!("the agent stopped without answering") };
         self.adopt(serde_json::from_slice(&frame)?)
@@ -572,7 +634,6 @@ impl Agent {
     /// same two pipes; what it does not do is take another account's token, which only the computer may ask
     /// for. That is the one part of `start` the tests cannot reach, and B11 tries it on a real service.
     fn as_ourselves() -> Option<Agent> {
-        use std::os::windows::io::AsRawHandle;
         use std::process::{Command, Stdio};
 
         // The test runs from target/<profile>/deps; the program itself is one folder up
@@ -581,26 +642,35 @@ impl Agent {
             eprintln!("{} is not built: skipping", exe.display());
             return None;
         }
-        let mut child = Command::new(exe)
+        let child = Command::new(exe)
             .arg("agent")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .spawn()
             .ok()?;
+        let mut agent = Agent::of(child)?;
+        let Did::Who { user, .. } = agent.ask(Job::Who).ok()? else { return None };
+        agent.user = user;
+        Some(agent)
+    }
+
+    /// Any program on the two pipes, standing in for the agent.
+    fn of(mut child: std::process::Child) -> Option<Agent> {
+        use std::os::windows::io::AsRawHandle;
+
         let (jobs, answers) = (child.stdin.take()?, child.stdout.take()?);
         let process = HANDLE(child.as_raw_handle());
         // The agent owns the process handle from here on, and closes it when it is dropped
         std::mem::forget(child);
-        let mut agent = Agent {
-            process,
-            jobs: unsafe { File::from_raw_handle(jobs.into_raw_handle()) },
-            answers: unsafe { File::from_raw_handle(answers.into_raw_handle()) },
-            user: String::new(),
-        };
-        let Did::Who { user, .. } = agent.ask(Job::Who).ok()? else { return None };
-        agent.user = user;
-        Some(agent)
+        unsafe {
+            Agent::new(
+                process,
+                File::from_raw_handle(jobs.into_raw_handle()),
+                File::from_raw_handle(answers.into_raw_handle()),
+            )
+            .ok()
+        }
     }
 }
 
@@ -611,6 +681,63 @@ impl Drop for Agent {
             let _ = TerminateProcess(self.process, 0);
             let _ = CloseHandle(self.process);
         }
+    }
+}
+
+/// Stops an agent that takes too long over a job. A job it never finishes - a clipboard held by a program
+/// that hangs, a shell folder that never answers - would otherwise keep the lock on the agent, and every job
+/// after it would wait behind it for good. Stopping the agent ends the wait: its end of the answers pipe is
+/// the only one (`OnlyThese`, `STARTING`), so the read in `ask` returns, and the worker starts a new agent.
+struct Watch {
+    /// When the job under way must be answered by; None once it is
+    arm: mpsc::Sender<Option<Instant>>,
+    /// It had to stop the agent
+    fired: Arc<AtomicBool>,
+}
+
+impl Watch {
+    fn new(process: HANDLE) -> Result<Watch> {
+        // A handle of its own: the agent closes its one when it is dropped, while this may still be waiting
+        let mut own = HANDLE::default();
+        unsafe {
+            DuplicateHandle(GetCurrentProcess(), process, GetCurrentProcess(), &mut own, 0, false, DUPLICATE_SAME_ACCESS)?
+        };
+        let own = own.0 as isize;
+        let (arm, armed) = mpsc::channel::<Option<Instant>>();
+        let fired = Arc::new(AtomicBool::new(false));
+        let fire = fired.clone();
+        let watching = std::thread::Builder::new().name("agent-watch".into()).spawn(move || {
+            let process = HANDLE(own as *mut _);
+            let mut until: Option<Instant> = None;
+            loop {
+                let next = match until {
+                    None => armed.recv().map_err(|_| RecvTimeoutError::Disconnected),
+                    Some(t) => armed.recv_timeout(t.saturating_duration_since(Instant::now())),
+                };
+                match next {
+                    Ok(next) => until = next,
+                    Err(RecvTimeoutError::Timeout) => {
+                        fire.store(true, SeqCst);
+                        unsafe {
+                            let _ = TerminateProcess(process, 1);
+                        }
+                        until = None;
+                    }
+                    // The agent is gone
+                    Err(RecvTimeoutError::Disconnected) => break,
+                }
+            }
+            unsafe {
+                let _ = CloseHandle(process);
+            }
+        });
+        if let Err(e) = watching {
+            unsafe {
+                let _ = CloseHandle(HANDLE(own as *mut _));
+            }
+            return Err(e.into());
+        }
+        Ok(Watch { arm, fired })
     }
 }
 
@@ -629,6 +756,11 @@ struct Held {
     kept: Mutex<Kept>,
     /// The account StrCu itself runs as, when that is a person rather than the computer
     mine: Option<String>,
+    /// The agent's account, kept apart from it: `kept` is held for as long as a job takes, and the screens
+    /// that show who StrCu works as must not wait behind one
+    user: Mutex<Option<String>>,
+    /// The account and the job of the last agent that was stopped for taking too long, for the log
+    stuck: Mutex<Option<(String, String)>>,
 }
 
 #[derive(Default)]
@@ -653,14 +785,17 @@ impl Hand {
                 _ => None,
             },
         };
-        Hand(Arc::new(Held { kept: Mutex::new(Kept::default()), mine }))
+        Hand::with(mine)
+    }
+
+    fn with(mine: Option<String>) -> Hand {
+        Hand(Arc::new(Held { kept: Mutex::default(), mine, user: Mutex::default(), stuck: Mutex::default() }))
     }
 
     /// Who the user's work is done as: the agent's account, or ours when StrCu does it itself. None while
     /// nobody is signed in at the screen.
     pub fn user(&self) -> Option<String> {
-        let kept = self.0.kept.lock().unwrap();
-        kept.agent.as_ref().map(|a| a.user.clone()).or_else(|| self.0.mine.clone())
+        self.0.user.lock().unwrap().clone().or_else(|| self.0.mine.clone())
     }
 
     /// Is the work done here? Then there is no agent to start or to miss.
@@ -668,19 +803,30 @@ impl Hand {
         self.0.mine.is_some()
     }
 
+    /// These two are asked every couple of seconds by the worker's main loop, which must never wait behind
+    /// a job: a job under way holds the lock, and means there is an agent, alive, doing it.
     pub fn has_agent(&self) -> bool {
-        self.0.kept.lock().unwrap().agent.is_some()
+        self.0.kept.try_lock().map_or(true, |kept| kept.agent.is_some())
     }
 
     /// Takes out an agent that has stopped so another can take its place; the account is for the log.
     pub fn take_stopped(&self) -> Option<String> {
-        let mut kept = self.0.kept.lock().unwrap();
-        kept.agent.take_if(|a| a.has_stopped()).map(|a| a.user.clone())
+        let mut kept = self.0.kept.try_lock().ok()?;
+        let gone = kept.agent.take_if(|a| a.has_stopped())?;
+        *self.0.user.lock().unwrap() = None;
+        Some(gone.user.clone())
+    }
+
+    /// The account and the job of an agent that was stopped for taking too long, once.
+    pub fn take_stuck(&self) -> Option<(String, String)> {
+        self.0.stuck.lock().unwrap().take()
     }
 
     /// The agent the worker has just started.
     pub fn put(&self, agent: Agent) {
+        let user = agent.user.clone();
         self.0.kept.lock().unwrap().agent = Some(agent);
+        *self.0.user.lock().unwrap() = Some(user);
     }
 
     /// One job, one answer, one at a time: there is a single agent at the other end of a single pipe. An
@@ -692,7 +838,11 @@ impl Hand {
             return match agent.ask(job) {
                 Ok(did) => Ok(did),
                 Err(e) => {
+                    if let Some(job) = agent.stuck.take() {
+                        *self.0.stuck.lock().unwrap() = Some((agent.user.clone(), job));
+                    }
                     kept.agent = None;
+                    *self.0.user.lock().unwrap() = None;
                     Err(e)
                 }
             };
@@ -946,7 +1096,6 @@ mod tests {
 
     #[test]
     fn a_process_started_with_the_list_takes_nothing_else_of_ours() {
-        use std::time::{Duration, Instant};
         use windows::Win32::System::Threading::CreateProcessW;
 
         // How long the read end of an inheritable pipe stays open after we close our write end, while a
@@ -1007,10 +1156,85 @@ mod tests {
         assert!(listed < Duration::from_millis(300), "the program took a handle it was not given: {listed:?}");
     }
 
+    /// A program on the two pipes that reads nothing and answers nothing for half a minute.
+    fn silent() -> Agent {
+        use std::process::{Command, Stdio};
+        let child = Command::new("powershell.exe")
+            .args(["-NoProfile", "-Command", "Start-Sleep 30"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let mut agent = Agent::of(child).unwrap();
+        agent.user = "someone".into();
+        agent
+    }
+
+    #[test]
+    fn an_agent_that_never_answers_is_stopped() {
+        let mut agent = silent();
+        let t = Instant::now();
+        let e = agent.ask_within(Job::Clip, Duration::from_secs(1)).expect_err("nothing answers");
+        assert!(t.elapsed() < Duration::from_secs(3), "waited {:?}", t.elapsed());
+        assert_eq!(i18n::from_error(&e), Msg::new("err.agent_stuck"));
+        assert_eq!(agent.stuck.as_deref(), Some("clip"));
+        // And it is gone, not left running somewhere
+        assert_eq!(unsafe { WaitForSingleObject(agent.process, 2000) }, WAIT_OBJECT_0);
+    }
+
+    #[test]
+    fn the_hand_lets_go_of_a_stuck_agent_and_says_so() {
+        let hand = Hand::with(None);
+        hand.put(silent());
+        assert_eq!(hand.user().as_deref(), Some("someone"));
+        // The hand's own limit for the clipboard is five seconds; this one is shortened by asking directly
+        let e = {
+            let mut kept = hand.0.kept.lock().unwrap();
+            let agent = kept.agent.as_mut().unwrap();
+            agent.ask_within(Job::Clip, Duration::from_millis(500)).unwrap_err()
+        };
+        assert_eq!(i18n::from_error(&e), Msg::new("err.agent_stuck"));
+        // The next job finds the agent gone, and the hand lets go of it with the reason kept for the log
+        assert!(hand.ask(Job::Clip).is_err());
+        assert!(!hand.has_agent());
+        assert_eq!(hand.user(), None);
+        assert_eq!(hand.take_stuck(), Some(("someone".into(), "clip".into())));
+        assert_eq!(hand.take_stuck(), None, "said once");
+    }
+
+    #[test]
+    fn the_main_loop_never_waits_behind_a_job() {
+        let hand = Hand::with(None);
+        hand.put(silent());
+        // A job under way holds the lock, here on this same thread, so waiting for it would never end
+        let _job = hand.0.kept.lock().unwrap();
+        assert!(hand.has_agent(), "a job under way means an agent doing it");
+        assert_eq!(hand.take_stopped(), None);
+        assert_eq!(hand.user().as_deref(), Some("someone"));
+    }
+
+    #[test]
+    fn a_job_answered_in_time_leaves_the_agent_alone() {
+        let Some(mut agent) = Agent::as_ourselves() else { return };
+        assert!(matches!(agent.ask_within(Job::Who, Duration::from_secs(2)), Ok(Did::Who { .. })));
+        // Well past that job's limit: the watch was taken off when the answer came
+        std::thread::sleep(Duration::from_millis(2500));
+        assert!(!agent.has_stopped());
+        assert!(matches!(agent.ask(Job::Who), Ok(Did::Who { .. })));
+    }
+
+    #[test]
+    fn every_job_has_a_name_and_a_limit() {
+        assert_eq!(Job::Apps.name(), "apps");
+        assert_eq!(Job::TakeSelected { at: 0, name: "x".into() }.name(), "take_selected");
+        assert!(Job::Apps.limit() > Job::Who.limit());
+    }
+
     #[test]
     fn with_nobody_signed_in_every_job_says_so() {
         // What the computer sees at the sign-in screen: no agent, and no account of its own to fall back on
-        let hand = Hand(Arc::new(Held { kept: Mutex::new(Kept::default()), mine: None }));
+        let hand = Hand::with(None);
         assert!(!hand.here());
         assert_eq!(hand.user(), None);
         let jobs = [
