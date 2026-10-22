@@ -271,6 +271,8 @@ impl App {
 
     /// Keeps what the setup found and opens the real tunnel with it.
     async fn save_remote(&mut self, token: Option<String>, access: AccessConfig) -> Result<()> {
+        // Checked here as well, where they are kept: the window is not the only thing that can send them
+        let access = access.checked()?;
         if let Some(token) = &token {
             tunnel::save_token(token)?;
         }

@@ -27,6 +27,19 @@ pub struct AccessConfig {
     pub email: String,
 }
 
+impl AccessConfig {
+    /// The same settings, each one checked as the window checks it while it is typed. The window is not
+    /// the only thing that can send them, and the team domain decides whose keys a sign-in is checked with.
+    pub fn checked(&self) -> Result<AccessConfig> {
+        Ok(AccessConfig {
+            hostname: clean_host(&self.hostname)?,
+            team_domain: clean_team(&self.team_domain)?,
+            aud: clean_aud(&self.aud)?,
+            email: clean_email(&self.email)?,
+        })
+    }
+}
+
 #[derive(Deserialize)]
 struct Claims {
     email: Option<String>,
@@ -227,5 +240,31 @@ mod tests {
         assert_eq!(access_login(&format!("https://myteam.cloudflareaccess.com/?kid={aud}"), "strcu.example.com"), None);
         assert_eq!(access_login("https://myteam.cloudflareaccess.com/cdn-cgi/access/login/strcu.example.com", "strcu.example.com"), None);
         assert_eq!(access_login(&loc.replacen("https", "http", 1), "strcu.example.com"), None);
+    }
+
+    #[test]
+    fn settings_from_the_window_are_checked_where_they_are_kept() {
+        let typed = AccessConfig {
+            hostname: " https://Strcu.Example.com/ ".into(),
+            team_domain: "myteam".into(),
+            aud: "72112973CC2E796EA8D29B8FB637154B223AA4FBF7C7DF8F77619E8474EF9722".into(),
+            email: " me@example.com ".into(),
+        };
+        // Tidied the way the window tidies them
+        let kept = typed.checked().unwrap();
+        assert_eq!(kept.hostname, "strcu.example.com");
+        assert_eq!(kept.team_domain, "myteam.cloudflareaccess.com");
+        assert_eq!(kept.aud, "72112973cc2e796ea8d29b8fb637154b223aa4fbf7c7df8f77619e8474ef9722");
+        assert_eq!(kept.email, "me@example.com");
+        // And any one of them that is not what it should be turns the whole lot down
+        let wrong = |change: fn(&mut AccessConfig)| {
+            let mut a = typed.clone();
+            change(&mut a);
+            crate::i18n::from_error(&a.checked().unwrap_err()).code
+        };
+        assert_eq!(wrong(|a| a.hostname = "not a host".into()), "err.hostname");
+        assert_eq!(wrong(|a| a.team_domain = "my team/../x".into()), "err.hostname");
+        assert_eq!(wrong(|a| a.aud = "short".into()), "err.aud");
+        assert_eq!(wrong(|a| a.email = "nobody".into()), "err.email");
     }
 }
