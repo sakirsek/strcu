@@ -479,6 +479,12 @@ fn passwd(stdin: bool) -> Result<()> {
     Ok(())
 }
 
+/// A line as it came on standard input. Windows PowerShell puts a byte-order mark in front of what it pipes
+/// to a program, which would otherwise be the first character of the password - one nobody can type.
+fn as_typed(line: &str) -> String {
+    line.trim_start_matches('\u{feff}').trim_end().to_string()
+}
+
 /// Where `strcu passwd` gets its passwords: asked for at the terminal, or one per line on standard input.
 struct Asking {
     lines: Option<std::io::Lines<std::io::StdinLock<'static>>>,
@@ -488,7 +494,7 @@ impl Asking {
     fn line(&mut self, prompt: &str) -> Result<String> {
         match &mut self.lines {
             Some(lines) => match lines.next() {
-                Some(line) => Ok(line?.trim_end().to_string()),
+                Some(line) => Ok(as_typed(&line?)),
                 None => bail!(Msg::new("err.passwd_stdin")),
             },
             None => Ok(rpassword::prompt_password(i18n::term().t(prompt))?),
@@ -613,4 +619,18 @@ fn remote_lines(live: &mut tui::live::Live) -> Result<Vec<String>> {
 
 fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { s.chars().take(n - 1).collect::<String>() + "…" }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_password_piped_from_windows_powershell_is_the_one_typed() {
+        // What Windows PowerShell 5.1 sends for "pw" | strcu passwd --stdin
+        assert_eq!(as_typed("\u{feff}dev-test-password-1"), "dev-test-password-1");
+        assert_eq!(as_typed("dev-test-password-1\r"), "dev-test-password-1");
+        // Spaces in front are the password's own
+        assert_eq!(as_typed("  two spaces first"), "  two spaces first");
+    }
 }
