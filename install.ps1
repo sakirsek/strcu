@@ -153,13 +153,48 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
 
     # ---------- the half that needs administrator rights ----------
 
+    # The settings folder, before a single setting goes in it. StrCu closes it itself every time the service
+    # starts, but the first start comes after this: anybody may create a folder in %ProgramData%, and whoever
+    # creates one owns it, so a folder that is already there under somebody else's name is moved out of the
+    # way rather than used - it would hold the password, the registered phones and the tunnel token.
+    # The settings belong to the administrators and the system, and to nobody else. A folder made in
+    # %ProgramData% starts out letting any user write in it, so this follows the making at once. StrCu does
+    # the same itself, every time the service starts, and over the whole folder (paths.rs).
+    function Close-Data {
+        & icacls.exe $data /setowner '*S-1-5-32-544' /q | Out-Null
+        & icacls.exe $data /inheritance:r /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' /q | Out-Null
+    }
+
+    # `update` says StrCu was already installed here. Only an administrator can put a program in
+    # %ProgramFiles%, so its settings are its own however they came to be owned, and they are taken over
+    # where they are. Without that sign the folder is somebody's doing and is moved out of the way: settings
+    # left for us to find could name a password and a phone that are not ours.
+    function Guard-Data([bool]$update) {
+        if ((Test-Path $data) -and -not (Only-Admins-Change $data)) {
+            if ($update) {
+                Say 'The settings were not the administrators'' alone; they are now.' `
+                    'Ayarlar yaln{i}zca y{o}neticilerin de{g}ildi; art{i}k {o}yle.' 'Yellow'
+            } else {
+                $aside = "$data.untrusted-" + (Get-Date).ToString('yyyyMMdd-HHmmss')
+                Move-Item -LiteralPath $data -Destination $aside -Force
+                Say "The settings folder belonged to somebody else; it was moved aside as $aside and a new one made." `
+                    "Ayarlar klas{o}r{u} ba{s}kas{i}na aitti; $aside olarak kenara al{i}nd{i} ve yenisi yap{i}ld{i}." 'Yellow'
+            }
+        }
+        New-Item -ItemType Directory -Force $data | Out-Null
+        Close-Data
+        if (-not (Only-Admins-Change $data)) {
+            throw (Text "$data can be changed by an account that is not an administrator." `
+                "$data y{o}netici olmayan bir hesap taraf{i}ndan de{g}i{s}tirilebiliyor.")
+        }
+    }
+
     # 1.x kept its settings in the person's own folder, which a service running as the computer cannot even
     # find: %LOCALAPPDATA% belongs to whoever runs, and that is the computer now. So the copying is done here,
     # by the installer, which knows whose computer this is.
     function Take-Over-1x {
         if (-not (Test-Path (Join-Path $old 'config.json'))) { return }
         if (Test-Path (Join-Path $data 'config.json')) { return }
-        New-Item -ItemType Directory -Force $data | Out-Null
         $done = @()
         foreach ($n in $kept) {
             $f = Join-Path $old $n
@@ -261,6 +296,7 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
                 }
             }
 
+            Guard-Data $update
             Take-Over-1x
 
             if ($service) {
