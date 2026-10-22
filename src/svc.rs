@@ -13,7 +13,7 @@
 
 use std::ffi::OsString;
 use std::sync::mpsc::{self, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Result, bail};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0};
@@ -43,6 +43,15 @@ const NO_SESSION: u32 = u32::MAX;
 
 /// How long the service waits between looks at the worker when nothing else happens.
 const LOOK: Duration = Duration::from_secs(2);
+
+/// A worker that stops by itself sooner than this has stopped right after it started (`Backoff`).
+const QUICK: Duration = Duration::from_secs(30);
+
+/// A worker that has run this long is running properly, and the stops before it are forgotten.
+const STEADY: Duration = Duration::from_secs(5 * 60);
+
+/// The longest the service waits before starting a worker that keeps stopping again.
+const LONGEST: Duration = Duration::from_secs(60);
 
 /// Started by `strcu service`, which is how Windows starts StrCu. Returns when Windows stops the service.
 /// Run by hand it fails with "the service process could not connect to the service controller".
@@ -115,16 +124,45 @@ fn serve(log: &ActionLog) -> Result<()> {
     let mut worker: Option<Worker> = None;
     // The same failure every two seconds is one thing to know, not a hundred lines of log
     let mut failed_with: Option<String> = None;
+    let mut backoff = Backoff::default();
+    // No worker is started before this
+    let mut not_before = Instant::now();
+    let mut last_session = NO_SESSION;
     loop {
         let session = console_session();
-        if let Some(w) = worker.take_if(|w| w.session != session || w.has_stopped()) {
+        // Another session on the screen starts afresh: what kept stopping in the last one may not in this one
+        if session != last_session {
+            backoff = Backoff::default();
+            not_before = Instant::now();
+            last_session = session;
+        }
+        if let Some(w) = worker.take_if(|w| w.session != session) {
+            // Signing out or switching users: stopped here, not by itself
             log.add(Msg::new("ev.worker_gone").with("session", w.session.to_string()), true);
             w.stop();
+        } else if let Some(w) = worker.take_if(|w| w.has_stopped()) {
+            let before = backoff.wait();
+            let wait = backoff.stopped(w.started.elapsed());
+            if backoff.quick < 2 {
+                log.add(Msg::new("ev.worker_gone").with("session", w.session.to_string()), true);
+            } else if wait != before {
+                let keeps = Msg::new("ev.worker_keeps_stopping").with("n", backoff.quick).with("secs", wait.as_secs());
+                log.add(keeps, false);
+            }
+            w.stop();
+            not_before = Instant::now() + wait;
         }
-        if worker.is_none() && session != NO_SESSION {
+        if let Some(w) = &worker
+            && backoff.running(w.started.elapsed())
+        {
+            log.add(Msg::new("ev.worker_steady").with("session", w.session.to_string()), true);
+        }
+        if worker.is_none() && session != NO_SESSION && Instant::now() >= not_before {
             match start_worker(session) {
                 Ok(w) => {
-                    log.add(Msg::new("ev.worker_started").with("session", session.to_string()), true);
+                    if backoff.say_start() {
+                        log.add(Msg::new("ev.worker_started").with("session", session.to_string()), true);
+                    }
                     worker = Some(w);
                     failed_with = None;
                 }
@@ -213,6 +251,51 @@ pub fn console_session() -> u32 {
 struct Worker {
     handle: HANDLE,
     session: u32,
+    started: Instant,
+}
+
+/// How soon a worker that stopped by itself is started again. One that stops right after every start -
+/// settings it cannot read, a port it cannot have - would otherwise be started every two seconds for good,
+/// writing two lines in the log each time and pushing the one that says why out of the short file the
+/// control window reads (log.rs). The wait doubles with each quick stop, up to a minute; five minutes of a
+/// worker running forgets them.
+#[derive(Default, Debug, PartialEq)]
+struct Backoff {
+    /// Quick stops in a row
+    quick: u32,
+}
+
+impl Backoff {
+    /// The worker stopped by itself after `lived`: how long to wait before the next one.
+    fn stopped(&mut self, lived: Duration) -> Duration {
+        if lived < QUICK {
+            self.quick += 1;
+        }
+        self.wait()
+    }
+
+    fn wait(&self) -> Duration {
+        match self.quick {
+            0 => LOOK,
+            n => (LOOK * 2u32.pow((n - 1).min(5))).min(LONGEST),
+        }
+    }
+
+    /// The worker has been running for `lived`. Long enough, and the quick stops are forgotten; true when
+    /// that ends a run of them the log was told about.
+    fn running(&mut self, lived: Duration) -> bool {
+        if lived < STEADY || self.quick == 0 {
+            return false;
+        }
+        let told = !self.say_start();
+        self.quick = 0;
+        told
+    }
+
+    /// Is a start worth a line in the log? Not while the worker keeps stopping: the line that says so does.
+    fn say_start(&self) -> bool {
+        self.quick < 2
+    }
 }
 
 impl Worker {
@@ -262,7 +345,7 @@ fn start_worker(session: u32) -> Result<Worker> {
                 &mut pi,
             )?;
             let _ = CloseHandle(pi.hThread);
-            Ok::<_, windows::core::Error>(Worker { handle: pi.hProcess, session })
+            Ok::<_, windows::core::Error>(Worker { handle: pi.hProcess, session, started: Instant::now() })
         })();
         let _ = CloseHandle(token);
         match started {
@@ -276,6 +359,46 @@ fn start_worker(session: u32) -> Result<Worker> {
 mod tests {
     use super::*;
     use crate::i18n::en;
+
+    #[test]
+    fn a_worker_that_keeps_stopping_is_given_longer_each_time() {
+        let mut b = Backoff::default();
+        let quick = Duration::from_secs(1);
+        let waits: Vec<u64> = (0..8).map(|_| b.stopped(quick).as_secs()).collect();
+        assert_eq!(waits, [2, 4, 8, 16, 32, 60, 60, 60], "doubling, up to a minute");
+        // Only the first two starts are told; after that the line about it stopping says it all
+        assert!(!b.say_start());
+        // A stop after a while is no quick stop: it neither adds to them nor forgets them
+        assert_eq!(b.stopped(Duration::from_secs(90)), Duration::from_secs(60));
+        assert_eq!(b.quick, 8);
+    }
+
+    #[test]
+    fn five_minutes_of_running_forgets_the_stops() {
+        let mut b = Backoff::default();
+        let quick = Duration::from_secs(1);
+        b.stopped(quick);
+        assert!(!b.running(Duration::from_secs(60)), "not yet");
+        // One stop was told as it happened; there is nothing to add when it settles
+        assert!(!b.running(STEADY));
+        assert_eq!(b, Backoff::default());
+        assert_eq!(b.stopped(quick), LOOK, "and a new stop starts from the beginning");
+
+        // After a run of them the log was told about, it is told that it settled
+        b.stopped(quick);
+        b.stopped(quick);
+        assert!(b.running(STEADY));
+        assert!(b.say_start());
+        assert!(!b.running(STEADY), "said once");
+    }
+
+    #[test]
+    fn a_worker_that_never_stops_by_itself_is_never_kept_waiting() {
+        let mut b = Backoff::default();
+        assert_eq!(b.wait(), LOOK);
+        assert_eq!(b.stopped(STEADY * 2), LOOK);
+        assert!(b.say_start());
+    }
 
     #[test]
     fn what_the_window_is_told_when_nothing_answers() {

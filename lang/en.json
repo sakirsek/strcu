@@ -523,6 +523,8 @@
   "ev.worker_started": "Panel running on the screen in use (session {session})",
   "ev.worker_gone": "The panel stopped on session {session}; starting it again",
   "ev.worker_failed": "The panel could not be started: {msg}",
+  "ev.worker_keeps_stopping": "The panel keeps stopping right after it starts ({n} times); next try in {secs} seconds",
+  "ev.worker_steady": "The panel has been running for five minutes again (session {session})",
   "ev.data_untrusted": "The settings folder belonged to somebody else, so it was moved aside as {name} and a new one made",
   "ev.agent_started": "Working as {user} as well now",
   "ev.agent_gone": "Stopped working as {user}; starting that again",
