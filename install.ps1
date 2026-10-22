@@ -35,9 +35,11 @@ param(
     [string]$LogTo
 )
 
-# This script's own text, to hand to the administrator half. It reads the same whether the script came
-# through `irm | iex` or was run as a file.
-$selfSource = $MyInvocation.MyCommand.ScriptBlock.ToString()
+# This script's own text, to hand to the administrator half. A script run as a file can read itself. One
+# that came through `irm | iex` has no file to read, and what PowerShell tells such a script about itself is
+# the text of whoever called it - not this script at all - so Run-Elevated fetches it again instead, from
+# the same place it came from, and asks for approval only once it holds the whole thing.
+$selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } else { '' }
 
 # Run in a child scope: with `irm | iex` nothing set here stays in the user's PowerShell session
 & {
@@ -272,6 +274,12 @@ $selfSource = $MyInvocation.MyCommand.ScriptBlock.ToString()
             'Servis, program ve ayarlar kald{i}r{i}ld{i}.' 'Green'
     }
 
+    # Is this the whole script, or a piece of something else? The mark is the very last line of the file, and
+    # it is written in two halves here so that the only whole one in the file is that last line itself.
+    function Is-Whole($text) {
+        $text -and $text.Length -gt 15000 -and $text -match 'function Install-System' -and $text -match ('STRCU-INSTALLER' + '-END')
+    }
+
     # Starts this script again as administrator for the half above, and brings its words back.
     #
     # The copy it starts goes to the temporary folder, which is the person's own to write. A program already
@@ -279,10 +287,24 @@ $selfSource = $MyInvocation.MyCommand.ScriptBlock.ToString()
     # person runs anyway, and they are already running whatever `irm` just handed them. The name is random
     # so nothing can lie in wait for it.
     function Run-Elevated {
+        # Whole, or not at all: a half-written script would ask for administrator approval and then quietly
+        # do nothing, which is worse than not starting. The two marks are the first and the last of the work.
+        $src = $selfSource
+        if (-not (Is-Whole $src)) {
+            $src = (Invoke-WebRequest "https://github.com/$repo/releases/latest/download/install.ps1" -UseBasicParsing).Content
+        }
+        if (-not (Is-Whole $src)) {
+            Say 'This installer could not read itself, so it is not asking for administrator approval.' `
+                'Bu kurucu kendi metnini okuyamad{i}; y{o}netici onay{i} istemiyor.' 'Red'
+            Say "Download install.ps1 from github.com/$repo/releases and run it as a file." `
+                "install.ps1'i github.com/$repo/releases adresinden indirip dosya olarak {c}al{i}{s}t{i}r."
+            return 1
+        }
+
         $base = Join-Path ([IO.Path]::GetTempPath()) ('strcu-install-' + [guid]::NewGuid().ToString('N'))
         $script = "$base.ps1"
         $log = "$base.log"
-        Set-Content -LiteralPath $script -Value $selfSource -Encoding ASCII
+        Set-Content -LiteralPath $script -Value $src -Encoding ASCII
         $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script, '-SystemOnly', '-LogTo', $log, '-OldData', $old)
         if ($Uninstall) { $a += @('-Uninstall', '-Yes') }
         if ($From) { $a += @('-From', (Resolve-Path $From).Path) }
@@ -357,6 +379,11 @@ $selfSource = $MyInvocation.MyCommand.ScriptBlock.ToString()
             $code = 0
             if (Is-Admin) { Uninstall-System } else { $code = Run-Elevated }
             if ($code -ne 0) { return }
+            if (Get-Service -Name $name -ErrorAction SilentlyContinue) {
+                Say 'StrCu is still installed, so nothing of yours was changed.' `
+                    'StrCu h{a}l{a} kurulu; senin taraf{i}nda hi{c}bir {s}ey de{g}i{s}tirilmedi.' 'Red'
+                return
+            }
             Uninstall-User
             Say 'StrCu was removed.' 'StrCu kald{i}r{i}ld{i}.' 'Green'
             return
@@ -367,6 +394,13 @@ $selfSource = $MyInvocation.MyCommand.ScriptBlock.ToString()
         $code = 0
         if (Is-Admin) { Install-System } else { $code = Run-Elevated }
         if ($code -ne 0) { return }
+        # What is on disk is the honest answer, not what the half above returned: the person's own side - the
+        # entry that starts 1.x with Windows, the shortcuts - is only changed once StrCu is really there.
+        if (-not (Test-Path $exe) -or -not (Get-Service -Name $name -ErrorAction SilentlyContinue)) {
+            Say 'StrCu was not installed, so nothing of yours was changed.' `
+                'StrCu kurulmad{i}; senin taraf{i}nda hi{c}bir {s}ey de{g}i{s}tirilmedi.' 'Red'
+            return
+        }
         Install-User
         Say 'Shortcuts: Start menu and desktop (StrCu).' 'K{i}sayollar: Ba{s}lat men{u}s{u} ve masa{u}st{u} (StrCu).'
         if ($NoStart) { return }
@@ -379,3 +413,7 @@ $selfSource = $MyInvocation.MyCommand.ScriptBlock.ToString()
         if ($SystemOnly) { exit 1 }
     }
 }
+
+# The last line of this file, and the mark the installer looks for before it hands itself to the
+# administrator half: whole, or it does not ask for approval at all.
+# STRCU-INSTALLER-END
