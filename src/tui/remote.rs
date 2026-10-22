@@ -35,16 +35,25 @@ async fn ask_strcu(io: &mut impl Io, live: &mut Live, what: ipc::Tunnel) -> Resu
 
 /// "● connected" in its colour.
 pub fn state_spans(t: &Lang, state: ipc::RemoteState) -> Vec<Span> {
+    let (tone, key) = look(state);
+    vec![span(tone, format!("● {}", t.t(key)))]
+}
+
+/// The same in words alone, for the command line (`strcu tunnel status`).
+pub fn state_word(state: ipc::RemoteState) -> &'static str {
+    look(state).1
+}
+
+fn look(state: ipc::RemoteState) -> (Tone, &'static str) {
     use ipc::RemoteState as R;
-    let (tone, key) = match state {
+    match state {
         R::Up => (Tone::Ok, "dash.r_up"),
         R::Starting => (Tone::Warn, "dash.r_starting"),
         R::Down => (Tone::Warn, "dash.r_down"),
         R::Failed => (Tone::Bad, "dash.r_failed"),
         R::Off | R::Disabled => (Tone::Dim, "dash.remote_off"),
         R::Incomplete => (Tone::Warn, "dash.remote_incomplete"),
-    };
-    vec![span(tone, format!("● {}", t.t(key)))]
+    }
 }
 
 // ---------- state ----------

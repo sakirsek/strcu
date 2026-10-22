@@ -10,7 +10,7 @@ mod html;
 pub(crate) mod live;
 mod pair;
 mod preview;
-mod remote;
+pub(crate) mod remote;
 mod settings;
 mod term;
 mod wizard;

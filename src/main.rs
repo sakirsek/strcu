@@ -89,31 +89,26 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum TunnelCmd {
-    /// Download the tested cloudflared version (verified with SHA-256)
-    Install,
-    /// Save the tunnel token from the Cloudflare dashboard; the whole command it shows works too
-    Token {
-        /// Read from standard input (for scripts)
-        #[arg(long)]
-        stdin: bool,
-    },
-    /// Access settings: requests through the tunnel are verified with these
-    Setup {
-        /// Public address of the panel, e.g. strcu.example.com
-        #[arg(long)]
-        hostname: String,
-        /// Access team domain, e.g. myteam.cloudflareaccess.com (found by itself when left out)
-        #[arg(long, requires = "aud")]
-        team: Option<String>,
-        /// AUD tag of the Access application (found by itself when left out)
-        #[arg(long, requires = "team")]
-        aud: Option<String>,
-        /// Email allowed to sign in
-        #[arg(long)]
-        email: String,
-    },
-    /// Tunnel status
+    /// Remote access as the running StrCu sees it
     Status,
+    // Remote access is set up from the window since 2.0, through the running StrCu. These three wrote to the
+    // settings themselves, which a person may not and which the running StrCu would not notice; they are
+    // kept only to say where it is done now, whatever was typed after them.
+    #[command(hide = true)]
+    Install {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
+    },
+    #[command(hide = true)]
+    Token {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
+    },
+    #[command(hide = true)]
+    Setup {
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
+        rest: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -286,7 +281,7 @@ async fn run(cli: Cli) -> Result<()> {
         // Started by the worker, with the user's own token and two pipes for talking to it
         Cmd::Agent => agent::run()?,
         Cmd::Passwd { stdin } => passwd(stdin)?,
-        Cmd::Tunnel { cmd } => tunnel_cmd(cmd).await?,
+        Cmd::Tunnel { cmd } => tunnel_cmd(cmd)?,
         Cmd::Doctor { json } => doctor(json)?,
         Cmd::Licenses => {
             use std::io::Write;
@@ -505,7 +500,11 @@ impl Asking {
 
 fn doctor(json: bool) -> Result<()> {
     let profile = sys::discover::profile();
-    let report = serde_json::json!({ "system": profile, "tunnel": tunnel_summary() });
+    let tunnel = match remote_lines() {
+        Ok(lines) => lines.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" · "),
+        Err(e) => i18n::term().render(&i18n::from_error(&e)),
+    };
+    let report = serde_json::json!({ "system": profile, "tunnel": tunnel });
 
     let dir = config::data_dir();
     std::fs::create_dir_all(&dir)?;
@@ -536,7 +535,7 @@ fn doctor(json: bool) -> Result<()> {
             lang.t("doctor.session"),
             format!("{:?}{}", p.session.lock, if p.session.remote { format!(" ({})", lang.t("doctor.remote")) } else { String::new() }),
         ),
-        (lang.t("doctor.tunnel"), tunnel_summary()),
+        (lang.t("doctor.tunnel"), tunnel),
         (lang.t("doctor.saved"), path.display().to_string()),
     ]);
     let width = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
@@ -546,65 +545,40 @@ fn doctor(json: bool) -> Result<()> {
     Ok(())
 }
 
-fn tunnel_summary() -> String {
-    let access = config::load().access;
-    let m = match (tunnel::installed_version(), tunnel::saved_tunnel_id(), access) {
-        (None, ..) => Msg::new("term.ts_no_cloudflared"),
-        (Some(_), None, _) => Msg::new("term.ts_no_token"),
-        (Some(_), Some(_), None) => Msg::new("term.ts_no_access"),
-        (Some(v), Some(_), Some(a)) => {
-            Msg::new("term.ts_ok").with("host", a.hostname).with("version", v).with("email", a.email)
+fn tunnel_cmd(cmd: TunnelCmd) -> Result<()> {
+    match cmd {
+        TunnelCmd::Status => {
+            for line in remote_lines()? {
+                println!("{line}");
+            }
+            Ok(())
         }
-    };
-    i18n::term().render(&m)
+        TunnelCmd::Install { .. } | TunnelCmd::Token { .. } | TunnelCmd::Setup { .. } => {
+            bail!(Msg::new("err.tunnel_in_window"))
+        }
+    }
 }
 
-async fn tunnel_cmd(cmd: TunnelCmd) -> Result<()> {
-    match cmd {
-        TunnelCmd::Install => {
-            let lang = i18n::term();
-            println!("{}", lang.render(&Msg::new("term.installing").with("version", tunnel::CLOUDFLARED_TAG)));
-            let report = |p: download::Progress| match p {
-                download::Progress::Note(m) => eprintln!("\r  {:<60}", lang.render(&m)),
-                download::Progress::Bytes { have, total, speed } => eprint!(
-                    "\r  {} / {} ({:.1} MB/s)   ",
-                    download::human(have),
-                    download::human(total),
-                    speed / (1u64 << 20) as f64
-                ),
-            };
-            tunnel::install(&report).await?;
-            let version = tunnel::installed_version().unwrap_or_default();
-            println!("{}", lang.render(&Msg::new("term.installed").with("version", version)));
-        }
-        TunnelCmd::Token { stdin } => {
-            let text = if stdin {
-                let mut s = String::new();
-                std::io::Read::read_to_string(&mut std::io::stdin(), &mut s)?;
-                s
-            } else {
-                rpassword::prompt_password(i18n::term().t("term.token_prompt"))?
-            };
-            let id = tunnel::save_token(&text)?;
-            println!("{}", i18n::term().render(&Msg::new("term.token_saved").with("id", id)));
-        }
-        TunnelCmd::Setup { hostname, team, aud, email } => {
-            let hostname = access::clean_host(&hostname)?;
-            let (team, aud) = match (team, aud) {
-                (Some(team), Some(aud)) => (access::clean_team(&team)?, access::clean_aud(&aud)?),
-                // Read from the address's Access sign-in redirect
-                _ => match access::front(&hostname).await? {
-                    access::Front::Access { team, aud } => (team, aud),
-                    _ => bail!(Msg::new("err.no_access_in_front").with("host", hostname)),
-                },
-            };
-            let a = access::AccessConfig { hostname, team_domain: team, aud, email: access::clean_email(&email)? };
-            config::update(|c| c.access = Some(a))?;
-            println!("{}", i18n::term().render(&Msg::new("term.access_set").with("summary", tunnel_summary())));
-        }
-        TunnelCmd::Status => println!("{}", tunnel_summary()),
+/// Remote access as the running StrCu sees it, in the words of the window's main screen: the address and how
+/// it is, why it failed, and who Access lets in. The settings are not read here: a person may not open the
+/// folder, and only the running StrCu knows whether the tunnel is actually up.
+fn remote_lines() -> Result<Vec<String>> {
+    use ipc::RemoteState as R;
+    let t = i18n::term();
+    let Ok(mut live) = tui::live::Live::connect() else { bail!(svc::not_running()) };
+    let state = live.state();
+    let word = t.t(tui::remote::state_word(state.remote)).to_string();
+    let mut lines = vec![match (&state.remote_url, state.remote) {
+        (_, R::Off | R::Disabled) | (None, _) => word,
+        (Some(url), _) => format!("{url}  {word}"),
+    }];
+    lines.extend(state.remote_why.as_ref().map(|why| format!("  {why}")));
+    let settings = live.settings()?;
+    if let Some(email) = settings.remote_email {
+        let version = settings.cloudflared.unwrap_or_else(|| "-".into());
+        lines.push(format!("  {}", t.render(&Msg::new("term.ts_detail").with("email", email).with("version", version))));
     }
-    Ok(())
+    Ok(lines)
 }
 
 fn truncate(s: &str, n: usize) -> String {
