@@ -41,9 +41,10 @@ irm https://github.com/sakirsek/strcu/releases/latest/download/install.ps1 | iex
 
 It downloads the latest release, checks its SHA-256 checksum, installs it to `%ProgramFiles%\StrCu`, sets it
 up as a Windows service, adds StrCu to the Start menu and the desktop, and opens the first-start setup. The
-settings live in `%ProgramData%\StrCu`, which only administrators may write to; an older StrCu's settings are
-copied over at the first start, so nothing has to be set up again. Running the same line again updates StrCu
-(settings stay). To remove StrCu with all its settings, shortcuts and its service:
+settings live in `%ProgramData%\StrCu`, which only administrators may write to. An older StrCu's settings are
+copied over while installing - the password, paired phones, passkeys, macros and the tunnel with its program -
+so nothing has to be set up again, and what that older install kept is left where it was. Running the same
+line again updates StrCu (settings stay). To remove StrCu with all its settings, shortcuts and its service:
 
 ```
 & ([scriptblock]::Create((irm https://github.com/sakirsek/strcu/releases/latest/download/install.ps1))) -Uninstall
