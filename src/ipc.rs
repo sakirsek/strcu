@@ -598,10 +598,15 @@ impl Link {
     /// StrCu (see `ours`): without that, something that had claimed the name first would be handed the
     /// password.
     pub fn connect() -> Result<Link> {
-        Self::connect_named(&path())
+        // Our own account only where StrCu may really be running as us: a development build, or a computer
+        // with no StrCu service. Where the service is installed, a pipe of ours could only have been made by
+        // a program of ours that took the name while the service was stopped.
+        let mine = crate::brand::DEV || !crate::svc::installed();
+        Self::connect_named(&path(), mine)
     }
 
-    fn connect_named(name: &str) -> Result<Link> {
+    /// `mine`: a pipe of our own account counts as StrCu's as well (see `ours`).
+    fn connect_named(name: &str, mine: bool) -> Result<Link> {
         let wide = HSTRING::from(name);
         let until = Instant::now() + BUSY_WAIT;
         loop {
@@ -619,7 +624,7 @@ impl Link {
                 Ok(h) => {
                     let pipe = Pipe(h);
                     let owner = owner_sid(pipe.0).context("who answers on the pipe")?;
-                    if !ours(&owner) {
+                    if !ours(&owner, mine.then(own_sid).flatten().as_deref()) {
                         bail!("the pipe belongs to {owner}, which is neither the computer nor us");
                     }
                     return Ok(Link { pipe });
@@ -727,11 +732,11 @@ pub(crate) fn own_sid() -> Option<String> {
 }
 
 /// Whose pipe we are willing to talk to: the computer itself, the administrators - which is what a service
-/// gives what it makes - or ourselves, while StrCu is started by hand. A program running as a person cannot
-/// hand the ownership of what it makes to either of the first two, so a pipe owned by them was made by
-/// something that already had the rights StrCu runs with.
-fn ours(owner: &str) -> bool {
-    owner == SYSTEM || owner == ADMINS || own_sid().as_deref() == Some(owner)
+/// gives what it makes - or `me`, our own account, when StrCu may be running as us. A program running as a
+/// person cannot hand the ownership of what it makes to either of the first two, so a pipe owned by them was
+/// made by something that already had the rights StrCu runs with.
+fn ours(owner: &str, me: Option<&str>) -> bool {
+    owner == SYSTEM || owner == ADMINS || me == Some(owner)
 }
 
 /// Who created this pipe.
@@ -793,12 +798,17 @@ mod tests {
 
     #[test]
     fn only_a_pipe_of_the_computers_or_our_own_is_talked_to() {
-        assert!(ours(SYSTEM), "the computer itself");
-        assert!(ours(ADMINS), "what a service makes comes out owned by the administrators");
-        assert!(own_sid().is_some_and(|sid| ours(&sid)), "a StrCu started by hand is ours");
-        // Another account on this computer could claim the name first; its pipe is not talked to
-        assert!(!ours("S-1-5-21-1111111111-2222222222-3333333333-1001"));
-        assert!(!ours("S-1-1-0"), "everyone");
+        let me = own_sid().expect("this process has an account");
+        for mine in [None, Some(me.as_str())] {
+            assert!(ours(SYSTEM, mine), "the computer itself");
+            assert!(ours(ADMINS, mine), "what a service makes comes out owned by the administrators");
+            // Another account on this computer could claim the name first; its pipe is not talked to
+            assert!(!ours("S-1-5-21-1111111111-2222222222-3333333333-1001", mine));
+            assert!(!ours("S-1-1-0", mine), "everyone");
+        }
+        // Our own account counts only where StrCu may be running as us
+        assert!(ours(&me, Some(&me)), "a StrCu started by hand, with no service on this computer");
+        assert!(!ours(&me, None), "with the service installed, a pipe of ours is somebody else's doing");
     }
 
     #[test]
@@ -852,7 +862,7 @@ mod tests {
             _ if req.token.is_none() => Answer::SignInNeeded,
             _ => Answer::Done,
         });
-        let mut link = Link::connect_named(&name).unwrap();
+        let mut link = Link::connect_named(&name, true).unwrap();
         // As many asks as it likes on the one connection
         let status = link.ask(Ask::Status { log_since: 4 }, None).unwrap();
         assert_eq!(status, Answer::Status(Status { log_count: 5, ..Status::default() }));
@@ -867,8 +877,8 @@ mod tests {
     fn two_windows_are_served_at_once() {
         let name = test_path("two");
         serving(&name, |_| Answer::Done);
-        let mut first = Link::connect_named(&name).unwrap();
-        let mut second = Link::connect_named(&name).unwrap();
+        let mut first = Link::connect_named(&name, true).unwrap();
+        let mut second = Link::connect_named(&name, true).unwrap();
         assert_eq!(second.ask(Ask::Settings, None).unwrap(), Answer::Done);
         assert_eq!(first.ask(Ask::Settings, None).unwrap(), Answer::Done);
     }
@@ -877,7 +887,7 @@ mod tests {
     fn a_window_of_another_version_is_told_to_start_again() {
         let name = test_path("version");
         serving(&name, |_| panic!("a request of another version must not be answered"));
-        let link = Link::connect_named(&name).unwrap();
+        let link = Link::connect_named(&name, true).unwrap();
         let req = Request { v: VERSION + 1, token: None, ask: Ask::Settings };
         write_frame(link.pipe.0, &serde_json::to_vec(&req).unwrap()).unwrap();
         let body = read_frame(link.pipe.0).unwrap().unwrap();
@@ -887,7 +897,7 @@ mod tests {
 
     #[test]
     fn there_is_nothing_to_reach_when_strcu_is_not_running() {
-        assert!(Link::connect_named(&test_path("absent")).is_err());
+        assert!(Link::connect_named(&test_path("absent"), true).is_err());
     }
 
     #[test]

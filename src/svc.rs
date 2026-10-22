@@ -166,6 +166,18 @@ fn state() -> Option<ServiceState> {
     service.query_status().ok().map(|s| s.current_state)
 }
 
+/// Is StrCu installed as a service on this computer, running or not? Only Windows saying there is no such
+/// service counts as no: whatever else stops us asking leaves the answer at yes, the side that trusts less.
+pub fn installed() -> bool {
+    let Ok(manager) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) else {
+        return true;
+    };
+    !matches!(
+        manager.open_service(crate::brand::KEY, ServiceAccess::QUERY_STATUS),
+        Err(windows_service::Error::Winapi(e)) if e.raw_os_error() == Some(1060)
+    )
+}
+
 /// The two halves put together, kept apart from the asking so it can be tried on its own.
 fn why(state: Option<ServiceState>, said: Option<Msg>) -> Msg {
     let state = state.map(|s| {
