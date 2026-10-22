@@ -175,9 +175,44 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
         }
     }
 
+    # .NET directly: Get-FileHash is missing when Windows PowerShell inherits PowerShell 7's module path
+    function Sha256([string]$path) {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        $stream = [IO.File]::OpenRead($path)
+        try { -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) } finally { $stream.Dispose() }
+    }
+
+    # Can only the system, the administrators and TrustedInstaller change this file or folder? The service runs
+    # the program with the computer's own rights, so whoever else can change it can have those rights too.
+    # .NET directly again, for the same reason as above; this works in both PowerShells.
+    function Only-Admins-Change([string]$path) {
+        $trusted = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+        # Write, append, write attributes, delete a child, delete, change the rules, take ownership, generic write/all
+        $change = 0x500D0156
+        $sections = [Security.AccessControl.AccessControlSections]'Owner, Access'
+        $acl = if (Test-Path -LiteralPath $path -PathType Container) {
+            New-Object Security.AccessControl.DirectorySecurity($path, $sections)
+        } else {
+            New-Object Security.AccessControl.FileSecurity($path, $sections)
+        }
+        $sid = [Security.Principal.SecurityIdentifier]
+        if ($trusted -notcontains $acl.GetOwner($sid).Value) { return $false }
+        foreach ($r in $acl.GetAccessRules($true, $true, $sid)) {
+            if ($r.AccessControlType -ne 'Allow') { continue }
+            if ($r.PropagationFlags.HasFlag([Security.AccessControl.PropagationFlags]::InheritOnly)) { continue }
+            if ($trusted -contains $r.IdentityReference.Value) { continue }
+            if (([int]$r.FileSystemRights -band $change) -ne 0) { return $false }
+        }
+        $true
+    }
+
     function Install-System {
         $tmp = Join-Path ([IO.Path]::GetTempPath()) ('strcu-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory $tmp | Out-Null
+        # What runs is a copy in the program folder, checked there. The temporary folder is the person's own, and a
+        # file moved out of it keeps the rules it had there, the person's right to change it among them; a copy is
+        # a new file and takes the rules of the folder it is made in, where only administrators may write.
+        $staged = Join-Path $dir 'strcu.new.exe'
         try {
             $newExe = Join-Path $tmp 'strcu.exe'
             $sum = Join-Path $tmp 'strcu.exe.sha256'
@@ -191,15 +226,14 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
                 Invoke-WebRequest "$base/strcu.exe.sha256" -OutFile $sum -UseBasicParsing
             }
             $want = ((Get-Content $sum -Raw).Trim() -split '\s+')[0]
-            # .NET directly: Get-FileHash is missing when Windows PowerShell inherits PowerShell 7's module path
-            $sha = [Security.Cryptography.SHA256]::Create()
-            $stream = [IO.File]::OpenRead($newExe)
-            try { $got = -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) } finally { $stream.Dispose() }
-            if ($got -ine $want) {
-                throw (Text 'The download does not match its SHA-256 checksum; nothing was changed.' `
-                    '{I}ndirilen dosya SHA-256 {o}zetiyle tutmuyor; hi{c}bir {s}ey de{g}i{s}tirilmedi.')
-            }
-            $version = (& $newExe --version) -replace '^strcu\s+', ''
+            $mismatch = Text 'The download does not match its SHA-256 checksum; nothing was changed.' `
+                '{I}ndirilen dosya SHA-256 {o}zetiyle tutmuyor; hi{c}bir {s}ey de{g}i{s}tirilmedi.'
+            # Once here, so a bad download changes nothing, and again on the copy that is going to run
+            if ((Sha256 $newExe) -ine $want) { throw $mismatch }
+            New-Item -ItemType Directory -Force $dir | Out-Null
+            Copy-Item -LiteralPath $newExe -Destination $staged -Force
+            if ((Sha256 $staged) -ine $want) { throw $mismatch }
+            $version = (& $staged --version) -replace '^strcu\s+', ''
             Say "StrCu $version, SHA-256 verified." "StrCu $version, SHA-256 do{g}ruland{i}." 'Green'
 
             $service = Get-Service -Name $name -ErrorAction SilentlyContinue
@@ -210,11 +244,21 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
                 (Get-Service -Name $name).WaitForStatus('Stopped', '00:00:30')
             }
             Stop-Under $dir
-            New-Item -ItemType Directory -Force $dir | Out-Null
-            # A program that has just stopped can stay locked for a moment
+            # A program that has just stopped can stay locked for a moment. Within one folder a move keeps the rules
+            # the copy was given there.
             for ($i = 0; ; $i++) {
-                try { Move-Item $newExe $exe -Force; break }
+                try { Move-Item -LiteralPath $staged -Destination $exe -Force; break }
                 catch { if ($i -ge 20) { throw }; Start-Sleep -Milliseconds 300 }
+            }
+            # Both belong to the administrators, whoever Windows makes new files belong to, and the program takes the
+            # folder's rules: an install by 2.0.3 or older left it with rules of its own
+            foreach ($p in $dir, $exe) { & icacls.exe $p /setowner '*S-1-5-32-544' /q | Out-Null }
+            & icacls.exe $exe /reset /q | Out-Null
+            foreach ($p in $dir, $exe) {
+                if (-not (Only-Admins-Change $p)) {
+                    throw (Text "$p can be changed by an account that is not an administrator, so StrCu was not started." `
+                        "$p y{o}netici olmayan bir hesap taraf{i}ndan de{g}i{s}tirilebiliyor; bu y{u}zden StrCu ba{s}lat{i}lmad{i}.")
+                }
             }
 
             Take-Over-1x
@@ -249,6 +293,8 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
                     "  ev a{g}{i} $port portunda a{c}{i}k ({o}zel a{g}lar)"
             }
         } finally {
+            # Left only when something failed before the copy took the program's place
+            Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
             Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
