@@ -72,10 +72,10 @@ use crate::passkey::Passkey;
 pub const VERSION: u32 = 6;
 
 /// The system account, which is what StrCu runs as once it is a service.
-const SYSTEM: &str = "S-1-5-18";
+pub(crate) const SYSTEM: &str = "S-1-5-18";
 /// The administrators. A service makes its pipe as the computer, but what it makes comes out owned by this
 /// group rather than by the system itself, which is what the window sees when it looks at who answers.
-const ADMINS: &str = "S-1-5-32-544";
+pub(crate) const ADMINS: &str = "S-1-5-32-544";
 
 /// `\\.\pipe\StrCu`, or `StrCuDev` in a development build, so the two never meet.
 pub fn path() -> String {
@@ -711,7 +711,7 @@ fn own_session() -> u32 {
 }
 
 /// This process's own account, as an SID string ("S-1-5-18" for the system).
-fn own_sid() -> Option<String> {
+pub(crate) fn own_sid() -> Option<String> {
     unsafe {
         let mut token = HANDLE::default();
         OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
@@ -747,7 +747,7 @@ fn owner_sid(pipe: HANDLE) -> Result<String> {
     }
 }
 
-fn sid_string(sid: PSID) -> Option<String> {
+pub(crate) fn sid_string(sid: PSID) -> Option<String> {
     unsafe {
         let mut text = PWSTR::null();
         ConvertSidToStringSidW(sid, &mut text).ok()?;

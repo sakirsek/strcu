@@ -63,7 +63,7 @@ const FILE_MAX: u64 = 1 << 20;
 /// What the service hands over to the rest of StrCu: one line of JSON for each of its own log entries. The
 /// service empties it as it starts, so what stands in it is what has happened since - which is why nothing
 /// older is kept when it starts over.
-const HANDOVER: &str = "service.log";
+pub(crate) const HANDOVER: &str = "service.log";
 
 /// The handover file starts over past this size. A worker that will not start is written down every couple
 /// of seconds, and a file that grows for a week helps nobody.

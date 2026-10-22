@@ -271,14 +271,15 @@ async fn run(cli: Cli) -> Result<()> {
             window::set_console_title(window::CONSOLE_TITLE);
             app::serve_plain(bind, !no_tunnel).await?;
         }
-        // Windows starts these two, and they run with the rights of the computer: they are the ones that
-        // make the settings folder and take a 1.x install over. Every other command only uses what is there.
+        // Windows starts these two, and they run with the rights of the computer. The service is the one
+        // that makes the settings folder, closes it and takes a 1.x install over; everything else, the
+        // worker included, only uses what is there.
         Cmd::Service => {
             prepare_data_dir()?;
             svc::run()?;
         }
         Cmd::Worker => {
-            prepare_data_dir()?;
+            paths::ensure().context(Msg::new("err.data_dir"))?;
             power::keep_awake(true, false);
             app::serve_plain(None, true).await?;
         }
@@ -312,12 +313,13 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// The settings folder, before anything reads it: created, closed to everyone but the computer and its
-/// administrators, and filled from a 1.x install the first time.
+/// The settings folder, before anything reads it: taken over, closed to everyone but the computer and its
+/// administrators, and filled from a 1.x install the first time. What it came to is written in the log as
+/// soon as the service has one (svc.rs); the service has no screen for these lines.
 fn prepare_data_dir() -> Result<()> {
-    let copied = paths::prepare().context(Msg::new("err.data_dir"))?;
-    if !copied.is_empty() {
-        println!("{}", i18n::term().render(&Msg::new("term.took_over").with("files", copied.join(", "))));
+    let done = paths::prepare().context(Msg::new("err.data_dir"))?;
+    if !done.copied.is_empty() {
+        println!("{}", i18n::term().render(&Msg::new("term.took_over").with("files", done.copied.join(", "))));
     }
     Ok(())
 }

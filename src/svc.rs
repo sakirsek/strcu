@@ -75,6 +75,10 @@ fn service_main(_args: Vec<OsString>) {
     // What this service says from here on is also left in a file, for the parts of StrCu that cannot ask it
     crate::log::start_handover();
     let log = ActionLog::for_service();
+    // Getting the settings folder ready happens before there is a log to say it in (main.rs)
+    if let Some(name) = crate::paths::prepared().and_then(|p| p.moved_aside.as_deref()) {
+        log.add(Msg::new("ev.data_untrusted").with("name", name), false);
+    }
     if let Err(e) = serve(&log) {
         log.add(Msg::new("ev.service_error").with("msg", format!("{e:#}")), false);
     }

@@ -501,6 +501,7 @@
   "ev.worker_started": "Panel kullanılan ekranda çalışıyor ({session}. oturum)",
   "ev.worker_gone": "Panel {session}. oturumda durdu, yeniden başlatılıyor",
   "ev.worker_failed": "Panel başlatılamadı: {msg}",
+  "ev.data_untrusted": "Ayarlar klasörü başkasına aitti; {name} adıyla kenara alındı ve yenisi yapıldı",
   "ev.agent_started": "Artık {user} olarak da çalışıyor",
   "ev.agent_gone": "{user} olarak çalışan durdu, yeniden başlatılıyor",
   "ev.pipe_failed": "Kumanda penceresi StrCu'ya ulaşamıyor: {msg}",
