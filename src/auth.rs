@@ -84,7 +84,7 @@ impl Auth {
     /// the computer, and a session that could not be kept only means signing in again.
     fn keep(&self, sessions: &HashMap<String, u64>) {
         if let Ok(text) = serde_json::to_string(sessions) {
-            let _ = std::fs::write(self.dir.join(SESSIONS), text);
+            let _ = crate::paths::write_atomic(&self.dir.join(SESSIONS), text.as_bytes());
         }
     }
 
@@ -174,7 +174,7 @@ fn still_open(opened: u64, now: u64) -> bool {
 
 /// The sessions from the file, without the ones that have run out.
 fn kept_in(dir: &Path) -> HashMap<String, u64> {
-    let Ok(text) = std::fs::read_to_string(dir.join(SESSIONS)) else { return HashMap::new() };
+    let Ok(text) = crate::paths::read_text(&dir.join(SESSIONS)) else { return HashMap::new() };
     let mut kept: HashMap<String, u64> = serde_json::from_str(&text).unwrap_or_default();
     let now = unix_now();
     kept.retain(|_, opened| still_open(*opened, now));

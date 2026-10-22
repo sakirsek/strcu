@@ -168,6 +168,35 @@ pub fn let_anyone_read(file: &Path) -> Result<()> {
     set_dacl(file, READABLE)
 }
 
+/// Writes a file whole or not at all: into a new file beside it, onto the disk, then into its place in one
+/// step. The worker is stopped without warning at every sign-out, and the power can go; either leaves the
+/// old file or the new one, never half of one - and half a settings file reads as no settings at all.
+pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut name = path.file_name().unwrap_or_default().to_os_string();
+    name.push(".new");
+    let new = path.with_file_name(name);
+    let written = std::fs::File::create(&new).and_then(|mut f| {
+        f.write_all(bytes)?;
+        f.sync_all()
+    });
+    let done = written.and_then(|()| std::fs::rename(&new, path));
+    if done.is_err() {
+        let _ = std::fs::remove_file(&new);
+    }
+    done
+}
+
+/// A text file of ours, without the mark some editors put at the front of one: an administrator who opened
+/// a settings file in one and saved it must not find StrCu reading it as no settings at all.
+pub fn read_text(path: &Path) -> std::io::Result<String> {
+    let text = std::fs::read_to_string(path)?;
+    Ok(match text.strip_prefix('\u{feff}') {
+        Some(rest) => rest.to_string(),
+        None => text,
+    })
+}
+
 /// Gives a folder and everything in it to one account with one rule, and takes away whatever the things
 /// inside had of their own: a file somebody left in there keeps no rule of theirs. Afterwards the one file
 /// the control window may read is opened again, since this is what closed it (log.rs).
@@ -372,6 +401,34 @@ mod tests {
         let d = std::env::temp_dir().join(format!("strcu-test-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);
         d
+    }
+
+    #[test]
+    fn a_file_is_written_whole_and_nothing_is_left_beside_it() {
+        let dir = temp("whole");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        write_atomic(&file, b"first").unwrap();
+        write_atomic(&file, b"second, and longer than the first").unwrap();
+        assert_eq!(std::fs::read(&file).unwrap(), b"second, and longer than the first");
+        let left: Vec<_> = std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(left, ["config.json"], "no half-written file beside it");
+        // Where it cannot be written, the old file stays as it was and nothing new is left either
+        assert!(write_atomic(&dir.join("absent").join("config.json"), b"x").is_err());
+        assert_eq!(std::fs::read(&file).unwrap(), b"second, and longer than the first");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_file_saved_with_a_mark_in_front_reads_as_it_is() {
+        let dir = temp("bom");
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("config.json");
+        std::fs::write(&file, "\u{feff}{\"lan\":true}").unwrap();
+        assert_eq!(read_text(&file).unwrap(), "{\"lan\":true}");
+        std::fs::write(&file, "{}").unwrap();
+        assert_eq!(read_text(&file).unwrap(), "{}");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     /// The tests run as a person, who may give what they own to themselves but not to the computer, and

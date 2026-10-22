@@ -532,6 +532,7 @@
   "ev.agent_failed": "Could not start working as the person signed in: {msg}",
   "ev.pipe_failed": "The control window cannot reach StrCu: {msg}",
   "ev.pipe_trouble": "The control window's connection ran into trouble and keeps listening: {msg}",
+  "ev.config_unreadable": "The settings could not be read, so StrCu runs without them and the panel stays closed: {msg}. An administrator can put {path} right or delete it.",
   "ev.access_denied": "Access denied ({ip}): {reason}",
   "ev.signin_wrong_pw": "Sign-in: wrong password · {from}",
   "ev.signed_in": "Signed in · {from}",

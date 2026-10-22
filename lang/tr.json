@@ -511,6 +511,7 @@
   "ev.agent_failed": "Oturum açan kişi olarak çalışma başlatılamadı: {msg}",
   "ev.pipe_failed": "Kumanda penceresi StrCu'ya ulaşamıyor: {msg}",
   "ev.pipe_trouble": "Kumanda penceresinin bağlantısında sorun çıktı, dinlemeye devam ediyor: {msg}",
+  "ev.config_unreadable": "Ayarlar okunamadı; StrCu onlarsız çalışıyor ve panel kapalı: {msg}. Bir yönetici {path} dosyasını düzeltebilir ya da silebilir.",
   "ev.access_denied": "Erişim reddedildi ({ip}): {reason}",
   "ev.signin_wrong_pw": "Giriş: yanlış parola · {from}",
   "ev.signed_in": "Giriş yapıldı · {from}",

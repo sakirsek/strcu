@@ -113,6 +113,12 @@ impl App {
             agent_starting: None,
             agent_failed: None,
         };
+        // Settings that are there but cannot be read: StrCu runs without them - with no password the panel does
+        // not listen - and says why, rather than look like a computer it was never set up on
+        if let Err(e) = config::read() {
+            let why = Msg::new("ev.config_unreadable").with("msg", crate::i18n::from_error(&e));
+            app.panel.log().add(why.with("path", config::file().display().to_string()), false);
+        }
         app.relisten().await;
         app.restart_remote().await;
         Ok(app)

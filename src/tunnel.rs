@@ -172,12 +172,12 @@ pub fn find_token(text: &str) -> Result<(String, String)> {
 pub fn save_token(text: &str) -> Result<String> {
     let (token, id) = find_token(text)?;
     std::fs::create_dir_all(config::data_dir())?;
-    std::fs::write(token_path(), token).context(Msg::new("err.token_write"))?;
+    crate::paths::write_atomic(&token_path(), token.as_bytes()).context(Msg::new("err.token_write"))?;
     Ok(id)
 }
 
 fn token() -> Option<String> {
-    let t = std::fs::read_to_string(token_path()).ok()?;
+    let t = crate::paths::read_text(&token_path()).ok()?;
     let t = t.trim();
     tunnel_id(t).map(|_| t.to_string())
 }

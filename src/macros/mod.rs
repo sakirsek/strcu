@@ -216,7 +216,7 @@ pub fn shot_path(id: &str) -> PathBuf {
 /// Reads the macros. A file that cannot be read is moved aside, not overwritten later.
 fn read_all() -> Vec<Macro> {
     let p = path();
-    let Ok(s) = std::fs::read_to_string(&p) else { return Vec::new() };
+    let Ok(s) = crate::paths::read_text(&p) else { return Vec::new() };
     match serde_json::from_str::<File>(&s) {
         Ok(f) => f.macros,
         Err(_) => {
@@ -226,14 +226,12 @@ fn read_all() -> Vec<Macro> {
     }
 }
 
-/// Writes through a temporary file, so a crash cannot leave half a file.
+/// Written whole or not at all (paths.rs `write_atomic`), so a crash cannot leave half a file.
 fn write_all(list: &[Macro]) -> Result<()> {
     let dir = crate::config::data_dir();
     std::fs::create_dir_all(&dir)?;
-    let tmp = path().with_extension("json.tmp");
     let json = serde_json::to_string_pretty(&serde_json::json!({ "macros": list }))?;
-    std::fs::write(&tmp, json).context(Msg::new("err.mac_write"))?;
-    std::fs::rename(&tmp, path()).context(Msg::new("err.mac_write"))
+    crate::paths::write_atomic(&path(), json.as_bytes()).context(Msg::new("err.mac_write"))
 }
 
 fn new_id() -> String {
