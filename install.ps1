@@ -287,24 +287,29 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
     # person runs anyway, and they are already running whatever `irm` just handed them. The name is random
     # so nothing can lie in wait for it.
     function Run-Elevated {
-        # Whole, or not at all: a half-written script would ask for administrator approval and then quietly
-        # do nothing, which is worse than not starting. The two marks are the first and the last of the work.
-        $src = $selfSource
-        if (-not (Is-Whole $src)) {
-            $src = (Invoke-WebRequest "https://github.com/$repo/releases/latest/download/install.ps1" -UseBasicParsing).Content
+        $base = Join-Path ([IO.Path]::GetTempPath()) ('strcu-install-' + [guid]::NewGuid().ToString('N'))
+        $script = "$base.ps1"
+        $log = "$base.log"
+
+        # The file that is about to run as administrator is the one that gets checked, not a copy of it in
+        # memory. A piped script has itself fetched from the release straight into that file: GitHub hands
+        # install.ps1 over as a file of bytes, which `Invoke-WebRequest` would give us as bytes rather than
+        # text, and a check on bytes passes nothing.
+        if (Is-Whole $selfSource) {
+            Set-Content -LiteralPath $script -Value $selfSource -Encoding ASCII
+        } else {
+            Invoke-WebRequest "https://github.com/$repo/releases/latest/download/install.ps1" -UseBasicParsing -OutFile $script
         }
-        if (-not (Is-Whole $src)) {
+        # Whole, or not at all: a script with its end cut off would ask for administrator approval and then
+        # quietly do nothing, which is worse than not starting at all.
+        if (-not (Is-Whole ([IO.File]::ReadAllText($script)))) {
+            Remove-Item $script -Force -ErrorAction SilentlyContinue
             Say 'This installer could not read itself, so it is not asking for administrator approval.' `
                 'Bu kurucu kendi metnini okuyamad{i}; y{o}netici onay{i} istemiyor.' 'Red'
             Say "Download install.ps1 from github.com/$repo/releases and run it as a file." `
                 "install.ps1'i github.com/$repo/releases adresinden indirip dosya olarak {c}al{i}{s}t{i}r."
             return 1
         }
-
-        $base = Join-Path ([IO.Path]::GetTempPath()) ('strcu-install-' + [guid]::NewGuid().ToString('N'))
-        $script = "$base.ps1"
-        $log = "$base.log"
-        Set-Content -LiteralPath $script -Value $src -Encoding ASCII
         $a = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $script, '-SystemOnly', '-LogTo', $log, '-OldData', $old)
         if ($Uninstall) { $a += @('-Uninstall', '-Yes') }
         if ($From) { $a += @('-From', (Resolve-Path $From).Path) }
