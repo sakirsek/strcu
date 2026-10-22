@@ -61,11 +61,11 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
     $desktop = Join-Path $desktopDir 'StrCu.lnk'
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     $rule = 'StrCu'
-    # What 1.x kept and 2.0 takes over, settings first. 'cloudflared' is the tunnel program itself: without it
-    # the saved token has nothing to run and remote access stays down until somebody opens the window and
-    # downloads it again - which is no help at all to a person who is away from home and has only the tunnel.
-    $kept = @('config.json', 'macros.json', 'cloudflared-token.txt', 'cloudflared', 'actions.log',
-        'actions.old.log', 'macro-shots')
+    # What 1.x kept and 2.0 takes over, settings first. The tunnel program itself is not among them: it runs
+    # with the computer's rights, and one that sat in the person's own folder could have been changed by
+    # anything they ran. StrCu fetches the one it checks for by itself, before the tunnel starts, so remote
+    # access still comes back on its own.
+    $kept = @('config.json', 'macros.json', 'cloudflared-token.txt', 'actions.log', 'actions.old.log', 'macro-shots')
 
     # StrCu's own language if it is set up, else the Windows display language
     $lang = (Get-UICulture).TwoLetterISOLanguageName
