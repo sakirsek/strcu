@@ -41,9 +41,10 @@ irm https://github.com/sakirsek/strcu/releases/latest/download/install.ps1 | iex
 
 It downloads the latest release, checks its SHA-256 checksum, installs it to `%ProgramFiles%\StrCu`, sets it
 up as a Windows service, adds StrCu to the Start menu and the desktop, and opens the first-start setup. The
-settings live in `%ProgramData%\StrCu`, which only administrators may write to. An older StrCu's settings are
-copied over while installing - the password, paired phones, passkeys, macros and the tunnel with its program -
-so nothing has to be set up again, and what that older install kept is left where it was. Running the same
+settings live in `%ProgramData%\StrCu`, which only administrators may write to; the installer makes sure of
+that before anything goes in, and a folder of that name left by anyone else is moved aside rather than used.
+An older StrCu's settings are copied over while installing - the password, paired phones, passkeys, macros
+and the tunnel - so nothing has to be set up again, and what that older install kept is left where it was. Running the same
 line again updates StrCu (settings stay). To remove StrCu with all its settings, shortcuts and its service:
 
 ```
@@ -196,7 +197,8 @@ same point in the window is used. Such a step is set on the live screen: aim at 
 **Start recording** turns what you do in the panel into steps: taps and drags, keys, text (typed live it
 becomes one step, corrections left out), apps opened (with a wait for their window), windows brought to the
 front, maximized or closed. A red bar shows how many steps there are; **Done** adds them to a macro, where they
-can be edited.
+can be edited. Nothing done while Windows has the screen to itself - the lock screen, the sign-in screen, an
+administrator approval - goes into a recording, so a PIN typed there is never kept; the panel says so once.
 
 **When:** by hand, on chosen days at a time, once at a date and time, or every so many minutes between two
 times on chosen days. Schedules use the computer's clock and run on the computer, so the phone can be off.
@@ -225,7 +227,9 @@ panel. Nothing is installed for it.
 It is set up from the terminal (in the first-start setup, or Settings → Remote access), which walks through the
 Cloudflare dashboard and checks each step:
 
-1. cloudflared is downloaded (a pinned version, verified with SHA-256).
+1. cloudflared is downloaded: one pinned version, kept beside StrCu in `%ProgramFiles%\StrCu\cloudflared`
+   where only administrators may write, and checked against its SHA-256 before every start. A copy that does
+   not match is never run; StrCu downloads the right one again.
 2. **Tunnel:** Networking → Tunnels → Create a tunnel. The install command it shows is pasted into StrCu,
    not run. StrCu starts the tunnel at once, so the dashboard sees it connect and lets you go on.
 3. **Address:** on the tunnel's Routes tab, Add route → Published application, with the Service URL
@@ -262,6 +266,11 @@ this computer, the program that opened it), not only by its headers.
 Five wrong passwords lock that source out for five minutes; each address has its own count, so a guesser on
 the home network cannot lock out remote sign-in. A password or passkey session lasts 12 hours.
 
+Until the first password is set, StrCu lets no one in. That first password is set from StrCu's window on this
+computer - the installer opens its setup at the end for this - and, since there is nothing yet to check it
+against, any program the signed-in person runs could set it too; so set it right away. After that, changing it
+needs the current password, or an administrator (`strcu passwd`, below).
+
 Pairing (`src/pair.rs`): the code is open only while its screen is shown, for five minutes, works once, and
 closes after five wrong tries. The QR code carries it after `#`, which browsers never send to the server, and
 the panel removes it from the address at once. The paired phone's `HttpOnly` cookie works only at the address
@@ -282,12 +291,21 @@ page (its Origin must match the address): a site open on this computer cannot wa
 
 ```
 strcu                             # the terminal app: setup on the first start, then the main screen
-strcu serve [--bind 127.0.0.1:8765] [--no-tunnel]   # no screens, status lines only (scripts, services)
-strcu passwd                      # panel password from the command line
-strcu tunnel install | token | setup --hostname <host> --email <email> | status
-strcu doctor                      # inspect the system, write %ProgramData%\StrCu\profile.json
+strcu passwd [--stdin]            # change the panel password through the running StrCu
+strcu tunnel status               # remote access as the running StrCu sees it
+strcu doctor [--json]             # what StrCu sees of this computer
 strcu licenses                    # licenses of the third-party software built in
+strcu serve [--bind 127.0.0.1:8765] [--no-tunnel]   # StrCu without the service, status lines only
 ```
+
+`strcu passwd` asks for the current password, then the new one, which holds at once and signs every phone
+out; with `--stdin` they come one per line. In a terminal run as administrator it sets a new password without
+the old one, which is the way back from a forgotten password. Remote access is set up in the window
+(Settings → 4).
+
+`strcu serve` is for a computer without the service, such as a development build. Where the service is
+installed StrCu is already running, so `serve` refuses, and `strcu` started with no terminal writes out what
+the running StrCu is doing instead of starting a second one.
 
 `strcu service`, `strcu worker` and `strcu agent` are the three parts StrCu runs itself: Windows starts the
 service, the service starts a worker on the screen's session, and the worker starts an agent with the signed-in

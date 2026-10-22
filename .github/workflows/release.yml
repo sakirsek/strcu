@@ -39,5 +39,6 @@ jobs:
         run: |
           $extra = @()
           if ($env:GITHUB_REF_NAME -like '*-*') { $extra += '--prerelease' }
+          # The title is "StrCu <tag>" (StrCu v2.0.4). Notes are written later with gh release edit --notes-file, never --title
           gh release create $env:GITHUB_REF_NAME dist/strcu.exe dist/strcu.exe.sha256 dist/install.ps1 dist/THIRD-PARTY-NOTICES.txt `
             --title "StrCu $env:GITHUB_REF_NAME" --generate-notes @extra
