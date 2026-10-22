@@ -59,8 +59,11 @@ $selfSource = $MyInvocation.MyCommand.ScriptBlock.ToString()
     $desktop = Join-Path $desktopDir 'StrCu.lnk'
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     $rule = 'StrCu'
-    # What 1.x kept and 2.0 takes over, settings first
-    $kept = @('config.json', 'macros.json', 'cloudflared-token.txt', 'actions.log', 'actions.old.log', 'macro-shots')
+    # What 1.x kept and 2.0 takes over, settings first. 'cloudflared' is the tunnel program itself: without it
+    # the saved token has nothing to run and remote access stays down until somebody opens the window and
+    # downloads it again - which is no help at all to a person who is away from home and has only the tunnel.
+    $kept = @('config.json', 'macros.json', 'cloudflared-token.txt', 'cloudflared', 'actions.log',
+        'actions.old.log', 'macro-shots')
 
     # StrCu's own language if it is set up, else the Windows display language
     $lang = (Get-UICulture).TwoLetterISOLanguageName
