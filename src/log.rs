@@ -107,7 +107,9 @@ impl ActionLog {
             let _ = writeln!(f, "{} {} {}", e.time, if ok { "OK " } else { "ERR" }, i18n::term().render(&e.msg));
         }
         if self.handover {
-            hand_over(&crate::config::data_dir(), &e);
+            // Only the computer narrows it, as with the folder itself (paths.rs): StrCu started by a person keeps
+            // what it made writable by that person, or it could not go on writing its own log
+            hand_over(&crate::config::data_dir(), &e, crate::ipc::as_system());
         }
         let mut r = self.recent.lock().unwrap();
         r.push_front(e);
@@ -165,23 +167,23 @@ pub fn start_handover() {
     let _ = std::fs::remove_file(handover_path(&crate::config::data_dir()));
 }
 
-/// Appends one entry, and the first time lets anybody on this computer read the file: it holds a handful of
-/// event keys and, at worst, the reason a program would not start - nothing that was ever kept secret - and
-/// the control window, which runs as a person while the folder is the computer's, has no other way to learn
-/// why StrCu never came up.
-fn hand_over(dir: &Path, e: &LogEntry) {
+/// Appends one entry, and with `open_up` lets anybody on this computer read a file it has just made: it holds
+/// a handful of event keys and, at worst, the reason a program would not start - nothing that was ever kept
+/// secret - and the control window, which runs as a person while the folder is the computer's, has no other
+/// way to learn why StrCu never came up.
+fn hand_over(dir: &Path, e: &LogEntry, open_up: bool) {
     let path = handover_path(dir);
-    let fresh = !path.exists();
+    // Too long, it starts over - before the asking whether it is new, or the file that replaces it would be
+    // taken for the old one and never opened up
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > HANDOVER_MAX) {
         let _ = std::fs::remove_file(&path);
     }
+    let fresh = !path.exists();
     let note = Note { time: e.time.clone(), ok: e.ok, said: Written::told(&e.msg) };
     let Ok(line) = serde_json::to_string(&note) else { return };
     let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) else { return };
     let _ = writeln!(f, "{line}");
-    // Only the computer narrows it, as with the folder itself (paths.rs): StrCu started by a person keeps
-    // what it made writable by that person, or it could not go on writing its own log
-    if fresh && crate::ipc::as_system() {
+    if fresh && open_up {
         let _ = crate::paths::let_anyone_read(&path);
     }
 }
@@ -234,8 +236,8 @@ mod tests {
             msg: Msg::new("ev.worker_failed").with("msg", "boom"),
             ok: false,
         };
-        hand_over(&dir, &started);
-        hand_over(&dir, &failed);
+        hand_over(&dir, &started, false);
+        hand_over(&dir, &failed, false);
 
         let read = handed_over_in(&dir);
         assert_eq!(read.len(), 2, "oldest first, both of them");
@@ -244,6 +246,20 @@ mod tests {
         // The key and its arguments came back, so each side says it in its own language
         assert_eq!(read[1].msg, failed.msg);
         assert!(i18n::en().render(&read[1].msg).contains("boom"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_handed_over_log_is_readable_again_after_it_starts_over() {
+        let dir = temp("rotate");
+        let path = handover_path(&dir);
+        // Grown past its size, as months of a service starting and stopping leave it
+        std::fs::write(&path, vec![b'x'; HANDOVER_MAX as usize + 1]).unwrap();
+        hand_over(&dir, &entry("now"), true);
+        // Started over with the one line, and open to everybody again, as the first file was
+        let dacl = crate::paths::dacl_of(&path).unwrap();
+        assert!(dacl.contains("(A;;FR;;;BU)"), "{dacl}");
+        assert_eq!(handed_over_in(&dir).len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

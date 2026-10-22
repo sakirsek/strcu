@@ -300,7 +300,7 @@ fn set_dacl(dir: &Path, sddl: &str) -> Result<()> {
 /// second question has a different answer for different people - an administrator is let in by the very
 /// rule that shuts everybody else out - and the tests run as a person here and as an administrator on the
 /// build server.
-fn dacl_of(path: &Path) -> Result<String> {
+pub(crate) fn dacl_of(path: &Path) -> Result<String> {
     use windows::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
     };
