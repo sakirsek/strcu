@@ -25,14 +25,15 @@
 //! could add a phone or set a new password through this pipe, it would have found its way around UAC.
 //! Reading the state is free: it is what the window already shows to whoever sits here.
 
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL,
-    LocalFree,
+    CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
+    HANDLE, HLOCAL, LocalFree,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
@@ -416,8 +417,8 @@ const BUSY_WAIT: Duration = Duration::from_secs(3);
 pub struct Server {
     name: String,
     sddl: HSTRING,
-    /// The instance waiting for the next client
-    next: Pipe,
+    /// The instance waiting for the next client; None when it could not be made, until the next round
+    next: Option<Pipe>,
 }
 
 impl Server {
@@ -430,24 +431,64 @@ impl Server {
     fn open_named(name: &str) -> Result<Server> {
         let sddl = HSTRING::from(acl());
         let next = instance(name, &sddl, true).with_context(|| format!("{name}: cannot be opened"))?;
-        Ok(Server { name: name.to_string(), sddl, next })
+        Ok(Server { name: name.to_string(), sddl, next: Some(next) })
     }
 
     /// Serves clients until the process ends. Each client gets a thread of its own and may ask as often as it
     /// likes while it stays connected; `answer` is called from those threads, once at a time per client.
     /// A request of another version, and one from a client that may not be here, never reaches it.
-    pub fn serve<F>(mut self, answer: F) -> Result<()>
+    ///
+    /// Nothing that goes wrong with one client or one instance ends it: a pipe no longer served would leave
+    /// the window saying StrCu is not running until StrCu itself is started again. What goes wrong is handed
+    /// to `trouble`, the same thing once.
+    pub fn serve<F>(mut self, answer: F, mut trouble: impl FnMut(String))
     where
         F: Fn(Request) -> Answer + Clone + Send + 'static,
     {
+        let mut said: Option<String> = None;
+        let mut say = |e: anyhow::Error, said: &mut Option<String>| {
+            let why = format!("{e:#}");
+            if said.as_deref() != Some(why.as_str()) {
+                trouble(why.clone());
+                *said = Some(why);
+            }
+        };
         loop {
-            // The next instance is listening before this client is served, so another window finds the pipe
-            let client = std::mem::replace(&mut self.next, instance(&self.name, &self.sddl, false)?);
+            let client = match self.next.take() {
+                Some(client) => client,
+                None => match instance(&self.name, &self.sddl, false) {
+                    Ok(client) => client,
+                    Err(e) => {
+                        say(e.context("listening for the window"), &mut said);
+                        std::thread::sleep(Duration::from_secs(1));
+                        continue;
+                    }
+                },
+            };
+            // The next instance is listening before this client is served, so another window finds the pipe;
+            // one that cannot be made now is made on the next round
+            match instance(&self.name, &self.sddl, false) {
+                Ok(next) => self.next = Some(next),
+                Err(e) => say(e.context("listening for the next window"), &mut said),
+            }
             match unsafe { ConnectNamedPipe(client.0, None) } {
                 Ok(()) => {}
                 Err(e) if e.code() == ERROR_PIPE_CONNECTED.to_hresult() => {}
-                Err(e) => return Err(e).context("waiting for the window"),
+                // A window that came and went before it was taken on: nothing to serve
+                Err(e) if e.code() == ERROR_NO_DATA.to_hresult() => {
+                    unsafe {
+                        let _ = DisconnectNamedPipe(client.0);
+                    }
+                    continue;
+                }
+                Err(e) => {
+                    say(anyhow::Error::from(e).context("waiting for the window"), &mut said);
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
             }
+            // Working again: the same trouble later is news
+            said = None;
             let answer = answer.clone();
             std::thread::spawn(move || {
                 let _ = converse(&client, answer);
@@ -552,7 +593,7 @@ impl Asks {
     /// Opens the pipe. One that cannot be opened - what happens when something else already holds the name -
     /// is written in the log and nothing else changes: the panel is served either way, the window simply
     /// cannot reach this StrCu.
-    pub fn open(log: &ActionLog) -> Asks {
+    pub fn open(log: Arc<ActionLog>) -> Asks {
         let server = match Server::open() {
             Ok(server) => server,
             Err(e) => {
@@ -562,7 +603,7 @@ impl Asks {
         };
         let (asked, waiting) = mpsc::channel(8);
         std::thread::spawn(move || {
-            let _ = server.serve(move |req| {
+            let answer = move |req| {
                 let (back, answer) = oneshot::channel();
                 // These are the pipe's own threads, outside the runtime, so they may wait here
                 let gone = || Answer::Failed { reason: crate::i18n::term().t("err.no_answer") };
@@ -570,7 +611,8 @@ impl Asks {
                     return gone();
                 }
                 answer.blocking_recv().unwrap_or_else(|_| gone())
-            });
+            };
+            server.serve(answer, |why| log.add(Msg::new("ev.pipe_trouble").with("msg", why), false));
         });
         Asks(Some(waiting))
     }
@@ -775,7 +817,7 @@ mod tests {
     /// A server on a thread of its own, answering with `answer`.
     fn serving(name: &str, answer: impl Fn(Request) -> Answer + Clone + Send + 'static) {
         let server = Server::open_named(name).unwrap();
-        std::thread::spawn(move || server.serve(answer));
+        std::thread::spawn(move || server.serve(answer, |_| {}));
     }
 
     #[test]
@@ -893,6 +935,52 @@ mod tests {
         let body = read_frame(link.pipe.0).unwrap().unwrap();
         let reply: Reply = serde_json::from_slice(&body).unwrap();
         assert_eq!(reply.answer, Answer::WrongVersion { want: VERSION });
+    }
+
+    /// A window that connects now and asks once: its answer, or None if there was none within `limit`. A
+    /// pipe that has stopped being served still lets a window connect, and then never answers it.
+    fn answered_within(name: &str, limit: Duration) -> Option<Answer> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let name = name.to_string();
+        std::thread::spawn(move || {
+            let answer = Link::connect_named(&name, true).and_then(|mut link| link.ask(Ask::Settings, None));
+            let _ = tx.send(answer.ok());
+        });
+        rx.recv_timeout(limit).ok().flatten()
+    }
+
+    #[test]
+    fn a_window_gone_before_it_was_taken_on_stops_nothing() {
+        let name = test_path("gone");
+        let server = Server::open_named(&name).unwrap();
+        // A window that connects and goes again before the server has got round to it
+        drop(Link::connect_named(&name, true).unwrap());
+        std::thread::spawn(move || server.serve(|_| Answer::Done, |_| {}));
+        assert_eq!(answered_within(&name, Duration::from_secs(5)), Some(Answer::Done));
+    }
+
+    #[test]
+    fn windows_coming_and_going_never_stop_the_one_that_stays() {
+        let name = test_path("churn");
+        serving(&name, |_| Answer::Done);
+        let mut stays = Link::connect_named(&name, true).unwrap();
+        let churn = {
+            let name = name.clone();
+            std::thread::spawn(move || {
+                for _ in 0..200 {
+                    drop(Link::connect_named(&name, true).unwrap());
+                }
+            })
+        };
+        let mut asked = 0;
+        while !churn.is_finished() {
+            assert_eq!(stays.ask(Ask::Settings, None).unwrap(), Answer::Done);
+            asked += 1;
+        }
+        churn.join().unwrap();
+        assert!(asked > 0);
+        // And a window that comes after all that is served as the first one was
+        assert_eq!(answered_within(&name, Duration::from_secs(5)), Some(Answer::Done));
     }
 
     #[test]

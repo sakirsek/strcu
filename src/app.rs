@@ -767,7 +767,7 @@ pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
     say(&remote.borrow_and_update());
     println!("{}", lang.t("term.stop_hint"));
     // The control window reaches this StrCu through the pipe; without one the panel is served all the same
-    let mut asks = ipc::Asks::open(&app.panel.log());
+    let mut asks = ipc::Asks::open(app.panel.log());
     let mut shown = Shown { urls: app.urls(), looked: Instant::now(), stale: false };
     // The first tick comes at once: the agent starts as soon as there is a user to start it for
     let mut look = tokio::time::interval(Duration::from_secs(2));
