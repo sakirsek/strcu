@@ -204,6 +204,38 @@ fn state() -> Option<ServiceState> {
     service.query_status().ok().map(|s| s.current_state)
 }
 
+/// Runs `f` with the service stopped, and starts it again afterwards if it was running: for a change to the
+/// settings that the running StrCu must neither write over meanwhile nor go on without. Without a service,
+/// or with it stopped already, `f` simply runs. Stopping and starting a service needs an administrator.
+pub fn while_stopped<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
+    let access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::START;
+    let service = match manager.open_service(crate::brand::KEY, access) {
+        Ok(service) => service,
+        Err(windows_service::Error::Winapi(e)) if e.raw_os_error() == Some(1060) => return f(),
+        Err(e) => return Err(e.into()),
+    };
+    let was = service.query_status()?.current_state;
+    if was != ServiceState::Stopped {
+        if was != ServiceState::StopPending {
+            service.stop()?;
+        }
+        // About as long as Windows itself gives a service to stop
+        let until = Instant::now() + Duration::from_secs(30);
+        while service.query_status()?.current_state != ServiceState::Stopped {
+            if Instant::now() > until {
+                bail!("StrCu did not stop");
+            }
+            std::thread::sleep(Duration::from_millis(200));
+        }
+    }
+    let done = f();
+    if matches!(was, ServiceState::Running | ServiceState::StartPending) {
+        service.start::<&str>(&[])?;
+    }
+    done
+}
+
 /// Is StrCu installed as a service on this computer, running or not? Only Windows saying there is no such
 /// service counts as no: whatever else stops us asking leaves the answer at yes, the side that trusts less.
 pub fn installed() -> bool {

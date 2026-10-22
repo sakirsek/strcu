@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
 use sha2::{Digest, Sha256};
@@ -48,6 +48,13 @@ pub fn set_password(pw: &str) -> Result<String> {
     let hash = hash_password(pw)?;
     config::update(|c| c.password_hash = Some(hash.clone()))?;
     Ok(hash)
+}
+
+/// A new password set by an administrator without the old one (`strcu passwd`), while StrCu is stopped.
+/// Every session goes with the old password: the file the next worker takes them from is emptied as well.
+pub fn reset_password(pw: &str) -> Result<()> {
+    set_password(pw)?;
+    crate::paths::write_atomic(&config::data_dir().join(SESSIONS), b"{}").context(Msg::new("err.config_write"))
 }
 
 pub struct Auth {

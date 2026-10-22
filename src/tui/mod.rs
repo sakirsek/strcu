@@ -7,7 +7,7 @@
 mod dash;
 mod frame;
 mod html;
-mod live;
+pub(crate) mod live;
 mod pair;
 mod preview;
 mod remote;

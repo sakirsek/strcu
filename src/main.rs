@@ -62,9 +62,9 @@ enum Cmd {
     /// The part that works with the signed-in user's own rights, started by the worker
     #[command(hide = true)]
     Agent,
-    /// Set the panel password
+    /// Change the panel password (asks for the current one; as administrator, sets a new one without it)
     Passwd {
-        /// Read the password from standard input (for scripts)
+        /// Read the passwords from standard input, one per line: the current one first if there is one
         #[arg(long)]
         stdin: bool,
     },
@@ -285,22 +285,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
         // Started by the worker, with the user's own token and two pipes for talking to it
         Cmd::Agent => agent::run()?,
-        Cmd::Passwd { stdin } => {
-            let pw = if stdin {
-                let mut s = String::new();
-                std::io::stdin().read_line(&mut s)?;
-                s.trim_end().to_string()
-            } else {
-                let lang = i18n::term();
-                let a = rpassword::prompt_password(lang.t("term.pw_new"))?;
-                if a != rpassword::prompt_password(lang.t("term.pw_again"))? {
-                    bail!(Msg::new("err.passwords_differ"));
-                }
-                a
-            };
-            auth::set_password(&pw)?;
-            println!("{}", i18n::term().t("term.pw_saved"));
-        }
+        Cmd::Passwd { stdin } => passwd(stdin)?,
         Cmd::Tunnel { cmd } => tunnel_cmd(cmd).await?,
         Cmd::Doctor { json } => doctor(json)?,
         Cmd::Licenses => {
@@ -440,6 +425,82 @@ async fn dev_cmd(cmd: DevCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// `strcu passwd`. The password belongs to the StrCu that is running, so it is changed through it, the way
+/// the window changes it: signed in with the one there is, or set as the first one while there is none. An
+/// administrator sets a new one without the old - the settings are theirs to write anyway, and it is the way
+/// back from a forgotten one - with the service stopped meanwhile, so it starts again with the new password
+/// and no sessions.
+fn passwd(stdin: bool) -> Result<()> {
+    let lang = i18n::term();
+    let mut ask = Asking { lines: stdin.then(|| std::io::stdin().lines()) };
+    if agent::elevated() && svc::installed() {
+        let new = ask.new_password()?;
+        svc::while_stopped(|| auth::reset_password(&new))?;
+        println!("{}", lang.t("term.pw_reset"));
+        return Ok(());
+    }
+    let mut live = match tui::live::Live::connect() {
+        Ok(live) => live,
+        // Neither running nor installed: a StrCu run by hand, whose settings are this person's own
+        Err(_) if !svc::installed() => {
+            auth::set_password(&ask.new_password()?)?;
+            println!("{}", lang.t("term.pw_saved"));
+            return Ok(());
+        }
+        Err(_) => bail!(Msg::new("err.passwd_not_running")),
+    };
+    let first = !live.state().password_set;
+    let said = if !first {
+        match live.sign_in(&ask.line("term.pw_current")?)? {
+            tui::live::Tried::Right => {}
+            tui::live::Tried::Wrong => bail!(Msg::new("err.wrong_password")),
+            tui::live::Tried::LockedOut(s) => bail!(Msg::new("err.locked_out").with("s", s)),
+        }
+        live.change(ipc::Change::Password(ask.new_password()?))?
+    } else {
+        // The first one, as the setup screens would set it, with the rest of the settings left as they are
+        let settings = live.settings()?;
+        let language = settings.language.unwrap_or_else(|| lang.code.to_string());
+        live.setup(&language, Some(&ask.new_password()?), settings.lan)?
+    };
+    match said {
+        tui::live::Said::Done(()) => println!("{}", lang.t(if first { "term.pw_saved" } else { "set.pw_changed" })),
+        tui::live::Said::SignInNeeded => bail!(Msg::new("err.wrong_password")),
+        tui::live::Said::Failed(reason) => bail!("{reason}"),
+    }
+    Ok(())
+}
+
+/// Where `strcu passwd` gets its passwords: asked for at the terminal, or one per line on standard input.
+struct Asking {
+    lines: Option<std::io::Lines<std::io::StdinLock<'static>>>,
+}
+
+impl Asking {
+    fn line(&mut self, prompt: &str) -> Result<String> {
+        match &mut self.lines {
+            Some(lines) => match lines.next() {
+                Some(line) => Ok(line?.trim_end().to_string()),
+                None => bail!(Msg::new("err.passwd_stdin")),
+            },
+            None => Ok(rpassword::prompt_password(i18n::term().t(prompt))?),
+        }
+    }
+
+    /// A new password: typed twice at the terminal, once on standard input. Its length is checked here, as
+    /// the setup screens check it, before anything is sent.
+    fn new_password(&mut self) -> Result<String> {
+        let new = self.line("term.pw_new")?;
+        if new.chars().count() < auth::MIN_PASSWORD {
+            bail!(Msg::new("err.password_short").with("min", auth::MIN_PASSWORD));
+        }
+        if self.lines.is_none() && new != self.line("term.pw_again")? {
+            bail!(Msg::new("err.passwords_differ"));
+        }
+        Ok(new)
+    }
 }
 
 fn doctor(json: bool) -> Result<()> {

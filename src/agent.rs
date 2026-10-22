@@ -408,7 +408,7 @@ fn who() -> Result<Did> {
 }
 
 /// Is this process running as administrator?
-fn elevated() -> bool {
+pub(crate) fn elevated() -> bool {
     unsafe {
         let mut token = HANDLE::default();
         if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
