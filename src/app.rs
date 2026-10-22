@@ -176,11 +176,13 @@ impl App {
         self.panel.tunnel_pid().store(0, Ordering::Relaxed);
         let cfg = config::load();
         self.panel.set_access(cfg.access.clone());
-        let parts = [cfg.access.is_some(), tunnel::saved_tunnel_id().is_some(), tunnel::installed_version().is_some()];
+        // cloudflared itself is not one of the parts: a missing one is fetched before the tunnel starts
+        // (`keep_tunnel`), which is what brings remote access back on its own after an update
+        let parts = [cfg.access.is_some(), tunnel::saved_tunnel_id().is_some()];
         let state = match parts {
-            [false, false, _] => Remote::Off,
-            [true, true, true] if self.tunnel_allowed => Remote::Starting,
-            [true, true, true] => Remote::Disabled,
+            [false, false] => Remote::Off,
+            [true, true] if self.tunnel_allowed => Remote::Starting,
+            [true, true] => Remote::Disabled,
             _ => Remote::Incomplete,
         };
         let start = state == Remote::Starting;
@@ -351,7 +353,20 @@ async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>, pid: Arc
     let (mut was_up, mut failure_logged) = (false, false);
     loop {
         state.send_replace(Remote::Starting);
-        let why = match tunnel::start().await {
+        let started = match tunnel::ensure().await {
+            Ok(how) => {
+                match how {
+                    tunnel::Ensured::Here => {}
+                    tunnel::Ensured::Moved => log.add(Msg::new("ev.cloudflared_moved"), true),
+                    tunnel::Ensured::Fetched => {
+                        log.add(Msg::new("ev.cloudflared_fetched").with("version", tunnel::CLOUDFLARED_TAG), true)
+                    }
+                }
+                tunnel::start().await
+            }
+            Err(e) => Err(e),
+        };
+        let why = match started {
             Ok(mut t) => {
                 pid.store(t.pid(), Ordering::Relaxed);
                 let mut up = t.ready;

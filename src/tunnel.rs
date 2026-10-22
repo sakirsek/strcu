@@ -1,39 +1,55 @@
-//! strcu runs cloudflared itself: the tunnel is up while the panel is running and goes down with it.
-//! No Windows service or administrator rights are needed.
+//! StrCu runs cloudflared itself: the tunnel is up while the panel is running and goes down with it.
 //!
 //! The tunnel is defined as "remotely managed" in the Cloudflare dashboard (strcu.example.com ->
 //! localhost:8765); only its token is kept on this computer. The token is passed in an environment variable,
 //! not on the command line, so it does not show up in the process list.
 //!
-//! File layout (%LOCALAPPDATA%\strcu):
-//!   cloudflared\cloudflared.exe
-//!   cloudflared-token.txt
-//!   cloudflared.log
+//! cloudflared runs with the rights of the computer, as StrCu does, so it lives beside the program
+//! (`%ProgramFiles%\StrCu\cloudflared`), where only administrators may write, and it is one exact file: its
+//! size and SHA-256 are written down here and it is read against them before every start. A cloudflared that
+//! is missing or does not pass is fetched again, so remote access comes back on its own after an update.
+//! The token and the log are settings, and stay in the settings folder (paths.rs).
 
-use std::path::PathBuf;
+use std::os::windows::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
+use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
 use crate::i18n::Msg;
 use crate::{config, download, sys};
 
-/// The cloudflared version strcu is tested with.
+/// The cloudflared version StrCu is tested with.
 pub const CLOUDFLARED_TAG: &str = "2026.9.3";
-/// Local address where we ask cloudflared whether it is ready (/ready).
+/// The one file of it StrCu runs, `cloudflared-windows-amd64.exe` of that release. The size and the SHA-256
+/// were read from GitHub and from the checksum list in the release notes, which agree.
+const CLOUDFLARED_SIZE: u64 = 55_366_080;
+const CLOUDFLARED_SHA256: &str = "f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2";
+const ASSET: &str = "cloudflared-windows-amd64.exe";
+const EXE: &str = "cloudflared.exe";
+
 /// Where cloudflared reports its state; the address is built once, from brand.rs.
 fn metrics() -> String {
     format!("127.0.0.1:{}", crate::brand::METRICS)
 }
 
+/// Beside the program. A development build run by hand puts it beside that program, which is that person's
+/// own to write, as is what it runs.
 fn dir() -> PathBuf {
-    config::data_dir().join("cloudflared")
+    std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default().join("cloudflared")
 }
 
 fn exe() -> PathBuf {
-    dir().join("cloudflared.exe")
+    dir().join(EXE)
+}
+
+/// Where 2.0.0 to 2.0.3 kept it: in the settings folder, which was the wrong place for a program.
+fn old_dir() -> PathBuf {
+    config::data_dir().join("cloudflared")
 }
 
 fn token_path() -> PathBuf {
@@ -44,39 +60,95 @@ fn log_path() -> PathBuf {
     config::data_dir().join("cloudflared.log")
 }
 
-pub fn installed_version() -> Option<String> {
-    if !exe().exists() {
-        return None;
+/// Opens cloudflared so that nothing can change, replace or delete it while it stays open, and reads it whole
+/// against `size` and `sha256`. Kept open while it starts, what runs is what was read.
+fn verified_against(path: &Path, size: u64, sha256: &str) -> Result<std::fs::File> {
+    let not_it = || anyhow::Error::new(Msg::new("err.cloudflared_check").with("path", path.display().to_string()));
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ.0)
+        .open(path)
+        .map_err(|_| Msg::new("err.cloudflared_missing"))?;
+    if file.metadata()?.len() != size || download::sha256_of(&mut file)? != sha256 {
+        return Err(not_it());
     }
-    Some(std::fs::read_to_string(dir().join("strcu-version.txt")).unwrap_or_else(|_| "unknown".into()).trim().into())
+    Ok(file)
 }
 
-/// Downloads the pinned version from GitHub and verifies its SHA-256.
+fn verified(path: &Path) -> Result<std::fs::File> {
+    verified_against(path, CLOUDFLARED_SIZE, CLOUDFLARED_SHA256)
+}
+
+/// The file that passed last, by its size and time, so the window asking about cloudflared once a second does
+/// not read 55 MB each time. Starting it always reads it whole.
+static PASSED: Mutex<Option<(u64, SystemTime)>> = Mutex::new(None);
+
+/// The version beside the program, if it is the one written down here; anything else counts as not
+/// installed, and is fetched again.
+pub fn installed_version() -> Option<String> {
+    let seen = std::fs::metadata(exe()).ok().and_then(|m| Some((m.len(), m.modified().ok()?)))?;
+    let known = *PASSED.lock().unwrap() == Some(seen);
+    if !known {
+        verified(&exe()).ok()?;
+        *PASSED.lock().unwrap() = Some(seen);
+    }
+    Some(CLOUDFLARED_TAG.to_string())
+}
+
+/// How cloudflared came to be there, for the log.
+pub enum Ensured {
+    Here,
+    /// Taken over from where 2.0.0 to 2.0.3 kept it
+    Moved,
+    Fetched,
+}
+
+/// Makes sure the pinned cloudflared is beside the program before the tunnel starts. That is the case
+/// almost every time; after an update from 2.0.3 or older it is taken over from the settings folder if it
+/// passes, and otherwise it is downloaded.
+pub async fn ensure() -> Result<Ensured> {
+    if installed_version().is_some() {
+        return Ok(Ensured::Here);
+    }
+    if adopt(&old_dir(), &dir(), CLOUDFLARED_SIZE, CLOUDFLARED_SHA256)? {
+        return Ok(Ensured::Moved);
+    }
+    install(&|_| {}).await?;
+    Ok(Ensured::Fetched)
+}
+
+/// Takes cloudflared over from `old` if it is the one written down here. It is copied rather than moved, so
+/// it takes the rules of the folder it goes to, and read again where it ended up. The old folder goes either
+/// way: a cloudflared that does not pass is not kept for anything to start.
+fn adopt(old: &Path, new: &Path, size: u64, sha256: &str) -> Result<bool> {
+    let from = old.join(EXE);
+    if old == new || !from.exists() {
+        return Ok(false);
+    }
+    let passes = verified_against(&from, size, sha256).is_ok();
+    if passes {
+        std::fs::create_dir_all(new)?;
+        std::fs::copy(&from, new.join(EXE)).with_context(|| format!("{} -> {}", from.display(), new.display()))?;
+        verified_against(&new.join(EXE), size, sha256)?;
+    }
+    let _ = std::fs::remove_dir_all(old);
+    Ok(passes)
+}
+
+/// Downloads the pinned version from GitHub and checks it against what is written down here, not against
+/// anything the download itself says.
 pub async fn install(report: download::Report<'_>) -> Result<()> {
     if installed_version().as_deref() == Some(CLOUDFLARED_TAG) {
         return Ok(());
     }
-    let name = "cloudflared-windows-amd64.exe";
-    let release: serde_json::Value = reqwest::Client::new()
-        .get(format!("https://api.github.com/repos/cloudflare/cloudflared/releases/tags/{CLOUDFLARED_TAG}"))
-        .header("user-agent", "strcu")
-        .send()
-        .await?
-        .error_for_status()?
-        .json()
-        .await?;
-    let asset = release["assets"]
-        .as_array()
-        .and_then(|a| a.iter().find(|x| x["name"] == name))
-        .with_context(|| format!("release {CLOUDFLARED_TAG} has no {name}"))?;
     let remote = download::Remote {
-        url: asset["browser_download_url"].as_str().unwrap_or_default().to_string(),
-        size: asset["size"].as_u64().unwrap_or_default(),
-        sha256: asset["digest"].as_str().and_then(|d| d.strip_prefix("sha256:")).map(str::to_lowercase),
+        url: format!("https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_TAG}/{ASSET}"),
+        size: CLOUDFLARED_SIZE,
+        sha256: Some(CLOUDFLARED_SHA256.to_string()),
     };
+    // What is there did not pass; a file of the right size would otherwise be taken as already downloaded
     let _ = std::fs::remove_file(exe());
-    download::fetch(&remote, &exe(), name, report).await?;
-    std::fs::write(dir().join("strcu-version.txt"), CLOUDFLARED_TAG)?;
+    download::fetch(&remote, &exe(), ASSET, report).await?;
     Ok(())
 }
 
@@ -153,11 +225,11 @@ impl Tunnel {
 /// `connected` and `exited` itself. The control window does, through the pipe, so it keeps drawing while the
 /// tunnel of a freshly pasted token comes up.
 pub fn spawn_with(token: &str) -> Result<Tunnel> {
-    if !exe().exists() {
-        bail!(Msg::new("err.cloudflared_missing"));
-    }
+    let exe = exe();
+    // Held until it has started: nothing can change the file between the reading and the running
+    let _held = verified(&exe)?;
     let log = std::fs::File::create(log_path())?;
-    let child = Command::new(exe())
+    let child = Command::new(&exe)
         .args(["tunnel", "--no-autoupdate", "--metrics", &metrics(), "run"])
         .env("TUNNEL_TOKEN", token)
         .stdin(Stdio::null())
@@ -213,5 +285,95 @@ mod tests {
         assert_eq!(found.as_deref(), Some("tunnel-id"));
         assert!(tunnel_id("cloudflared.exe").is_none());
         assert!(tunnel_id(&base64::engine::general_purpose::STANDARD.encode(r#"{"t":"x"}"#)).is_none());
+    }
+
+    fn temp(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("strcu-tunnel-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// A file with these bytes, and what it has to be to pass.
+    fn file_of(dir: &Path, name: &str, bytes: &[u8]) -> (PathBuf, u64, String) {
+        let p = dir.join(name);
+        std::fs::write(&p, bytes).unwrap();
+        (p, bytes.len() as u64, download::sha256_of(&mut &bytes[..]).unwrap())
+    }
+
+    fn code(r: Result<std::fs::File>) -> &'static str {
+        crate::i18n::from_error(&r.expect_err("it must not pass")).code
+    }
+
+    #[test]
+    fn the_pinned_cloudflared_is_written_down_whole() {
+        assert_eq!(CLOUDFLARED_SHA256.len(), 64);
+        assert!(CLOUDFLARED_SHA256.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)), "lower-case hex");
+        // About the size cloudflared is; a slip of a digit would not be
+        assert!((40 << 20..80 << 20).contains(&CLOUDFLARED_SIZE), "{CLOUDFLARED_SIZE}");
+        // The program sits beside StrCu and nowhere near the settings
+        assert!(exe().ends_with(r"cloudflared\cloudflared.exe"));
+        assert!(!exe().starts_with(config::data_dir()));
+    }
+
+    #[test]
+    fn only_the_file_written_down_passes() {
+        let dir = temp("pass");
+        let (p, size, sha) = file_of(&dir, EXE, b"the real one");
+        assert!(verified_against(&p, size, &sha).is_ok());
+        // One byte more, or the same length with other bytes, or nothing there at all
+        assert_eq!(code(verified_against(&p, size + 1, &sha)), "err.cloudflared_check");
+        std::fs::write(&p, b"the fake one").unwrap();
+        assert_eq!(code(verified_against(&p, size, &sha)), "err.cloudflared_check");
+        assert_eq!(code(verified_against(&dir.join("absent.exe"), size, &sha)), "err.cloudflared_missing");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn what_passed_cannot_be_changed_while_it_starts() {
+        // A real program, copied to a folder of the test's own, standing in for cloudflared
+        let dir = temp("held");
+        let program = dir.join("hostname.exe");
+        std::fs::copy(r"C:\Windows\System32\hostname.exe", &program).unwrap();
+        let bytes = std::fs::read(&program).unwrap();
+        let sha = download::sha256_of(&mut &bytes[..]).unwrap();
+
+        let held = verified_against(&program, bytes.len() as u64, &sha).unwrap();
+        // While it is held nothing may write it, and nothing may put another file in its place
+        assert!(std::fs::OpenOptions::new().write(true).open(&program).is_err(), "written while held");
+        assert!(std::fs::rename(&program, dir.join("other.exe")).is_err(), "moved while held");
+        assert!(std::fs::remove_file(&program).is_err(), "deleted while held");
+        // And it still starts
+        let out = Command::new(&program).output().unwrap();
+        assert!(out.status.success(), "{out:?}");
+        drop(held);
+
+        // Let go, it is an ordinary file again
+        assert!(std::fs::OpenOptions::new().write(true).open(&program).is_ok());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_older_copy_is_taken_over_only_when_it_passes() {
+        let (old, new) = (temp("old"), temp("new").join("cloudflared"));
+        let (_, size, sha) = file_of(&old, EXE, b"the one written down");
+        assert!(adopt(&old, &new, size, &sha).unwrap(), "taken over");
+        assert_eq!(std::fs::read(new.join(EXE)).unwrap(), b"the one written down");
+        assert!(!old.exists(), "and the settings folder no longer holds a program");
+
+        // Something else left where an older StrCu kept it: not taken, and not kept either
+        let (old, other) = (temp("old2"), temp("new2").join("cloudflared"));
+        file_of(&old, EXE, b"something else");
+        assert!(!adopt(&old, &other, size, &sha).unwrap());
+        assert!(!other.join(EXE).exists());
+        assert!(!old.exists(), "a cloudflared that does not pass is not kept for anything to start");
+
+        // Nothing there at all is nothing to do
+        assert!(!adopt(&temp("none").join("absent"), &other, size, &sha).unwrap());
+
+        for d in ["new", "new2", "none"] {
+            let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("strcu-tunnel-{d}-{}", std::process::id())));
+        }
+        std::fs::remove_dir_all(new.parent().unwrap()).ok();
     }
 }

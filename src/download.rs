@@ -41,6 +41,20 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The SHA-256 of everything `from` still has to give, as lowercase hex.
+pub fn sha256_of(from: &mut impl Read) -> std::io::Result<String> {
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = from.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(hex(&hasher.finalize()))
+}
+
 pub fn human(bytes: u64) -> String {
     if bytes >= 1 << 30 {
         format!("{:.2} GB", bytes as f64 / (1u64 << 30) as f64)
