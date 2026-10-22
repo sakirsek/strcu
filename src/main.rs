@@ -249,6 +249,12 @@ async fn start(minimized: bool) -> Result<()> {
     if std::io::stdout().is_terminal() {
         return tui::run().await;
     }
+    // No terminal to open the window in: a shortcut or a task with its output sent elsewhere. Where the service
+    // is installed StrCu already runs as the computer, and one started here as this person would only fight it
+    // for the port and open the same tunnel again; what the running one is doing is written out instead.
+    if svc::installed() {
+        return show_state();
+    }
     let Some(_instance) = sys::instance::claim() else {
         tui::already_running();
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
@@ -262,6 +268,10 @@ async fn run(cli: Cli) -> Result<()> {
     let Some(cmd) = cli.cmd else { return start(cli.minimized).await };
     match cmd {
         Cmd::Serve { bind, no_tunnel } => {
+            // The same: with the service installed, StrCu is running already (`start`)
+            if svc::installed() {
+                bail!(Msg::new("err.serve_with_service"));
+            }
             let Some(_instance) = sys::instance::claim() else { bail!(Msg::new("err.already_running")) };
             power::keep_awake(true, false);
             window::set_console_title(window::CONSOLE_TITLE);
@@ -503,7 +513,7 @@ impl Asking {
 /// settings folder is no place for a person's command to write, and nothing ever read the file it used to leave.
 fn doctor(json: bool) -> Result<()> {
     let profile = sys::discover::profile();
-    let tunnel = match remote_lines() {
+    let tunnel = match running().and_then(|mut live| remote_lines(&mut live)) {
         Ok(lines) => lines.iter().map(|l| l.trim()).collect::<Vec<_>>().join(" · "),
         Err(e) => i18n::term().render(&i18n::from_error(&e)),
     };
@@ -544,7 +554,7 @@ fn doctor(json: bool) -> Result<()> {
 fn tunnel_cmd(cmd: TunnelCmd) -> Result<()> {
     match cmd {
         TunnelCmd::Status => {
-            for line in remote_lines()? {
+            for line in remote_lines(&mut running()?)? {
                 println!("{line}");
             }
             Ok(())
@@ -555,13 +565,37 @@ fn tunnel_cmd(cmd: TunnelCmd) -> Result<()> {
     }
 }
 
+/// The StrCu that is running, to ask; or why there is none, in words to show.
+fn running() -> Result<tui::live::Live> {
+    tui::live::Live::connect().map_err(|_| anyhow::anyhow!(svc::not_running()))
+}
+
+/// What the running StrCu is doing, for a start with no terminal to open the window in (`start`).
+fn show_state() -> Result<()> {
+    let t = i18n::term();
+    let mut live = running()?;
+    let state = live.state();
+    if !state.password_set {
+        println!("{}", t.t("err.no_password"));
+    }
+    if let Some(why) = &state.listen_error {
+        println!("{why}");
+    }
+    for url in state.local.iter().chain(&state.home) {
+        println!("{}", t.render(&Msg::new("term.panel").with("url", url)));
+    }
+    for line in remote_lines(&mut live)? {
+        println!("{line}");
+    }
+    Ok(())
+}
+
 /// Remote access as the running StrCu sees it, in the words of the window's main screen: the address and how
 /// it is, why it failed, and who Access lets in. The settings are not read here: a person may not open the
 /// folder, and only the running StrCu knows whether the tunnel is actually up.
-fn remote_lines() -> Result<Vec<String>> {
+fn remote_lines(live: &mut tui::live::Live) -> Result<Vec<String>> {
     use ipc::RemoteState as R;
     let t = i18n::term();
-    let Ok(mut live) = tui::live::Live::connect() else { bail!(svc::not_running()) };
     let state = live.state();
     let word = t.t(tui::remote::state_word(state.remote)).to_string();
     let mut lines = vec![match (&state.remote_url, state.remote) {

@@ -643,6 +643,7 @@
   "err.autostart": "Windows ile başlama ayarı değiştirilemedi",
   "err.hostname": "Geçerli bir adres değil (örn. strcu.example.com)",
   "err.already_running": "StrCu zaten çalışıyor",
+  "err.serve_with_service": "StrCu bu bilgisayarda Windows servisi olarak çalışıyor, yani zaten açık; bunun yerine penceresini aç (komutsuz strcu).",
   "err.other_session": "Bu bilgisayardaki başka bir Windows kullanıcısı",
   "err.not_home": "Ev ağından değil",
   "err.public_network": "Windows bu ağı Ortak sayıyor; ev ağı erişimi yalnızca Özel ağlarda çalışır",
