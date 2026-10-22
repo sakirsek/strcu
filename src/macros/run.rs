@@ -669,19 +669,16 @@ impl Engine {
         self.rec.lock().unwrap().is_some()
     }
 
-    /// Adds what the panel just did. The same key pressed again becomes one step with a count.
-    pub fn record(&self, act: Act) {
-        if let Some(r) = self.rec.lock().unwrap().as_mut() {
-            add_step(&mut r.steps, act);
-        }
+    /// Adds what the panel just did. The same key pressed again becomes one step with a count. `secure` and
+    /// what comes back: see `add_to`.
+    pub fn record(&self, act: Act, secure: bool) -> bool {
+        add_to(self.rec.lock().unwrap().as_mut(), secure, |steps| add_step(steps, act))
     }
 
     /// Live typing from the panel (each key sent as it is pressed): letters join the text typed just before
     /// and corrections are taken out of it, so a typed sentence is one step however it was typed.
-    pub fn record_live(&self, back: u32, text: &str, enter: bool) {
-        if let Some(r) = self.rec.lock().unwrap().as_mut() {
-            add_live(&mut r.steps, back, text, enter);
-        }
+    pub fn record_live(&self, back: u32, text: &str, enter: bool, secure: bool) -> bool {
+        add_to(self.rec.lock().unwrap().as_mut(), secure, |steps| add_live(steps, back, text, enter))
     }
 
     /// An app was opened while recording: if a new window shows up within 20 seconds, "wait for this window"
@@ -833,6 +830,22 @@ pub fn target_at(ctx: &mut Ctx, x: i32, y: i32) -> Target {
 }
 
 /// Adds a step; the same key pressed again becomes one step with a count.
+/// Adds a step to the recording, if there is one - unless it was done while Windows had the screen to itself:
+/// the lock screen, the sign-in screen, the "allow this app" prompt. What is typed there is a PIN or a
+/// password, which a macro must never keep, and nothing else done there means anything to play back.
+/// `secure` is read before the input is sent: an Enter on the lock screen has the everyday desktop back by
+/// the time it returns. True when a step was left out, for the panel to say so.
+fn add_to(rec: Option<&mut Recording>, secure: bool, add: impl FnOnce(&mut Vec<Step>)) -> bool {
+    match rec {
+        None => false,
+        Some(_) if secure => true,
+        Some(r) => {
+            add(&mut r.steps);
+            false
+        }
+    }
+}
+
 fn add_step(steps: &mut Vec<Step>, act: Act) {
     if let (Act::Key { combo, .. }, Some(Step { act: Act::Key { combo: last, times }, .. })) = (&act, steps.last_mut())
         && combo == last
@@ -908,5 +921,25 @@ mod tests {
         assert_eq!(steps.len(), 3);
         assert!(matches!(&steps[1].act, Act::Key { combo, times: 2 } if combo == "backspace"));
         assert!(matches!(&steps[2].act, Act::Key { combo, times: 1 } if combo == "enter"));
+    }
+
+    #[test]
+    fn nothing_done_on_the_lock_screen_goes_into_a_recording() {
+        let mut rec = Recording { seq: 1, steps: Vec::new() };
+        // On the everyday desktop a step is taken, and nothing is said
+        assert!(!add_to(Some(&mut rec), false, |s| add_step(s, Act::Type { text: "merhaba".into(), enter: false })));
+        // While Windows has the screen to itself nothing is taken, however it is typed, and the panel is told
+        assert!(add_to(Some(&mut rec), true, |s| add_step(s, Act::Type { text: "4711".into(), enter: true })));
+        for digit in ["4", "7", "1", "1"] {
+            assert!(add_to(Some(&mut rec), true, |s| add_step(s, Act::Key { combo: digit.into(), times: 1 })));
+        }
+        assert!(add_to(Some(&mut rec), true, |s| add_live(s, 0, "4711", true)));
+        // What would be written to macros.json holds the one step, and no PIN in any shape
+        let written = serde_json::to_string(&rec.steps).unwrap();
+        assert_eq!(rec.steps.len(), 1, "{written}");
+        assert!(!written.contains("4711") && !written.contains(r#""combo":"4""#), "{written}");
+        // Not recording at all: nothing left out, nothing to say
+        assert!(!add_to(None, true, |_| panic!("there is no recording to add to")));
+        assert!(!add_to(None, false, |_| panic!("there is no recording to add to")));
     }
 }

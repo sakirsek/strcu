@@ -1049,6 +1049,7 @@ async function api(path, body) {
     if (data && data.error) e.code = data.error.code;
     throw e;
   }
+  if (data && data.not_recorded) recSecureNote();
   return data;
 }
 
@@ -3259,8 +3260,17 @@ async function startRecording(into) {
   store.set('macRec', into && d ? { at: S.mac.open >= 0 ? S.mac.open + 1 : d.steps.length } : null);
   persistDraft();
   S.mac.state.recording = 0; renderMacBar();
+  S.mac.secureSaid = false;
   showTab('screen');
   toast(t('mac.rec_started'));
+}
+
+// What is done while Windows has the screen to itself (lock, sign-in, approval) never goes into a recording:
+// a PIN would be in it. Said once per recording, at the first thing left out.
+function recSecureNote() {
+  if (S.mac.secureSaid) return;
+  S.mac.secureSaid = true;
+  toast(t('mac.rec_secure'));
 }
 
 async function finishRecording(keep) {

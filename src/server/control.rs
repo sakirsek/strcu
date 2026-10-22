@@ -165,7 +165,7 @@ pub(super) async fn click(State(st): State<AppState>, Json(r): Json<ClickReq>) -
         _ => verb,
     };
     st.macros.interrupt();
-    let rec = st.macros.recording();
+    let (rec, secure) = (st.macros.recording(), desk::secure_in_front());
     let target = logged(&st, desc, move |ctx| {
         // Read before the click changes the screen
         let target = rec.then(|| macros::target_at(ctx, r.x, r.y));
@@ -174,10 +174,17 @@ pub(super) async fn click(State(st): State<AppState>, Json(r): Json<ClickReq>) -
         Ok(target)
     })
     .await?;
-    if let Some(target) = target {
-        st.macros.record(Act::Click { target, button, count });
-    }
-    Ok(Json(json!({ "ok": true })))
+    let left_out = match target {
+        Some(target) => st.macros.record(Act::Click { target, button, count }, secure),
+        None => false,
+    };
+    Ok(answered(left_out))
+}
+
+/// What an input from the panel answers. `left_out`: it was done while Windows had the screen to itself, and
+/// the recording did not take it (macros/run.rs `add_to`); the panel says so once.
+fn answered(left_out: bool) -> Json<Value> {
+    Json(json!({ "ok": true, "not_recorded": left_out }))
 }
 
 #[derive(Deserialize)]
@@ -192,10 +199,14 @@ pub(super) async fn type_text(State(st): State<AppState>, Json(r): Json<TypeReq>
         return Err(ApiError(StatusCode::BAD_REQUEST, Msg::new("err.text_too_long").with("max", 5000)));
     }
     let n = r.text.chars().count();
-    let desc = match (n, r.enter) {
-        (0, _) => Msg::new("ev.enter"),
-        (_, true) => Msg::new("ev.typed_enter").with("n", n),
-        _ => Msg::new("ev.typed").with("n", n),
+    // Read before anything is sent: an Enter on the lock screen has the everyday desktop back at once
+    let secure = desk::secure_in_front();
+    let desc = match (n, r.enter, secure) {
+        (0, ..) => Msg::new("ev.enter"),
+        (_, true, false) => Msg::new("ev.typed_enter").with("n", n),
+        (_, false, false) => Msg::new("ev.typed").with("n", n),
+        (_, true, true) => Msg::new("ev.typed_secure_enter").with("n", n),
+        (_, false, true) => Msg::new("ev.typed_secure").with("n", n),
     };
     st.macros.interrupt();
     let step = if n == 0 { Act::Key { combo: "enter".into(), times: 1 } } else { Act::Type { text: r.text.clone(), enter: r.enter } };
@@ -207,8 +218,7 @@ pub(super) async fn type_text(State(st): State<AppState>, Json(r): Json<TypeReq>
         Ok(())
     })
     .await?;
-    st.macros.record(step);
-    Ok(Json(json!({ "ok": true })))
+    Ok(answered(st.macros.record(step, secure)))
 }
 
 /// Most of the clipboard's text that goes either way at once.
@@ -253,10 +263,9 @@ pub(super) struct KeyReq {
 pub(super) async fn key(State(st): State<AppState>, Json(r): Json<KeyReq>) -> ApiResult<Json<Value>> {
     let desc = Msg::new("ev.key").with("combo", &r.combo);
     st.macros.interrupt();
-    let combo = r.combo.clone();
+    let (combo, secure) = (r.combo.clone(), desk::secure_in_front());
     logged(&st, desc, move |_| input::hotkey(&r.combo)).await?;
-    st.macros.record(Act::Key { combo, times: 1 });
-    Ok(Json(json!({ "ok": true })))
+    Ok(answered(st.macros.record(Act::Key { combo, times: 1 }, secure)))
 }
 
 #[derive(Deserialize)]
@@ -269,7 +278,7 @@ pub(super) struct ScrollReq {
 pub(super) async fn scroll(State(st): State<AppState>, Json(r): Json<ScrollReq>) -> ApiResult<Json<Value>> {
     let desc = Msg::new(if r.notches > 0 { "ev.scroll_up" } else { "ev.scroll_down" });
     st.macros.interrupt();
-    let rec = st.macros.recording();
+    let (rec, secure) = (st.macros.recording(), desk::secure_in_front());
     let notches = r.notches.clamp(-30, 30);
     let target = logged(&st, desc, move |ctx| {
         let target = rec.then(|| macros::target_at(ctx, r.x, r.y));
@@ -277,12 +286,11 @@ pub(super) async fn scroll(State(st): State<AppState>, Json(r): Json<ScrollReq>)
         Ok(target)
     })
     .await?;
-    if let Some(target) = target
-        && notches != 0
-    {
-        st.macros.record(Act::Scroll { target, notches });
-    }
-    Ok(Json(json!({ "ok": true })))
+    let left_out = match target {
+        Some(target) if notches != 0 => st.macros.record(Act::Scroll { target, notches }, secure),
+        _ => false,
+    };
+    Ok(answered(left_out))
 }
 
 /// A left button held down from the panel: pressed on a long press, moved as the finger moves, let go when it
@@ -361,7 +369,7 @@ pub(super) async fn hold(State(st): State<AppState>, Json(r): Json<HoldReq>) -> 
             let Some(held) = st.hold.lock().unwrap().on.take() else {
                 return Err(ApiError(StatusCode::CONFLICT, Msg::new("err.not_held")));
             };
-            let rec = held.from.is_some();
+            let (rec, secure) = (held.from.is_some(), desk::secure_in_front());
             let to = logged(&st, Msg::new("ev.dragged"), move |ctx| {
                 let to = rec.then(|| macros::target_at(ctx, x, y));
                 input::hold_up(x, y)?;
@@ -369,7 +377,7 @@ pub(super) async fn hold(State(st): State<AppState>, Json(r): Json<HoldReq>) -> 
             })
             .await?;
             if let (Some(from), Some(to)) = (held.from, to) {
-                st.macros.record(Act::Drag { from, to });
+                return Ok(answered(st.macros.record(Act::Drag { from, to }, secure)));
             }
         }
     }
@@ -422,6 +430,7 @@ pub(super) async fn live(State(st): State<AppState>, Json(r): Json<LiveReq>) -> 
     }
     st.macros.interrupt();
     let (back, text, enter) = (r.back, r.text.clone(), r.enter);
+    let secure = desk::secure_in_front();
     let done = st
         .worker
         .run(move |_| {
@@ -440,8 +449,7 @@ pub(super) async fn live(State(st): State<AppState>, Json(r): Json<LiveReq>) -> 
         st.log.add(Msg::new("ev.live_typing"), done.is_ok());
     }
     done?;
-    st.macros.record_live(r.back, &r.text, r.enter);
-    Ok(Json(json!({ "ok": true })))
+    Ok(answered(st.macros.record_live(r.back, &r.text, r.enter, secure)))
 }
 
 pub(super) async fn lock(State(st): State<AppState>) -> ApiResult<Json<Value>> {

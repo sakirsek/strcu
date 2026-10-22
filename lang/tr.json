@@ -459,6 +459,7 @@
   },
   "mac.rec_done": "Bitir",
   "mac.rec_started": "Kayıt başladı: panelde yaptıkların adım olur",
+  "mac.rec_secure": "Windows oturum açma ya da onay ekranında yapılanlar kayda girmez",
   "mac.rec_cancelled": "Kayıt iptal edildi",
   "mac.rec_empty": "Hiç adım kaydedilmedi",
   "mac.rec_added": {
@@ -523,6 +524,8 @@
   "ev.enter": "Enter'a basıldı",
   "ev.typed": "{n} karakter yazıldı",
   "ev.typed_enter": "{n} karakter yazıldı, Enter'a basıldı",
+  "ev.typed_secure": "Windows oturum açma ya da onay ekranında {n} karakter yazıldı",
+  "ev.typed_secure_enter": "Windows oturum açma ya da onay ekranında {n} karakter yazıldı, Enter'a basıldı",
   "ev.key": "Tuş gönderildi: {combo}",
   "ev.scroll_up": "Yukarı kaydırıldı",
   "ev.scroll_down": "Aşağı kaydırıldı",

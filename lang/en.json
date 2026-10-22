@@ -471,6 +471,7 @@
   },
   "mac.rec_done": "Done",
   "mac.rec_started": "Recording: what you do in the panel becomes steps",
+  "mac.rec_secure": "Nothing done on a Windows sign-in or approval screen goes into the recording",
   "mac.rec_cancelled": "Recording cancelled",
   "mac.rec_empty": "Nothing was recorded",
   "mac.rec_added": {
@@ -549,6 +550,14 @@
   "ev.typed_enter": {
     "one": "Typed {n} character, pressed Enter",
     "other": "Typed {n} characters, pressed Enter"
+  },
+  "ev.typed_secure": {
+    "one": "Typed {n} character on a Windows sign-in or approval screen",
+    "other": "Typed {n} characters on a Windows sign-in or approval screen"
+  },
+  "ev.typed_secure_enter": {
+    "one": "Typed {n} character on a Windows sign-in or approval screen, pressed Enter",
+    "other": "Typed {n} characters on a Windows sign-in or approval screen, pressed Enter"
   },
   "ev.key": "Key sent: {combo}",
   "ev.scroll_up": "Scrolled up",

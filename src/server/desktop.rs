@@ -15,7 +15,7 @@ use super::{ApiError, ApiResult, AppState, logged, short};
 use crate::agent;
 use crate::i18n::{self, Msg};
 use crate::macros::{Act, AppRef, WinOp};
-use crate::sys::{apps, uia, window};
+use crate::sys::{apps, desk, uia, window};
 
 pub(super) async fn elements(State(st): State<AppState>) -> ApiResult<Json<Vec<uia::Element>>> {
     Ok(Json(st.worker.run(|ctx| ctx.scanner()?.visible_elements(false)).await?))
@@ -37,7 +37,7 @@ pub(super) async fn focus(State(st): State<AppState>, Json(r): Json<FocusReq>) -
     let verb = Msg::new(if r.maximize { "ev.maximized" } else { "ev.front" });
     let desc = if title.is_empty() { verb } else { Msg::new("ev.titled").with("action", verb).with("title", short(&title)) };
     st.macros.interrupt();
-    let rec = st.macros.recording();
+    let (rec, secure) = (st.macros.recording(), desk::secure_in_front());
     let app = logged(&st, desc, move |_| {
         let app = rec.then(|| window::list().into_iter().find(|w| w.hwnd == r.hwnd).map(|w| AppRef::of(&w))).flatten();
         window::focus(r.hwnd)?;
@@ -48,7 +48,7 @@ pub(super) async fn focus(State(st): State<AppState>, Json(r): Json<FocusReq>) -
     })
     .await?;
     if let Some(app) = app {
-        st.macros.record(Act::Window { app, op: if r.maximize { WinOp::Maximize } else { WinOp::Front } });
+        st.macros.record(Act::Window { app, op: if r.maximize { WinOp::Maximize } else { WinOp::Front } }, secure);
     }
     Ok(Json(json!({ "ok": true })))
 }
@@ -70,8 +70,9 @@ pub(super) async fn close_window(State(st): State<AppState>, Json(r): Json<Close
     }
     let desc = Msg::new("ev.titled").with("action", Msg::new("ev.closed")).with("title", short(&w.title));
     st.macros.interrupt();
+    let secure = desk::secure_in_front();
     logged(&st, desc, move |_| window::close(r.hwnd)).await?;
-    st.macros.record(Act::Window { app: AppRef::of(&w), op: WinOp::Close });
+    st.macros.record(Act::Window { app: AppRef::of(&w), op: WinOp::Close }, secure);
     Ok(Json(json!({ "ok": true })))
 }
 
