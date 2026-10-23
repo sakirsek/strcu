@@ -1,9 +1,7 @@
 //! What was done: kept in memory for the panel and the terminal screens, and appended to `actions.log`.
 //!
-//! The service keeps a log of its own, and it is the one part with nobody to show it to: it runs in session
-//! 0, where there is no panel and no pipe. What it knows matters most when things are at their worst - a
-//! worker that will not start means there is no StrCu at all - so it hands every line on in a file as well
-//! (`HANDOVER`), which the worker takes into its own log and the control window reads when nothing answers.
+//! The service, in session 0 with no panel or pipe, also hands each line on in a file (`HANDOVER`): the
+//! worker takes it into its own log, and the control window reads it when no worker answers.
 
 use std::collections::VecDeque;
 use std::io::Write;
@@ -22,8 +20,8 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
-    /// Shown on the computer's main screen: sign-ins, failed attempts, changes to who can get in, locking
-    /// and shutting down, the tunnel coming and going. Clicks and typing are only in the full log.
+    /// Shown on the main screen: sign-ins, who can get in, locking, shutting down, the tunnel. Clicks and typing
+    /// are only in the full log.
     pub fn important(&self) -> bool {
         const CODES: &[&str] = &[
             "ev.access_denied",
@@ -60,13 +58,10 @@ impl LogEntry {
 /// `actions.log` starts over past this size; the one before is kept as `actions.old.log`.
 const FILE_MAX: u64 = 1 << 20;
 
-/// What the service hands over to the rest of StrCu: one line of JSON for each of its own log entries. The
-/// service empties it as it starts, so what stands in it is what has happened since - which is why nothing
-/// older is kept when it starts over.
+/// One line of JSON per service log entry, emptied as the service starts.
 pub(crate) const HANDOVER: &str = "service.log";
 
-/// The handover file starts over past this size. A worker that will not start is written down every couple
-/// of seconds, and a file that grows for a week helps nobody.
+/// The handover file starts over past this size: a worker that will not start is logged again and again.
 const HANDOVER_MAX: u64 = 64 << 10;
 
 /// One line of it.
@@ -107,8 +102,8 @@ impl ActionLog {
             let _ = writeln!(f, "{} {} {}", e.time, if ok { "OK " } else { "ERR" }, i18n::term().render(&e.msg));
         }
         if self.handover {
-            // Only the computer narrows it, as with the folder itself (paths.rs): StrCu started by a person keeps
-            // what it made writable by that person, or it could not go on writing its own log
+            // Only the computer sets the file's rule, as only it closes the folder (paths.rs): StrCu started by
+            // a person must go on writing its own log
             hand_over(&crate::config::data_dir(), &e, crate::ipc::as_system());
         }
         let mut r = self.recent.lock().unwrap();
@@ -118,8 +113,7 @@ impl ActionLog {
         self.changed.send_modify(|n| *n += 1);
     }
 
-    /// Takes entries that happened elsewhere into this log, oldest first: what the service handed over
-    /// before this worker was born. They are not written to the files again - they are in them already.
+    /// Takes the service's handed-over entries into this log, oldest first, without writing them again.
     pub fn adopt(&self, entries: Vec<LogEntry>) {
         if entries.is_empty() {
             return;
@@ -149,8 +143,7 @@ impl ActionLog {
         self.changed.subscribe()
     }
 
-    /// How many entries have ever been written. The control window sends it back as `log_since` and gets
-    /// only what it has not seen yet.
+    /// Entries ever written: the window sends it back as `log_since`.
     pub fn count(&self) -> u64 {
         *self.changed.borrow()
     }
@@ -161,20 +154,16 @@ fn handover_path(dir: &Path) -> PathBuf {
     dir.join(HANDOVER)
 }
 
-/// Starts the handover over: the service calls it as it starts, so what is in the file is what has happened
-/// since. What was in it is in `actions.log` as well, so nothing is lost by this.
+/// Empties the handover as the service starts; what was in it is in `actions.log` too.
 pub fn start_handover() {
     let _ = std::fs::remove_file(handover_path(&crate::config::data_dir()));
 }
 
-/// Appends one entry, and with `open_up` lets anybody on this computer read a file it has just made: it holds
-/// a handful of event keys and, at worst, the reason a program would not start - nothing that was ever kept
-/// secret - and the control window, which runs as a person while the folder is the computer's, has no other
-/// way to learn why StrCu never came up.
+/// Appends one entry. With `open_up` a file it just made is opened to anybody here: it holds nothing secret,
+/// and the window, running as a person, has no other way to learn why StrCu never came up.
 fn hand_over(dir: &Path, e: &LogEntry, open_up: bool) {
     let path = handover_path(dir);
-    // Too long, it starts over - before the asking whether it is new, or the file that replaces it would be
-    // taken for the old one and never opened up
+    // Started over before asking whether it is new, or the new file would never be opened up
     if std::fs::metadata(&path).is_ok_and(|m| m.len() > HANDOVER_MAX) {
         let _ = std::fs::remove_file(&path);
     }
@@ -188,8 +177,7 @@ fn hand_over(dir: &Path, e: &LogEntry, open_up: bool) {
     }
 }
 
-/// What the service has handed over, oldest first. No file, no rights to it, a line half written when the
-/// computer went off: all of them simply mean there is nothing to add.
+/// What the service has handed over, oldest first. No file, no rights or a half-written line mean nothing.
 pub fn handed_over() -> Vec<LogEntry> {
     handed_over_in(&crate::config::data_dir())
 }
