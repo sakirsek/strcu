@@ -1,20 +1,12 @@
-//! The third part of StrCu 2.0: the one that works with the signed-in user's own rights.
+//! The agent: the part of StrCu that works with the signed-in user's own rights.
 //!
-//! The worker serves the panel with the rights of the computer, which is what the lock screen, the sign-in
-//! screen and a window running as administrator need. The user's own things want the opposite: opening an app
-//! from the Start menu, reading the Documents folder, the clipboard. As the computer they come out wrong -
-//! SYSTEM has other folders of its own and apps from the Store do not start at all - and they would also be
-//! unsafe: a shell folder or a file dialog opened as the computer on behalf of whoever holds the phone is a
-//! way around the rules Windows puts on that user. So they are done here, in a process with the user's own
-//! token, not elevated even when the user is an administrator (S3 in the plan).
+//! The worker has the computer's rights, which the lock screen and administrator windows need. The user's own
+//! things want the opposite: as the computer, Store apps do not start and the folders are SYSTEM's, and a shell
+//! folder or file dialog opened for whoever holds the phone would get around the rules Windows puts on that
+//! user. So they are done in a process with the user's own token, not elevated (S3 in the plan).
 //!
-//! The worker starts it and talks to it over its stdin and stdout: two pipes made for it and handed over as
-//! handles, so there is no name for anything else to take or listen on. If it stops, the worker starts it
-//! again; while nobody is signed in there is none, and the panel says so instead (B7).
-//!
-//! StrCu started by a person is already that person: there is nothing an agent could do that it cannot do
-//! itself, and Windows would not give it anybody's token anyway. Then the jobs are simply done in place
-//! (`Hand::ask`), which is also how a development build behaves without a service behind it.
+//! The worker talks to it over its stdin and stdout, so there is no name to take or listen on, and starts it
+//! again when it stops. StrCu started by a person is that person already and does the jobs itself.
 
 use std::fs::File;
 use std::os::windows::io::FromRawHandle;
@@ -37,7 +29,7 @@ pub use spawn::Agent;
 pub(crate) use spawn::STARTING;
 use run::{Mind, done, who};
 
-/// The biggest job or answer. The lists and files the agent will carry later are the long ones.
+/// The biggest job or answer.
 const MAX_FRAME: u32 = 8 << 20;
 
 // ---------- what the worker asks for ----------
@@ -45,17 +37,15 @@ const MAX_FRAME: u32 = 8 << 20;
 #[derive(Serialize, Deserialize, Debug, PartialEq)]
 #[serde(tag = "job", content = "with", rename_all = "snake_case")]
 pub enum Job {
-    /// Who the agent runs as. It is asked first thing, which is also how the worker knows the agent is up
-    /// and talking, and it is the answer to "is this really the user and not the computer".
+    /// Who the agent runs as: asked first, which also shows it is up and is the user, not the computer.
     Who,
-    /// The Start menu list, as the user has it: their installed programs and their apps from the Store.
+    /// The Start menu list as the user has it: installed programs and Store apps.
     Apps,
     /// Opens one of them, by the id the list gave it.
     Launch { id: String },
     /// Opens a file, a folder or a web page the way a double-click would (what a macro step does).
     Open { path: String },
-    /// What a folder under one of the user's own folders holds (files.rs): their Desktop, Documents,
-    /// Downloads, Pictures or Videos, which are theirs and not the computer's.
+    /// A folder under one of the user's own (files.rs): Desktop, Documents, Downloads, Pictures, Videos.
     Folder { root: files::Root, path: String },
     /// Opens a file in one of those to send to the phone.
     Take { root: files::Root, path: String },
@@ -63,20 +53,19 @@ pub enum Job {
     Selected,
     /// Opens the n-th of those, which must still be called `name`.
     TakeSelected { at: usize, name: String },
-    /// Makes a file in the user's Downloads for something arriving from the phone, under a temporary name,
-    /// and hands it over open for the worker to write into.
+    /// A file in Downloads, under a temporary name, for something arriving from the phone; handed over open
+    /// for the worker to write into.
     Make { name: String },
     /// The file is whole: give it its own name (files.rs `free_path`, so nothing is ever replaced).
     Keep { token: u64 },
     /// Throw the half-written file away - it stopped arriving, or a piece came out of order.
     Throw { token: u64 },
-    /// What is on the clipboard. It belongs to the session someone is signed in to, so what the computer
-    /// reads there is not what the person sees in their own programs.
+    /// The clipboard, which belongs to the signed-in session: the computer would read another one.
     Clip,
     /// Puts text on the clipboard in place of what is there.
     Copy { text: String },
-    /// The icon of a program or of a Start menu app, as a PNG. A Store app's icon comes out of its package,
-    /// which is read through the user's own Applications folder (`shell:AppsFolder\<id>`).
+    /// A program's or Start menu app's icon as a PNG; a Store app's comes from its package, read through the
+    /// user's own `shell:AppsFolder\<id>`.
     Icon { path: String, size: u32 },
 }
 
@@ -87,8 +76,8 @@ pub enum Did {
         /// The account name, as Windows writes it
         user: String,
         session: u32,
-        /// Running as administrator. It should not be: the token is the one Windows gives the user at the
-        /// screen, which is the filtered one unless they turned that off themselves.
+        /// It should not be: Windows gives the user at the screen the filtered token unless they turned that
+        /// off themselves.
         elevated: bool,
     },
     Apps {
@@ -103,8 +92,8 @@ pub enum Did {
         /// There was more than a listing holds
         cut: bool,
     },
-    /// A file that is open for reading. `file` is a handle in whoever answered: `Agent::ask` brings it over,
-    /// so what the caller is given is a file of its own, to be taken with `file_of` or closed.
+    /// A file open for reading. `file` is a handle in whoever answered; `Agent::ask` brings it over, so the
+    /// caller gets one of its own (`file_of`).
     Opened {
         file: isize,
         name: String,
@@ -113,8 +102,8 @@ pub enum Did {
     Selected {
         items: Vec<files::Picked>,
     },
-    /// A file made for something arriving from the phone. `file` is handled like `Opened`'s; `token` is what
-    /// the agent calls it afterwards, so no path has to travel back and forth.
+    /// A file made for something arriving from the phone: `file` as in `Opened`, and `token` names it
+    /// afterwards, so no path travels back and forth.
     Made {
         file: isize,
         token: u64,
@@ -131,17 +120,16 @@ pub enum Did {
         #[serde(with = "bytes")]
         png: Vec<u8>,
     },
-    /// Done, with nothing to say about it.
     Done,
-    /// The job could not be done, in words the panel can show in its own language.
+    /// In words the panel can show in its own language.
     Failed {
         why: Written,
     },
 }
 
 impl Job {
-    /// How long the agent may take over it before it counts as stuck and is stopped (`Watch`). Far more than
-    /// any of them takes: the app list, the slowest, is about a second.
+    /// How long the agent may take before it counts as stuck and is stopped (`Watch`); far more than any job
+    /// takes (the app list, the slowest, is about a second).
     fn limit(&self) -> Duration {
         Duration::from_secs(match self {
             Job::Who | Job::Clip | Job::Copy { .. } | Job::Icon { .. } => 5,
@@ -164,8 +152,8 @@ impl Job {
 }
 
 impl Did {
-    /// The answer as an error, for a caller that asked for another one: a failure carries the reason the
-    /// agent gave, and any other answer can only be a mistake of ours.
+    /// The answer as an error, for a caller that wanted another: a failure carries the agent's reason, and
+    /// anything else is a mistake of ours.
     pub fn wrong(self) -> anyhow::Error {
         match self {
             Did::Failed { why } => why.msg().into(),
@@ -181,12 +169,9 @@ pub fn file_of(handle: isize) -> File {
 
 // ---------- the way to the agent ----------
 
-/// A hand on the agent: the worker keeps one running (app.rs `keep_agent`) and everything that belongs to
-/// the person signed in - their apps, their files, their clipboard - is given to it through a clone of this.
-///
-/// Where there is no agent the hand still answers. A StrCu started by a person does the job itself, since it
-/// is that person already; as the computer with nobody signed in there is nobody to do it as, and every job
-/// says so (`err.no_user`), which is what the panel shows before sign-in (B7).
+/// A hand on the agent, which the worker keeps running (app.rs `keep_agent`): the signed-in person's apps,
+/// files and clipboard go through a clone of this. Without an agent, StrCu started by a person does the job
+/// itself; as the computer with nobody signed in, every job says `err.no_user` (B7).
 #[derive(Clone)]
 pub struct Hand(Arc<Held>);
 
@@ -194,8 +179,7 @@ struct Held {
     kept: Mutex<Kept>,
     /// The account StrCu itself runs as, when that is a person rather than the computer
     mine: Option<String>,
-    /// The agent's account, kept apart from it: `kept` is held for as long as a job takes, and the screens
-    /// that show who StrCu works as must not wait behind one
+    /// The agent's account, apart from `kept`, which a job holds: the screens showing it must not wait
     user: Mutex<Option<String>>,
     /// The account and the job of the last agent that was stopped for taking too long, for the log
     stuck: Mutex<Option<(String, String)>>,
@@ -230,8 +214,7 @@ impl Hand {
         Hand(Arc::new(Held { kept: Mutex::default(), mine, user: Mutex::default(), stuck: Mutex::default() }))
     }
 
-    /// Who the user's work is done as: the agent's account, or ours when StrCu does it itself. None while
-    /// nobody is signed in at the screen.
+    /// Who the work is done as: the agent's account, or ours; None while nobody is signed in.
     pub fn user(&self) -> Option<String> {
         self.0.user.lock().unwrap().clone().or_else(|| self.0.mine.clone())
     }
@@ -241,8 +224,8 @@ impl Hand {
         self.0.mine.is_some()
     }
 
-    /// These two are asked every couple of seconds by the worker's main loop, which must never wait behind
-    /// a job: a job under way holds the lock, and means there is an agent, alive, doing it.
+    /// Asked every couple of seconds by the worker's loop, which must never wait behind a job: a job under way
+    /// holds the lock, and means a live agent.
     pub fn has_agent(&self) -> bool {
         self.0.kept.try_lock().map_or(true, |kept| kept.agent.is_some())
     }
@@ -267,9 +250,8 @@ impl Hand {
         *self.0.user.lock().unwrap() = Some(user);
     }
 
-    /// One job, one answer, one at a time: there is a single agent at the other end of a single pipe. An
-    /// agent that cannot be talked to any more is dropped here, and the worker starts another one within a
-    /// couple of seconds.
+    /// One job at a time over the one pipe. An agent that can no longer be talked to is dropped here, and the
+    /// worker starts another.
     pub fn ask(&self, job: Job) -> Result<Did> {
         let mut kept = self.0.kept.lock().unwrap();
         if let Some(agent) = kept.agent.as_mut() {
@@ -291,8 +273,7 @@ impl Hand {
         Ok(done(job, &mut kept.mind))
     }
 
-    /// The same, off the threads that serve the panel: a job can take a moment (reading the app list takes
-    /// about a second).
+    /// The same, off the panel's threads: the app list takes about a second.
     pub async fn job(&self, job: Job) -> Result<Did> {
         let hand = self.clone();
         tokio::task::spawn_blocking(move || hand.ask(job)).await?
@@ -307,8 +288,7 @@ impl Hand {
     }
 }
 
-/// Bytes in an answer travel as base64. JSON has no short way to carry them otherwise, and the only ones
-/// that travel are small: an icon is a few thousand bytes, while a file is handed over open instead.
+/// Bytes in an answer travel as base64; only small ones do (an icon), as files go over as open handles.
 mod bytes {
     use base64::Engine;
     use base64::engine::general_purpose::STANDARD as B64;
