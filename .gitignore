@@ -5,3 +5,5 @@
 *.jpg
 # README screenshots, made with made-up data
 !docs/*.png
+# The panel's home-screen icon, made by icon/make.py
+!icon/touch.png
