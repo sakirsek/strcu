@@ -1,4 +1,4 @@
-//! The panel page, in the phone's language, and its fonts.
+//! The panel page, in the phone's language, its fonts and its icon.
 
 use std::io::Write;
 
@@ -102,5 +102,38 @@ pub(super) async fn font(axum::extract::Path(file): axum::extract::Path<String>)
         )
             .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// The icon in the browser's tab (icon/strcu.svg).
+pub(super) async fn icon() -> Response {
+    picture("image/svg+xml", include_bytes!("../../icon/strcu.svg"))
+}
+
+/// The icon a phone puts on its home screen: square, the phone rounds the corners itself.
+pub(super) async fn touch_icon() -> Response {
+    picture("image/png", include_bytes!("../../icon/touch.png"))
+}
+
+fn picture(kind: &'static str, bytes: &'static [u8]) -> Response {
+    ([(header::CONTENT_TYPE, kind), (header::CACHE_CONTROL, "public, max-age=86400")], bytes).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn the_page_links_its_icons() {
+        let page = include_str!("../web/index.html");
+        assert!(page.contains(r#"<link rel="icon" href="/icon.svg""#));
+        assert!(page.contains(r#"<link rel="apple-touch-icon" href="/apple-touch-icon.png">"#));
+        let r = icon().await;
+        assert_eq!(r.headers()[header::CONTENT_TYPE], "image/svg+xml");
+        assert!(include_str!("../../icon/strcu.svg").starts_with("<svg "));
+        // iOS wants 180 × 180
+        let touch = image::load_from_memory(include_bytes!("../../icon/touch.png")).unwrap();
+        assert_eq!((touch.width(), touch.height()), (180, 180));
+        assert_eq!(touch_icon().await.headers()[header::CONTENT_TYPE], "image/png");
     }
 }

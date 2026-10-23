@@ -273,6 +273,8 @@ impl Panel {
         Router::new()
             .route("/", get(page::index))
             .route("/fonts/{file}", get(page::font))
+            .route("/icon.svg", get(page::icon))
+            .route("/apple-touch-icon.png", get(page::touch_icon))
             .route("/api/me", get(signin::me))
             .route("/api/login", post(signin::login))
             .route("/api/pair", post(signin::pair))
