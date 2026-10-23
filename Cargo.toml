@@ -86,3 +86,7 @@ features = [
 [profile.release]
 lto = "thin"
 strip = true
+
+[build-dependencies]
+# The icon and version details in strcu.exe (build.rs); Windows' own resource compiler does the work
+winresource = { version = "0.1.34", default-features = false }
