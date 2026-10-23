@@ -15,8 +15,7 @@ use super::{App, Remote, Urls};
 /// How long this computer's addresses stay good before they are looked up again.
 const URLS_FOR: Duration = Duration::from_secs(30);
 
-/// What the window asks for often enough to keep instead of working it out every time: finding the
-/// addresses takes a moment, and the window asks about once a second.
+/// The addresses, kept between asks: finding them takes a moment, and the window asks once a second.
 pub(super) struct Shown {
     urls: Urls,
     looked: Instant,
@@ -39,21 +38,18 @@ impl Shown {
     }
 }
 
-/// Does StrCu keep running after an answer? Stopping waits for the answer to be on its way: the window is
-/// told it worked, and only then does StrCu go.
+/// Does StrCu keep running after an answer? A stop waits until the window has been told it worked.
 #[derive(PartialEq)]
 pub(super) enum After {
     Running,
     Stop,
 }
 
-/// Answers one ask from the control window (ipc.rs). It is answered here, in the loop that runs StrCu,
-/// because a change has to be carried out at once: a new port means the panel must listen again, and this is
-/// the only place with anything to listen with.
+/// Answers one ask from the control window (see the module header for why here).
 pub(super) async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) -> (ipc::Answer, After) {
     let lang = i18n::term();
-    // Everything that changes something needs the panel password, even at the computer own keyboard: the
-    // worker types on the lock screen, and a program running as the user must not reach that without it.
+    // Changes need the panel password even at the computer's own keyboard: the worker types on the lock
+    // screen, and a program running as the user must not reach that without it (ipc.rs)
     let signed_in = app.panel.auth().check(req.token.as_deref().unwrap_or(""));
     if req.ask.needs_token() && !signed_in {
         return (ipc::Answer::SignInNeeded, After::Running);
@@ -102,9 +98,8 @@ pub(super) async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) 
     (answer, After::Running)
 }
 
-/// The first start, from the setup screens in the window: a language, the first password and whether the
-/// home network may reach the panel. While there is no password this needs none, because there is no other
-/// way to set one; once there is, it is a change like any other and the window has to be signed in.
+/// The first start: a language, the first password and the home network. Free while there is no password,
+/// since nothing else can set one; afterwards a change like any other.
 async fn first_setup(
     app: &mut App,
     shown: &mut Shown,
@@ -153,8 +148,8 @@ async fn first_setup(
     }
 }
 
-/// The panel password, typed in the window. Wrong tries count towards the same brake as the panel sign-in
-/// but under a source of their own, so somebody guessing at the keyboard does not lock the phone out.
+/// The panel password typed in the window. Wrong tries have a brake of their own, so somebody guessing at the
+/// keyboard does not lock the phone out.
 fn sign_in(app: &App, password: &str) -> ipc::Answer {
     let from = Msg::new("src.local");
     match app.panel.auth().check_password(password, "window") {
@@ -170,8 +165,7 @@ fn sign_in(app: &App, password: &str) -> ipc::Answer {
     }
 }
 
-/// One change from the closed list the window may send. What could not be done comes back as a sentence
-/// ready to show.
+/// One change from the closed list; what could not be done comes back as a sentence to show.
 async fn change(app: &mut App, shown: &mut Shown, what: ipc::Change, lang: &Lang) -> ipc::Answer {
     let failed = |e: &anyhow::Error| ipc::Answer::Failed { reason: lang.render(&i18n::from_error(e)) };
     match what {
@@ -216,8 +210,8 @@ async fn change(app: &mut App, shown: &mut Shown, what: ipc::Change, lang: &Lang
     }
 }
 
-/// Saves a setting the listener depends on and listens again; if that fails the old setting comes back, so
-/// the panel is never left unreachable over a port that cannot be had.
+/// Saves a setting the listener depends on and listens again; on failure the old one comes back, so the panel
+/// is never left unreachable.
 async fn listen_again(
     app: &mut App,
     shown: &mut Shown,
@@ -239,8 +233,7 @@ async fn listen_again(
     }
 }
 
-/// Remote access: the steps of the setup that the window cannot take itself, because they need the settings
-/// folder or the rights of the computer. Everything comes back as one picture of where it has got to.
+/// The remote access steps the window cannot take itself (ipc.rs `Tunnel`), answered as one picture.
 async fn remote_setup(app: &mut App, shown: &mut Shown, ask: ipc::Tunnel, lang: &Lang) -> ipc::TunnelState {
     match ask {
         ipc::Tunnel::Install => app.install_cloudflared(),
@@ -290,8 +283,7 @@ pub fn remote_state(remote: &Remote, lang: &Lang) -> (ipc::RemoteState, Option<S
     }
 }
 
-/// The log for the window: ready to show, in the language the settings name, newest first. The window has no
-/// language file of its own to render a `Msg` with - its code is not something that travels.
+/// The log for the window, rendered in the settings' language, newest first: a `Msg` does not travel.
 pub fn events(entries: &[LogEntry], lang: &Lang) -> Vec<ipc::Event> {
     entries
         .iter()
@@ -299,8 +291,7 @@ pub fn events(entries: &[LogEntry], lang: &Lang) -> Vec<ipc::Event> {
         .collect()
 }
 
-/// The settings screen: what is set, never what it is set to. No password hash, no tunnel token, and the
-/// phones without the secret behind their cookie.
+/// The settings screen: what is set, never what it is set to (no hash, no token, no phone secret).
 fn settings(app: &App) -> ipc::Settings {
     let cfg = config::load();
     let setup_done = cfg.setup_done;
