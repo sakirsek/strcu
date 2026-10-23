@@ -75,12 +75,10 @@ pub struct App {
 /// Pause before cloudflared is started again after it stopped.
 const RETRY: Duration = Duration::from_secs(30);
 
-/// What the control window has started on the way to remote access (ipc.rs `Tunnel`): the cloudflared
-/// download and the tunnel of a token that is not saved yet. It lasts while the setup screen is open.
+/// What the remote access setup has started (ipc.rs `Tunnel`): the download and the trial tunnel.
 #[derive(Default)]
 struct Setup {
-    /// The download and how far it has got; it keeps running if the window is closed, and what arrived is
-    /// kept for the next time.
+    /// It goes on if the window closes, and what arrived is kept for next time.
     downloading: Option<Arc<Mutex<Downloading>>>,
     /// The pasted token's tunnel
     trial: Option<tunnel::Tunnel>,
@@ -116,8 +114,7 @@ impl App {
             agent_starting: None,
             agent_failed: None,
         };
-        // Settings that are there but cannot be read: StrCu runs without them - with no password the panel does
-        // not listen - and says why, rather than look like a computer it was never set up on
+        // Unreadable settings: StrCu runs without them (so the panel does not listen) and says why
         if let Err(e) = config::read() {
             let why = Msg::new("ev.config_unreadable").with("msg", crate::i18n::from_error(&e));
             app.panel.log().add(why.with("path", config::file().display().to_string()), false);
@@ -136,8 +133,7 @@ impl App {
 
     /// Listens where the settings say (after a port or home network change). Returns the error if it could not.
     pub async fn relisten(&mut self) -> Option<Msg> {
-        // Until there is a password there is nothing to tell an allowed phone from any other, so the panel
-        // stays closed. The window offers the setup, and this is called again when it is done.
+        // No password, no panel (auth.rs); the window offers the setup and this runs again after it
         if !self.panel.auth().is_set() {
             if let Some(old) = self.listener.take() {
                 old.stop().await;
@@ -181,8 +177,7 @@ impl App {
         self.remote.subscribe()
     }
 
-    /// Opens the tunnel with the saved settings, closing the old one first (after remote access was set up
-    /// or removed).
+    /// Opens the tunnel with the saved settings, closing the old one first.
     pub async fn restart_remote(&mut self) {
         if let Some(t) = self.tunnel_task.take() {
             t.abort();
@@ -191,8 +186,7 @@ impl App {
         self.panel.tunnel_pid().store(0, Ordering::Relaxed);
         let cfg = config::load();
         self.panel.set_access(cfg.access.clone());
-        // cloudflared itself is not one of the parts: a missing one is fetched before the tunnel starts
-        // (`keep_tunnel`), which is what brings remote access back on its own after an update
+        // Not cloudflared: a missing one is fetched before the tunnel starts (`keep_tunnel`)
         let parts = [cfg.access.is_some(), tunnel::saved_tunnel_id().is_some()];
         let state = match parts {
             [false, false] => Remote::Off,
@@ -218,14 +212,9 @@ impl App {
         self.remote.send_replace(Remote::Off);
     }
 
-    /// Keeps the agent running while somebody is signed in at the screen. It is looked at every couple of
-    /// seconds, because a user may sign in long after StrCu started - it serves the sign-in screen too - and
-    /// the agent comes and goes with them. While there is nobody there is nothing to start, which is not an
-    /// error and says itself in the state the window reads. A StrCu started by a person needs none at all:
-    /// it does that work itself.
-    ///
-    /// None of it waits: this runs in the loop that also answers the control window. The agent is started on
-    /// a thread of its own, one at a time, and looked at again on the next round.
+    /// Keeps the agent running while somebody is signed in at the screen, looked at every couple of seconds
+    /// since users come and go. Nothing here waits: it runs in the loop that answers the window, so the agent
+    /// is started on a thread of its own and looked at again next round.
     pub async fn keep_agent(&mut self) {
         let hand = self.panel.agent();
         if hand.here() {
@@ -264,8 +253,7 @@ impl App {
         self.agent_starting = Some(tokio::task::spawn_blocking(move || agent::Agent::start(session)));
     }
 
-    /// Starts downloading cloudflared, unless the right version is already here. It runs on its own: the
-    /// window asks how far it has got, and a window that closes does not stop it.
+    /// Starts downloading cloudflared unless the right version is here; closing the window does not stop it.
     fn install_cloudflared(&mut self) {
         if tunnel::installed_version().as_deref() == Some(tunnel::CLOUDFLARED_TAG) || self.setup.downloading.is_some() {
             return;
@@ -288,8 +276,8 @@ impl App {
         });
     }
 
-    /// Starts the tunnel of a token that is not saved yet. The saved one closes first - they share the port
-    /// cloudflared reports its state on - and comes back when the setup is left (`end_setup`).
+    /// Starts an unsaved token's tunnel. The saved one closes first (they share cloudflared's state port) and
+    /// comes back when the setup ends (`end_setup`).
     async fn try_token(&mut self, token: &str) {
         // An earlier try closes first, for the same reason
         self.setup.trial = None;
@@ -327,8 +315,7 @@ impl App {
         r
     }
 
-    /// The setup is over, one way or another: the trial closes and the saved tunnel is opened again from
-    /// whatever the settings now say.
+    /// The setup is over: the trial closes and the saved tunnel opens from what the settings now say.
     async fn end_setup(&mut self) {
         self.setup.trial = None;
         self.setup.failed = None;
@@ -387,8 +374,8 @@ impl App {
     }
 }
 
-/// Keeps cloudflared running and reports its state. It reconnects by itself; if it stops, it is started again
-/// after a pause. The log gets an entry when the connection comes or goes, and once per run of failures.
+/// Keeps cloudflared running and reports its state; a stopped one is started again after a pause. The log
+/// hears when the connection comes or goes, and once per run of failures.
 async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>, pid: Arc<AtomicU32>) {
     let http = reqwest::Client::new();
     let (mut was_up, mut failure_logged) = (false, false);
@@ -482,8 +469,7 @@ pub async fn serve_plain(bind: Option<SocketAddr>, tunnel: bool) -> Result<()> {
                 let (answer, after) = answer(&mut app, &mut shown, req).await;
                 let _ = back.send(answer);
                 if after == After::Stop {
-                    // Long enough for the answer to be written on the pipe before the service pulls this
-                    // process down; the window would otherwise see StrCu go without a word
+                    // Time for the answer to reach the window before the service takes this process down
                     tokio::time::sleep(Duration::from_millis(300)).await;
                     if let Err(e) = crate::svc::stop() {
                         app.panel.log().add(Msg::new("ev.stop_failed").with("msg", format!("{e:#}")), false);
