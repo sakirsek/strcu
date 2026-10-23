@@ -33,23 +33,21 @@ use crate::sys::token::{own_session, own_sid, sid_string};
 
 use super::{ADMINS, Answer, Ask, Reply, Request, SYSTEM, VERSION, path};
 
-/// A pipe handle that may travel to the thread serving it, closed when it is dropped. It is held as a file,
-/// so the messages are read and written the way the agent's are (frame.rs).
+/// A pipe handle, held as a file for frame.rs and closed when dropped.
 struct Pipe(File);
 
 impl Pipe {
-    /// Takes over a handle just made.
     fn of(h: HANDLE) -> Pipe {
         Pipe(unsafe { File::from_raw_handle(h.0) })
     }
 
-    /// For what only a pipe can do: connect, flush, disconnect, tell who is at the other end.
+    /// For what only a pipe can do: connect, flush, disconnect, tell who is there.
     fn raw(&self) -> HANDLE {
         HANDLE(self.0.as_raw_handle())
     }
 }
 
-/// The biggest message either end sends or accepts. The log is the long one and stays far below this.
+/// The biggest message either end sends or accepts; the log, the longest, stays far below it.
 const MAX_FRAME: u32 = 1 << 20;
 
 /// Each end's buffer: a status with its events fits in one go.
@@ -67,8 +65,8 @@ pub struct Server {
 }
 
 impl Server {
-    /// Claims the name. It fails when something else holds it already - which is what claiming the first
-    /// instance is for: the window would otherwise have no way of telling that something from StrCu.
+    /// Claims the name, and fails when something else holds it: that is what keeps anything else from posing
+    /// as StrCu.
     pub fn open() -> Result<Server> {
         Self::open_named(&path())
     }
@@ -79,13 +77,10 @@ impl Server {
         Ok(Server { name: name.to_string(), sddl, next: Some(next) })
     }
 
-    /// Serves clients until the process ends. Each client gets a thread of its own and may ask as often as it
-    /// likes while it stays connected; `answer` is called from those threads, once at a time per client.
-    /// A request of another version, and one from a client that may not be here, never reaches it.
-    ///
-    /// Nothing that goes wrong with one client or one instance ends it: a pipe no longer served would leave
-    /// the window saying StrCu is not running until StrCu itself is started again. What goes wrong is handed
-    /// to `trouble`, the same thing once.
+    /// Serves clients until the process ends, each on a thread of its own; `answer` never sees a request of
+    /// another version or from a client that may not be here. Nothing that goes wrong with one client or one
+    /// instance ends it - an unserved pipe reads as "StrCu is not running" - and each trouble goes to `trouble`
+    /// once.
     pub fn serve<F>(mut self, answer: F, mut trouble: impl FnMut(String))
     where
         F: Fn(Request) -> Answer + Clone + Send + 'static,
@@ -153,8 +148,7 @@ fn converse(client: &Pipe, answer: impl Fn(Request) -> Answer) -> Result<()> {
         let reply = match serde_json::from_slice::<Request>(&body) {
             Ok(req) if req.v != VERSION => Answer::WrongVersion { want: VERSION },
             Ok(req) => answer(req),
-            // A window of this version sends nothing we cannot read: this is a newer one asking for
-            // something this StrCu has never heard of, or a program that is not ours at all
+            // A newer window asking for something unknown here, or a program that is not ours
             Err(_) => Answer::Failed { reason: crate::i18n::term().t("err.unknown_ask") },
         };
         frame::write(&client.0, &serde_json::to_vec(&Reply { v: VERSION, answer: reply })?, MAX_FRAME)?;
@@ -162,9 +156,8 @@ fn converse(client: &Pipe, answer: impl Fn(Request) -> Answer) -> Result<()> {
     Ok(())
 }
 
-/// May this client be here? The access list says who may open the pipe; this says from where. Only the
-/// session on the physical screen counts - the one the worker serves - so a second user on this computer
-/// over a remote desktop cannot drive this screen.
+/// The access list says who may open the pipe; this says from where. Only the session on the physical
+/// screen counts, so a second user over a remote desktop cannot drive this screen.
 fn allowed(pipe: HANDLE) -> Result<()> {
     let mut pid = 0u32;
     unsafe { GetNamedPipeClientProcessId(pipe, &mut pid) }.context("who is asking")?;
@@ -176,17 +169,13 @@ fn allowed(pipe: HANDLE) -> Result<()> {
     Ok(())
 }
 
-/// Are we running as the computer rather than as a person? That is the service and its worker; StrCu
-/// started by hand is the person who started it, which changes what it can do and what it has to leave to
-/// the agent (agent.rs).
+/// Running as the computer (the service and its worker) rather than as the person who started StrCu.
 pub fn as_system() -> bool {
     own_sid().is_some_and(|sid| sid == SYSTEM)
 }
 
-/// Who may open the pipe: the system (the service, the worker, the agent), whoever is signed in at this
-/// computer, and the account StrCu runs under - the system again once it is a service, the user while it is
-/// being developed. `D:` on its own leaves everyone else out. No owner is named: it is whoever creates the
-/// pipe, since a normal user may not hand ownership to the system (error 1307).
+/// Who may open the pipe: the system, whoever is signed in here, and StrCu's own account. No owner is
+/// named: a normal user may not hand ownership to the system (error 1307).
 fn acl() -> String {
     let mut sddl = "D:(A;;GA;;;SY)(A;;GRGW;;;IU)".to_string();
     if let Some(sid) = own_sid().filter(|s| s != SYSTEM) {
@@ -230,14 +219,13 @@ fn instance(name: &str, sddl: &HSTRING, first: bool) -> Result<Pipe> {
 /// An ask from the window, and where its answer goes.
 pub struct Asked(pub Request, pub oneshot::Sender<Answer>);
 
-/// The asks waiting for an answer. StrCu takes them in its own loop (app.rs), where everything an answer
-/// needs is at hand; the client waits on the thread it was given, so one window never holds up another.
+/// The asks waiting for an answer, taken in StrCu's own loop (app.rs); each client waits on its own thread,
+/// so one window never holds up another.
 pub struct Asks(Option<mpsc::Receiver<Asked>>);
 
 impl Asks {
-    /// Opens the pipe. One that cannot be opened - what happens when something else already holds the name -
-    /// is written in the log and nothing else changes: the panel is served either way, the window simply
-    /// cannot reach this StrCu.
+    /// Opens the pipe. If it cannot be (the name is taken), that is logged and the panel is served anyway;
+    /// only the window cannot reach this StrCu.
     pub fn open(log: Arc<ActionLog>) -> Asks {
         let server = match Server::open() {
             Ok(server) => server,
@@ -262,8 +250,7 @@ impl Asks {
         Asks(Some(waiting))
     }
 
-    /// The next ask. While there is no pipe it never returns, so it can sit in a `select!` without a branch
-    /// of its own for "there is no pipe to listen to".
+    /// The next ask; never returns while there is no pipe, so it can sit in a `select!` as it is.
     pub async fn next(&mut self) -> Asked {
         match self.0.as_mut() {
             Some(waiting) => match waiting.recv().await {
@@ -275,18 +262,16 @@ impl Asks {
     }
 }
 
-/// The asking end: the terminal window, and later the agent.
+/// The asking end: the terminal window.
 pub struct Link {
     pipe: Pipe,
 }
 
 impl Link {
-    /// Connects to the running StrCu. It also makes sure the pipe belongs to somebody who could only be
-    /// StrCu (see `ours`): without that, something that had claimed the name first would be handed the
-    /// password.
+    /// Connects to the running StrCu, making sure the pipe belongs to somebody who could only be StrCu
+    /// (`ours`): something that had claimed the name first would otherwise be handed the password.
     pub fn connect() -> Result<Link> {
-        // Our own account only where StrCu may really be running as us: a development build, or a computer
-        // with no StrCu service. Where the service is installed, a pipe of ours could only have been made by
+        // Our own account only where StrCu may run as us. With the service installed, a pipe of ours was made by
         // a program of ours that took the name while the service was stopped.
         let mine = crate::brand::DEV || !crate::svc::installed();
         Self::connect_named(&path(), mine)
@@ -339,10 +324,9 @@ impl Link {
 
 // ---------- who we are ----------
 
-/// Whose pipe we are willing to talk to: the computer itself, the administrators - which is what a service
-/// gives what it makes - or `me`, our own account, when StrCu may be running as us. A program running as a
-/// person cannot hand the ownership of what it makes to either of the first two, so a pipe owned by them was
-/// made by something that already had the rights StrCu runs with.
+/// Whose pipe we talk to: the system, the administrators (what a service makes is theirs), or `me` when StrCu
+/// may run as us. A person's program cannot give what it makes to the first two, so their pipe was made with
+/// the rights StrCu runs with.
 fn ours(owner: &str, me: Option<&str>) -> bool {
     owner == SYSTEM || owner == ADMINS || me == Some(owner)
 }
@@ -365,8 +349,7 @@ mod tests {
     use super::*;
     use crate::ipc::{Change, Status};
 
-    /// A name of its own per test: two servers claiming one name is exactly what the first-instance flag
-    /// forbids, and the installed StrCu may hold the real one.
+    /// A name of its own per test: the first-instance flag forbids sharing one, and StrCu may hold the real one.
     fn test_path(what: &str) -> String {
         format!(r"\\.\pipe\strcu-test-{what}-{}", std::process::id())
     }
@@ -447,8 +430,7 @@ mod tests {
         assert_eq!(reply.answer, Answer::WrongVersion { want: VERSION });
     }
 
-    /// A window that connects now and asks once: its answer, or None if there was none within `limit`. A
-    /// pipe that has stopped being served still lets a window connect, and then never answers it.
+    /// One ask from a new window: its answer, or None within `limit` (an unserved pipe still lets it connect).
     fn answered_within(name: &str, limit: Duration) -> Option<Answer> {
         let (tx, rx) = std::sync::mpsc::channel();
         let name = name.to_string();
