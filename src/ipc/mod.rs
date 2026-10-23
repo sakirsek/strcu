@@ -355,6 +355,13 @@ mod tests {
     }
 
     #[test]
+    fn the_installer_asks_for_the_language_in_this_version() {
+        // It would get there anyway, by asking again in the version StrCu names, but one round late
+        let installer = include_str!("../../install.ps1");
+        assert!(installer.lines().any(|l| l.trim() == format!("$v = {VERSION}")), "install.ps1 `$v` is not {VERSION}");
+    }
+
+    #[test]
     fn a_phone_on_the_wire_keeps_no_secret() {
         let d = Device {
             id: "d1".into(),

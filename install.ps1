@@ -67,16 +67,67 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
     # access still comes back on its own.
     $kept = @('config.json', 'macros.json', 'cloudflared-token.txt', 'actions.log', 'actions.old.log', 'macro-shots')
 
-    # StrCu's own language if it is set up, else the Windows display language
-    $lang = (Get-UICulture).TwoLetterISOLanguageName
-    foreach ($c in (Join-Path $data 'config.json'), (Join-Path $old 'config.json')) {
+    # The language a settings file names: '' when it leaves that to Windows, $null when it cannot be read.
+    function Config-Language([string]$file) {
         try {
-            if (Test-Path $c) {
-                $saved = (Get-Content $c -Raw | ConvertFrom-Json).language
-                if ($saved) { $lang = $saved; break }
+            if (Test-Path -LiteralPath $file) {
+                return [string](Get-Content -LiteralPath $file -Raw | ConvertFrom-Json).language
             }
         } catch {}
+        $null
     }
+
+    # `count` bytes from StrCu's pipe, waiting two seconds at most for each part.
+    function Read-Pipe($pipe, [int]$count) {
+        $buf = New-Object byte[] $count
+        $got = 0
+        while ($got -lt $count) {
+            $read = $pipe.ReadAsync($buf, $got, $count - $got)
+            if (-not $read.Wait(2000) -or $read.Result -le 0) { throw 'StrCu did not answer' }
+            $got += $read.Result
+        }
+        , $buf
+    }
+
+    # One ask on StrCu's pipe: four bytes of length, then JSON, each way (frame.rs).
+    function Ask-Pipe($pipe, [string]$json) {
+        $body = [Text.Encoding]::UTF8.GetBytes($json)
+        [byte[]]$frame = [BitConverter]::GetBytes([uint32]$body.Length) + $body
+        if (-not $pipe.WriteAsync($frame, 0, $frame.Length).Wait(2000)) { throw 'StrCu did not listen' }
+        $len = [BitConverter]::ToUInt32((Read-Pipe $pipe 4), 0)
+        if ($len -gt 1MB) { throw 'the answer is too long' }
+        [Text.Encoding]::UTF8.GetString((Read-Pipe $pipe ([int]$len))) | ConvertFrom-Json
+    }
+
+    # The running StrCu's language, as the window would ask it (`Settings` needs no password). A StrCu that
+    # speaks another protocol version says which, and is asked again in that one.
+    function Pipe-Language {
+        if (-not (Test-Path -LiteralPath "\\.\pipe\$name")) { return $null }
+        $pipe = New-Object IO.Pipes.NamedPipeClientStream('.', $name, [IO.Pipes.PipeDirection]::InOut,
+            [IO.Pipes.PipeOptions]::Asynchronous)
+        try {
+            $pipe.Connect(2000)
+            # ipc.rs VERSION
+            $v = 6
+            foreach ($try in 1, 2) {
+                $reply = Ask-Pipe $pipe ('{"v":' + $v + ',"ask":"settings"}')
+                if ($reply.answer -eq 'settings') { return [string]$reply.with.language }
+                if ($reply.answer -ne 'wrong_version') { break }
+                $v = [int]$reply.with.want
+            }
+        } catch {
+        } finally {
+            $pipe.Dispose()
+        }
+        $null
+    }
+
+    # StrCu's own language, else the Windows display language. Only administrators may read the settings, so
+    # the person's half asks the running StrCu; what 1.x kept counts only when neither answers.
+    $lang = Config-Language (Join-Path $data 'config.json')
+    if ($null -eq $lang) { $lang = Pipe-Language }
+    if ($null -eq $lang) { $lang = Config-Language (Join-Path $old 'config.json') }
+    if (-not $lang) { $lang = (Get-UICulture).TwoLetterISOLanguageName }
     $turkish = $lang -eq 'tr'
 
     function Text([string]$en, [string]$tr) {
