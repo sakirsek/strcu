@@ -640,7 +640,6 @@
   "err.dl_stream": "İndirme erken bitti",
   "err.port_busy": "{port} portunu başka bir program kullanıyor",
   "err.listen": "{addr} dinlenemiyor",
-  "err.autostart": "Windows ile başlama ayarı değiştirilemedi",
   "err.hostname": "Geçerli bir adres değil (örn. strcu.example.com)",
   "err.already_running": "StrCu zaten çalışıyor",
   "err.serve_with_service": "StrCu bu bilgisayarda Windows servisi olarak çalışıyor, yani zaten açık; bunun yerine penceresini aç (komutsuz strcu).",

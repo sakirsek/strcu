@@ -188,8 +188,6 @@ fn kept_in(dir: &Path) -> HashMap<String, u64> {
     kept
 }
 
-
-
 fn random_token() -> String {
     random_hex(32)
 }

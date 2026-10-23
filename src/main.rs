@@ -38,9 +38,6 @@ struct Cli {
     /// Without a command StrCu opens in the terminal: the setup on the first start, then the main screen.
     #[command(subcommand)]
     cmd: Option<Cmd>,
-    /// Minimize the window (used when starting with Windows)
-    #[arg(long, hide = true)]
-    minimized: bool,
 }
 
 #[derive(Subcommand)]
@@ -240,11 +237,8 @@ async fn main() {
 }
 
 /// StrCu without a command: the control window, or status lines when the output is not a terminal.
-async fn start(minimized: bool) -> Result<()> {
+async fn start() -> Result<()> {
     window::set_console_title(window::CONSOLE_TITLE);
-    if minimized {
-        window::minimize_console();
-    }
     // The window only looks at the StrCu that is running: any number of them may be open, and a window
     // keeps nothing awake.
     if std::io::stdout().is_terminal() {
@@ -266,7 +260,7 @@ async fn start(minimized: bool) -> Result<()> {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    let Some(cmd) = cli.cmd else { return start(cli.minimized).await };
+    let Some(cmd) = cli.cmd else { return start().await };
     match cmd {
         Cmd::Serve { bind, no_tunnel } => {
             // The same: with the service installed, StrCu is running already (`start`)
