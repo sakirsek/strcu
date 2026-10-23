@@ -77,7 +77,7 @@ StrCu opens in a terminal window. The first start is a short setup:
 StrCu itself starts with Windows, before anyone signs in, and keeps running when you sign out. Nothing is
 asked about that, because the service is what StrCu is.
 
-<img src="docs/terminal.png" alt="StrCu's main screen: the addresses to open on the phone (home network, remote, this computer) and recent events such as a phone paired, sign-ins and a wrong password" width="640">
+<img src="docs/terminal.png" alt="StrCu's main screen: the addresses to open on the phone (home network, remote, this computer) and recent events such as a device paired, sign-ins and a wrong password" width="640">
 
 After that the main screen shows where the phone can open the panel and the important events: sign-ins and
 failed attempts with where they came from, devices paired, fingerprints added, the computer locked, files sent or
@@ -94,7 +94,7 @@ its lid closed, set Windows to do nothing when the lid is closed.
 
 ## Connect a phone
 
-<img src="docs/pair.png" alt="Pairing a phone: a QR code and the six-digit code 482 913 next to the home network address" width="560">
+<img src="docs/pair.png" alt="Pairing a device: a QR code and the six-digit code 482 913 next to the home network address" width="560">
 
 Press **P** on the main screen and scan the QR code with the phone's camera, or open the address shown and type
 the six-digit code under "Pair with a code from the computer". The paired phone gets in without the password
@@ -169,7 +169,7 @@ The page loads nothing from outside; its fonts (IBM Plex) are built in.
 
 On the Files tab:
 
-<img src="docs/files.png" alt="The Files tab on a phone: buttons to get the File Explorer selection and to send files from the phone, the folder chips, the Downloads folder with its subfolders and newest files, one of them selected, and the Download button with its name and size" width="320">
+<img src="docs/files.png" alt="The Files tab on a phone: buttons to get the File Explorer selection and to send files to the computer, the folder chips, the Downloads folder with its subfolders and newest files, one of them selected, and the Download button with its name and size" width="320">
 
 - **From the computer:** the Downloads, Desktop, Documents, Pictures and Videos folders (wherever Windows keeps them,
   OneDrive included), folders first and then the newest files. A tap selects a file and **Download** under the
