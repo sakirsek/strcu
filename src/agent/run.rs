@@ -19,8 +19,7 @@ use crate::sys::{apps, clipboard, icons, token};
 
 use super::{Did, Job, MAX_FRAME};
 
-/// `strcu agent`, started by the worker: jobs come in on stdin, answers go out on stdout, and the end of
-/// stdin is the end of the agent.
+/// `strcu agent`: the end of stdin is the end of the agent.
 pub fn run() -> Result<()> {
     keep_to_ourselves();
     let mut jobs = std::io::stdin().lock();
@@ -38,10 +37,9 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// Our ends of the two pipes are the agent's alone. They come in inheritable, and anything the agent starts
-/// with inheritance on - an app, a file opened the way a double-click opens it - would otherwise take them
-/// along and hold them open after the agent is gone: the worker would then wait for an answer that never
-/// comes, and could not tell a stuck agent from a slow one.
+/// Our ends of the two pipes come in inheritable. Anything the agent starts with inheritance on (an app, a
+/// file opened as a double-click opens it) would hold them open after the agent is gone, and the worker could
+/// not tell a stuck agent from a slow one.
 fn keep_to_ourselves() {
     for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
         if let Ok(h) = unsafe { GetStdHandle(which) } {
@@ -100,9 +98,8 @@ pub(super) fn done(job: Job, mind: &mut Mind) -> Did {
     did.unwrap_or_else(|e| Did::Failed { why: Written::of(&e) })
 }
 
-/// Makes the file a phone is about to send, under a name no finished file has: there is nothing half
-/// written for anyone to open by mistake, and a file that was already there is never touched. Pieces left
-/// behind by a StrCu that stopped in the middle are swept away first, by age.
+/// Makes the file a phone is about to send under a name no finished file has, so nothing half written is
+/// opened by mistake and no file already there is touched. Pieces left by a StrCu stopped midway go first.
 fn make(name: &str, mind: &mut Mind) -> Result<Did> {
     let dir = files::root_dir(files::Root::Downloads)?;
     sweep(&dir);
@@ -147,16 +144,14 @@ fn sweep(dir: &Path) {
     }
 }
 
-/// Opens a file and hands it over as it is. The handle is left open on purpose: it belongs to whoever asked
-/// for it from here on (`Agent::ask` brings it over, `file_of` turns it back into a file).
+/// Opens a file and hands the handle over open: it is the asker's from here (`Agent::ask` brings it over).
 fn opened(path: &Path) -> Result<Did> {
     let (file, name, size) = files::open_read(path)?;
     Ok(Did::Opened { file: file.into_raw_handle() as isize, name, size })
 }
 
-/// Opens an app from the list. The id has to be in it, so nothing but what the phone was shown can be
-/// started; the list from the last `Apps` job is used, and read again when the id is not in it - an app
-/// installed since then, or a launch from a macro that never asked for the list.
+/// Opens an app from the list, so nothing the phone was not shown can start. The last `Apps` list is used,
+/// and read again for an id not in it (an app installed since, a macro's launch).
 fn launch(id: &str, known: &mut Vec<apps::App>) -> Result<apps::App> {
     if !known.iter().any(|a| a.id == id) {
         *known = apps::list()?;
