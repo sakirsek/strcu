@@ -1,15 +1,10 @@
 //! Following the desktop that has the keyboard and the mouse.
 //!
-//! Windows keeps more than one desktop in a session. Everyday work happens on `Default`; the lock screen,
-//! the sign-in screen and the "do you want to allow this app" prompt live on `Winlogon`, a desktop a normal
-//! program may not even open. A thread only ever sees and types on *its own* desktop, so a program that
-//! stays on `Default` captures a black picture and sends keys nowhere while one of those is in front.
-//!
-//! So every thread that looks at the screen or sends input calls [`follow`] first. It is a cheap check -
-//! which desktop is in front, and are we on it - and it does nothing almost every time.
-//!
-//! Only a process running with the rights of the computer may step onto `Winlogon`. As the signed-in user
-//! the move fails, the thread stays where it is, and StrCu behaves exactly as 1.x did.
+//! Everyday work happens on the `Default` desktop; the lock screen, the sign-in screen and the UAC prompt are
+//! on `Winlogon`. A thread sees and types only on its own desktop, so one left on `Default` captures black and
+//! types nowhere while those are in front. Every thread that looks or types calls [`follow`] first, a cheap
+//! check that almost always does nothing. Only the computer may step onto `Winlogon`; as the user the move
+//! fails and the thread stays where it is.
 
 use std::cell::RefCell;
 
@@ -33,22 +28,19 @@ const NEEDED: DESKTOP_ACCESS_FLAGS = DESKTOP_ACCESS_FLAGS(
 );
 
 thread_local! {
-    /// The desktop this thread was moved to, kept open while it is in use. `None` means the thread is still
-    /// on the one it was born with.
+    /// The desktop this thread was moved to, kept open while in use; `None` while it is on its own.
     static MOVED_TO: RefCell<Option<(String, HDESK)>> = const { RefCell::new(None) };
 }
 
-/// Puts this thread on the desktop that has the keyboard and the mouse, if it is not there already.
-/// Returns its name, or `None` when the desktop could not be read or entered - then the thread stays where
-/// it was, which is what happens to a program running as the signed-in user while the lock screen is up.
+/// Puts this thread on the desktop with the keyboard and mouse. Returns its name, or `None` when it could not
+/// be read or entered (as the user, at the lock screen) and the thread stays where it was.
 pub fn follow() -> Option<String> {
     let want = input_desktop_name()?;
     if MOVED_TO.with_borrow(|m| m.as_ref().is_some_and(|(on, _)| *on == want)) {
         return Some(want);
     }
     let desk = unsafe { OpenInputDesktop(DESKTOP_CONTROL_FLAGS::default(), true, NEEDED) }.ok()?;
-    // The thread keeps its own desktop until the new one is in place; closing the one a thread is on
-    // leaves it unable to see or type anywhere.
+    // The old desktop is closed only once the new one is in place: a thread on a closed one sees nothing
     if unsafe { SetThreadDesktop(desk) }.is_err() {
         unsafe {
             let _ = CloseDesktop(desk);
@@ -65,15 +57,14 @@ pub fn follow() -> Option<String> {
     Some(want)
 }
 
-/// Whether the desktop in front is one Windows keeps to itself: the lock screen, the sign-in screen, the
-/// "do you want to allow this app" prompt. Everyday work happens on `Default`, and anything else is one of
-/// those - which only a StrCu running as the computer sees at all, so for 1.x this was never true.
+/// Whether the desktop in front is one Windows keeps to itself (lock screen, sign-in, UAC): anything but
+/// `Default`.
 pub fn secure_in_front() -> bool {
     input_desktop_name().is_some_and(|name| name != "Default")
 }
 
-/// The name of the desktop in front ("Default", "Winlogon"), read with the least rights there are, so it
-/// also answers where the thread may not go.
+/// The name of the desktop in front ("Default", "Winlogon"), read with the least rights, so it also answers
+/// where the thread may not go.
 pub fn input_desktop_name() -> Option<String> {
     unsafe {
         let desk = OpenInputDesktop(DESKTOP_CONTROL_FLAGS::default(), false, DESKTOP_READOBJECTS).ok()?;
