@@ -33,9 +33,6 @@ use crate::passkey::Passkey;
 mod pipe;
 
 pub use pipe::{Asked, Asks, Link, as_system};
-pub(crate) use pipe::sid_string;
-#[cfg(test)]
-pub(crate) use pipe::own_sid;
 
 /// The protocol both ends must speak. It goes up whenever an `Ask` or an `Answer` changes in a way an older
 /// window would read wrongly; an `Ask` added for something an older window never asks does not need it.

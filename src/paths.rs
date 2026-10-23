@@ -287,7 +287,7 @@ fn owner_of(path: &Path) -> Result<String> {
         GetNamedSecurityInfoW(PCWSTR(name.as_ptr()), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, Some(&mut owner), None, None, None, &mut sd)
             .ok()
             .with_context(|| format!("{}", path.display()))?;
-        let who = crate::ipc::sid_string(owner);
+        let who = crate::sys::token::sid_string(owner);
         let _ = LocalFree(Some(HLOCAL(sd.0)));
         who.with_context(|| format!("who {} belongs to", path.display()))
     }
@@ -442,7 +442,7 @@ mod tests {
     /// This test's own account, which it may hand things to.
     fn me() -> &'static str {
         static ME: OnceLock<String> = OnceLock::new();
-        ME.get_or_init(|| crate::ipc::own_sid().expect("this process has an account"))
+        ME.get_or_init(|| crate::sys::token::own_sid().expect("this process has an account"))
     }
 
     /// The rule with this account in it as well. Moving a folder out of the way means being allowed to move

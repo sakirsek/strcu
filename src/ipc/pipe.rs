@@ -9,17 +9,12 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use tokio::sync::{mpsc, oneshot};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL,
-    LocalFree,
+    ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL, LocalFree,
 };
 use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
-    SE_KERNEL_OBJECT,
+    ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1, SE_KERNEL_OBJECT,
 };
-use windows::Win32::Security::{
-    GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES, TOKEN_QUERY,
-    TOKEN_USER, TokenUser,
-};
+use windows::Win32::Security::{OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SECURITY_ATTRIBUTES};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_SHARE_MODE, FlushFileBuffers, OPEN_EXISTING,
     PIPE_ACCESS_DUPLEX,
@@ -29,12 +24,12 @@ use windows::Win32::System::Pipes::{
     PIPE_REJECT_REMOTE_CLIENTS, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, WaitNamedPipeW,
 };
 use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, OpenProcessToken};
-use windows::core::{HSTRING, PWSTR};
+use windows::core::HSTRING;
 
 use crate::frame;
 use crate::i18n::Msg;
 use crate::log::ActionLog;
+use crate::sys::token::{own_session, own_sid, sid_string};
 
 use super::{ADMINS, Answer, Ask, Reply, Request, SYSTEM, VERSION, path};
 
@@ -344,31 +339,6 @@ impl Link {
 
 // ---------- who we are ----------
 
-/// This process's session.
-fn own_session() -> u32 {
-    let mut session = u32::MAX;
-    unsafe {
-        let _ = ProcessIdToSessionId(GetCurrentProcessId(), &mut session);
-    }
-    session
-}
-
-/// This process's own account, as an SID string ("S-1-5-18" for the system).
-pub(crate) fn own_sid() -> Option<String> {
-    unsafe {
-        let mut token = HANDLE::default();
-        OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).ok()?;
-        let mut need = 0u32;
-        let _ = GetTokenInformation(token, TokenUser, None, 0, &mut need);
-        let mut buf = vec![0u8; need as usize];
-        let read = GetTokenInformation(token, TokenUser, Some(buf.as_mut_ptr().cast()), need, &mut need);
-        let _ = CloseHandle(token);
-        read.ok()?;
-        let user = &*(buf.as_ptr() as *const TOKEN_USER);
-        sid_string(user.User.Sid)
-    }
-}
-
 /// Whose pipe we are willing to talk to: the computer itself, the administrators - which is what a service
 /// gives what it makes - or `me`, our own account, when StrCu may be running as us. A program running as a
 /// person cannot hand the ownership of what it makes to either of the first two, so a pipe owned by them was
@@ -387,16 +357,6 @@ fn owner_sid(pipe: HANDLE) -> Result<String> {
         let s = sid_string(owner);
         let _ = LocalFree(Some(HLOCAL(sd.0)));
         s.context("the owner could not be read")
-    }
-}
-
-pub(crate) fn sid_string(sid: PSID) -> Option<String> {
-    unsafe {
-        let mut text = PWSTR::null();
-        ConvertSidToStringSidW(sid, &mut text).ok()?;
-        let s = text.to_string().ok();
-        let _ = LocalFree(Some(HLOCAL(text.0.cast())));
-        s
     }
 }
 

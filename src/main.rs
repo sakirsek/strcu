@@ -442,7 +442,7 @@ async fn dev_cmd(cmd: DevCmd) -> Result<()> {
 fn passwd(stdin: bool) -> Result<()> {
     let lang = i18n::term();
     let mut ask = Asking { lines: stdin.then(|| std::io::stdin().lines()) };
-    if agent::elevated() && svc::installed() {
+    if sys::token::elevated() && svc::installed() {
         let new = ask.new_password()?;
         svc::while_stopped(|| auth::reset_password(&new))?;
         println!("{}", lang.t("term.pw_reset"));

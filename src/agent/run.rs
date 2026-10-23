@@ -7,18 +7,15 @@ use std::os::windows::io::IntoRawHandle;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
-use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
+use windows::Win32::Foundation::{HANDLE, HANDLE_FLAG_INHERIT, HANDLE_FLAGS, SetHandleInformation};
 use windows::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
-use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
-use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, OpenProcessToken};
 use windows::Win32::System::WindowsProgramming::GetUserNameW;
 use windows::core::PWSTR;
 
 use crate::files;
 use crate::frame;
 use crate::i18n::{Msg, Written};
-use crate::sys::{apps, clipboard, icons};
+use crate::sys::{apps, clipboard, icons, token};
 
 use super::{Did, Job, MAX_FRAME};
 
@@ -173,42 +170,18 @@ pub(super) fn who() -> Result<Did> {
     let mut name = [0u16; 257];
     let mut len = name.len() as u32;
     unsafe { GetUserNameW(Some(PWSTR(name.as_mut_ptr())), &mut len) }.context("the account name")?;
-    let mut session = u32::MAX;
-    unsafe {
-        let _ = ProcessIdToSessionId(GetCurrentProcessId(), &mut session);
-    }
     Ok(Did::Who {
         // The length counts the closing zero
         user: String::from_utf16_lossy(&name[..(len as usize).saturating_sub(1)]),
-        session,
-        elevated: elevated(),
+        session: token::own_session(),
+        elevated: token::elevated(),
     })
-}
-
-/// Is this process running as administrator?
-pub(crate) fn elevated() -> bool {
-    unsafe {
-        let mut token = HANDLE::default();
-        if OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token).is_err() {
-            return false;
-        }
-        let mut raised = TOKEN_ELEVATION::default();
-        let mut size = 0u32;
-        let read = GetTokenInformation(
-            token,
-            TokenElevation,
-            Some((&raw mut raised).cast()),
-            size_of::<TOKEN_ELEVATION>() as u32,
-            &mut size,
-        );
-        let _ = CloseHandle(token);
-        read.is_ok() && raised.TokenIsElevated != 0
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows::Win32::Foundation::CloseHandle;
     use crate::agent::tests::inheritable_pipe;
 
     #[test]

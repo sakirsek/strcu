@@ -6,13 +6,12 @@ use std::{ffi::c_void, thread, time::Duration};
 
 use anyhow::{Result, bail};
 use serde::Serialize;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::Foundation::{CloseHandle, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DWMWA_CLOAKED, DwmGetWindowAttribute};
-use windows::Win32::Security::{GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation};
 use windows::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
 use windows::Win32::System::Console::{GetConsoleWindow, SetConsoleTitleW};
 use windows::Win32::System::Threading::{
-    OpenProcess, OpenProcessToken, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
+    OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW,
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_MENU;
 use windows::Win32::UI::WindowsAndMessaging::*;
@@ -157,23 +156,7 @@ fn process_info(pid: u32) -> (String, Option<bool>) {
         } else {
             String::new()
         };
-        let mut token = HANDLE::default();
-        let elevated = if OpenProcessToken(proc, TOKEN_QUERY, &mut token).is_ok() {
-            let mut e = TOKEN_ELEVATION::default();
-            let mut ret = 0u32;
-            let ok = GetTokenInformation(
-                token,
-                TokenElevation,
-                Some(&mut e as *mut _ as *mut c_void),
-                size_of::<TOKEN_ELEVATION>() as u32,
-                &mut ret,
-            )
-            .is_ok();
-            let _ = CloseHandle(token);
-            ok.then_some(e.TokenIsElevated != 0)
-        } else {
-            None
-        };
+        let elevated = super::token::elevated_of(proc);
         let _ = CloseHandle(proc);
         (path, elevated)
     }

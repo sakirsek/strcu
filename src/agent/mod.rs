@@ -33,7 +33,6 @@ mod run;
 mod spawn;
 
 pub use run::run;
-pub(crate) use run::elevated;
 pub use spawn::Agent;
 pub(crate) use spawn::STARTING;
 use run::{Mind, done, who};
