@@ -4,10 +4,8 @@
 //! This layer is the second lock behind Cloudflare Access: even if Access is loosened by mistake,
 //! nothing can be done without the password (or a fingerprint that was added with the password).
 //!
-//! The sessions wait for the next worker in a file. Signing out of Windows, switching users or starting the
-//! computer again takes the worker with the session it belongs to (svc.rs), and that is exactly the moment
-//! the phone is wanted most: in front of the sign-in screen, to type the PIN. Only a hash of each cookie is
-//! written down, as with a paired phone's secret, so the file is no way in by itself.
+//! Sessions wait in a file for the next worker: a sign-out or user switch replaces the worker (svc.rs) just
+//! when the phone is wanted most, at the sign-in screen. Only a hash of each cookie is written down.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -51,18 +49,16 @@ pub fn set_password(pw: &str) -> Result<String> {
 }
 
 /// A new password set by an administrator without the old one (`strcu passwd`), while StrCu is stopped.
-/// Every session goes with the old password: the file the next worker takes them from is emptied as well.
+/// Every session goes too, the file included.
 pub fn reset_password(pw: &str) -> Result<()> {
     set_password(pw)?;
     crate::paths::write_atomic(&config::data_dir().join(SESSIONS), b"{}").context(Msg::new("err.config_write"))
 }
 
 pub struct Auth {
-    /// None on a computer where StrCu has just been installed: it runs, but lets nobody in until a password
-    /// is set from the window (`ipc::Ask::Setup`).
+    /// None until a password is set from the window (`ipc::Ask::Setup`); until then nobody gets in.
     hash: Mutex<Option<String>>,
-    /// The hash of each session cookie and when it was opened, in seconds since 1970 - a worker that starts
-    /// again has to tell the time the same way the one before it did.
+    /// Each session cookie's hash and when it was opened, in Unix seconds so the next worker reads it alike.
     sessions: Mutex<HashMap<String, u64>>,
     /// Wrong attempts per source (an address): how many, and when the last one was
     fails: Mutex<HashMap<String, (u32, Instant)>>,
@@ -87,22 +83,19 @@ impl Auth {
         Auth { hash: Mutex::new(hash), sessions: Mutex::new(sessions), fails: Mutex::default(), dir }
     }
 
-    /// Writes the sessions down for the next worker. A failure is nothing to report: the folder belongs to
-    /// the computer, and a session that could not be kept only means signing in again.
+    /// Writes the sessions down for the next worker; a failure only means signing in again.
     fn keep(&self, sessions: &HashMap<String, u64>) {
         if let Ok(text) = serde_json::to_string(sessions) {
             let _ = crate::paths::write_atomic(&self.dir.join(SESSIONS), text.as_bytes());
         }
     }
 
-    /// Is there a password at all? Without one the panel does not listen: there would be no way to tell the
-    /// phone that is allowed in from one that is not.
+    /// Without a password the panel does not listen: nothing would tell an allowed phone from any other.
     pub fn is_set(&self) -> bool {
         self.hash.lock().unwrap().is_some()
     }
 
-    /// The password was changed on the computer: the new one applies at once and every session ends, the
-    /// ones waiting in the file among them.
+    /// The password was changed: it applies at once, and every session ends, the file's included.
     pub fn replace_password(&self, hash: String) {
         *self.hash.lock().unwrap() = Some(hash);
         let mut s = self.sessions.lock().unwrap();
@@ -111,9 +104,8 @@ impl Auth {
         self.fails.lock().unwrap().clear();
     }
 
-    /// Checks the password; wrong attempts from `from` count towards its brute-force brake (both at sign-in and
-    /// when adding a fingerprint). Each source has its own: a guesser on the home network does not lock out
-    /// remote sign-in.
+    /// Checks the password; wrong attempts count towards `from`'s own brake (at sign-in and when adding a
+    /// fingerprint), so a guesser on the home network does not lock out remote sign-in.
     pub fn check_password(&self, pw: &str, from: &str) -> Check {
         // Held during the check: guesses from everywhere are checked one at a time
         let mut fails = self.fails.lock().unwrap();
@@ -173,8 +165,7 @@ impl Auth {
     }
 }
 
-/// A session is over twelve hours after it was opened. A clock that went backwards leaves it open, which is
-/// the harmless way round: the password is still the only way to open one.
+/// A session lasts twelve hours. A clock that went backwards leaves it open: the harmless way round.
 fn still_open(opened: u64, now: u64) -> bool {
     now.saturating_sub(opened) < SESSION_TTL.as_secs()
 }
@@ -192,8 +183,7 @@ fn random_token() -> String {
     random_hex(32)
 }
 
-/// The SHA-256 of a text, as hex. What is written down of a secret - a session cookie here, a paired
-/// phone's secret in pair.rs - is this and never the secret itself.
+/// SHA-256 as hex: what is written down of a secret (a session cookie, a paired phone's) instead of it.
 pub fn sha256_hex(s: &str) -> String {
     Sha256::digest(s.as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
 }
