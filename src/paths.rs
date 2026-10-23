@@ -1,24 +1,16 @@
 //! Where StrCu keeps settings, macros and the log, and how that folder is protected.
 //!
-//! Up to 1.x everything lived under `%LOCALAPPDATA%\strcu`, which the signed-in user may write to. From 2.0
-//! StrCu runs as a service with the rights of the computer itself, so its folder must not be one that any
-//! program running as the user can change: the settings hold the password hash, the registered phones and
-//! the tunnel token, and a service that reads what a user may rewrite hands that user the computer.
+//! StrCu runs as a service with the computer's rights, and its settings hold the password hash, the phones and
+//! the tunnel token: a service that reads what a user may rewrite hands that user the computer. So the folder
+//! is `%ProgramData%\StrCu`, writable by the system and administrators only. 1.x's folder
+//! (`%LOCALAPPDATA%\strcu`) is copied over once.
 //!
-//! So the folder is `%ProgramData%\StrCu`, and only the system and administrators may write there. The
-//! 1.x folder is copied over once, at the first start, so nobody has to set the panel up again.
+//! Only the computer closes it, every time the service starts. StrCu started by a person must go on writing
+//! there, and is no danger: what reads the settings then runs as that same person.
 //!
-//! Closing the folder is the computer's doing, and only the computer's. StrCu started by a person has to go
-//! on writing there, and a folder closed against the one program that uses it is no use to anybody; it is
-//! also no danger, since what reads those settings is then running as that same person. The service closes
-//! the folder every time it starts, so a folder somebody made by hand is closed as soon as the service takes
-//! over, which is the moment it starts to matter.
-//!
-//! Writing a rule is not enough by itself. `%ProgramData%` lets any user create a folder in it, and whoever
-//! creates one owns it; an owner may open their folder again at any time, however we close it. So the
-//! computer also takes the folder - itself and everything in it - and a folder it finds under somebody
-//! else's name is moved out of the way rather than used, since the settings it would hold are the password,
-//! the registered phones and the tunnel token.
+//! A rule is not enough: any user may create a folder in `%ProgramData%`, and its owner can always open it
+//! again. So the computer also takes the folder and everything in it, and one it finds under somebody else's
+//! name is moved out of the way rather than used.
 
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -38,8 +30,8 @@ use windows::Win32::Security::{
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 use windows::core::{HSTRING, PCWSTR};
 
-/// The files 1.x kept, in the order they matter: the settings first, so a half-finished copy still leaves
-/// the panel able to sign people in. `cloudflared` (the program) and `macro-shots` are folders.
+/// The files 1.x kept, settings first, so a half-finished copy still lets people sign in. `cloudflared` and
+/// `macro-shots` are folders.
 const FROM_1X: [&str; 6] =
     ["config.json", "macros.json", "cloudflared-token.txt", "actions.log", "actions.old.log", "macro-shots"];
 
@@ -48,8 +40,7 @@ pub fn data_dir() -> PathBuf {
     PathBuf::from(std::env::var("ProgramData").unwrap_or_else(|_| r"C:\ProgramData".into())).join(crate::brand::KEY)
 }
 
-/// What getting the folder ready came to. The service has no screen to say it on and no log yet while it
-/// happens, so it is kept here and written down once the log is open (svc.rs).
+/// What getting the folder ready came to, kept until the service has a log to write it in (svc.rs).
 #[derive(Default, Debug)]
 pub struct Prepared {
     /// What was taken over from a 1.x install
@@ -58,9 +49,8 @@ pub struct Prepared {
     pub moved_aside: Option<String>,
 }
 
-/// What StrCu is to the settings folder. As the computer it takes the folder, closes it and trusts only a
-/// folder it finds under its own name; as a person it does none of that. The rule and the names are here
-/// rather than spread about so a test can be the computer without being one.
+/// How the computer closes the folder: the owner, the rule and the owners it trusts, in one place so a test
+/// can be the computer without being one.
 #[derive(Clone, Copy)]
 struct Closing<'a> {
     /// Who the folder and everything in it is given to
@@ -71,16 +61,15 @@ struct Closing<'a> {
     trusted: &'a [&'a str],
 }
 
-/// The accounts a settings folder may already belong to. Anybody else made it, and an owner can open what
-/// they own whenever they like.
+/// The accounts a settings folder may already belong to; an owner can open what they own whenever they like.
 const TRUSTED_OWNERS: [&str; 2] = [crate::ipc::SYSTEM, crate::ipc::ADMINS];
 
 const AS_COMPUTER: Closing = Closing { owner: crate::ipc::SYSTEM, rule: CLOSED, trusted: &TRUSTED_OWNERS };
 
 static PREPARED: OnceLock<Prepared> = OnceLock::new();
 
-/// Gets the folder ready, which only the service does: a folder somebody else owns is moved out of the way,
-/// the folder is closed before anything goes in it, and anything 1.x left behind is copied over.
+/// Gets the folder ready (the service only): one somebody else owns is moved aside, it is closed before
+/// anything goes in, and what 1.x left is copied over.
 pub fn prepare() -> Result<&'static Prepared> {
     let how = crate::ipc::as_system().then_some(AS_COMPUTER);
     let done = prepare_in(&data_dir(), &crate::brand::old_data_dir(), how)?;
@@ -92,9 +81,8 @@ pub fn prepared() -> Option<&'static Prepared> {
     PREPARED.get()
 }
 
-/// The worker only makes sure the folder is there. Closing it is the service's doing, every time it starts;
-/// a worker that did it as well would take the reading off the one file the control window may look at
-/// (log.rs), the file that says why a worker would not start.
+/// The worker only makes sure the folder is there. Closing it again would take the reading off the one file
+/// the control window may look at, the one that says why a worker would not start (log.rs).
 pub fn ensure() -> Result<()> {
     let dir = data_dir();
     if dir.exists() {
@@ -103,12 +91,11 @@ pub fn ensure() -> Result<()> {
     std::fs::create_dir_all(&dir).with_context(|| format!("{}", dir.display()))
 }
 
-/// `how` is for the computer alone. The folder is read and written by whoever StrCu is; closing it while
-/// that is a person would shut this very program out of its own settings. `old` is where 1.x kept things.
+/// `how` is for the computer alone: closed by a person, the folder would shut this program out of its own
+/// settings. `old` is where 1.x kept things.
 fn prepare_in(dir: &Path, old: &Path, how: Option<Closing>) -> Result<Prepared> {
     let Some(how) = how else {
-        // Already there and closed to us: the service set it up and is the one that may change it. Nothing
-        // to do here, and nothing wrong either - this is the folder as a user's program sees it.
+        // Closed to us: the service set it up, and this is the folder as a user's program sees it
         if dir.exists() && std::fs::read_dir(dir).is_err() {
             return Ok(Prepared::default());
         }
@@ -117,16 +104,14 @@ fn prepare_in(dir: &Path, old: &Path, how: Option<Closing>) -> Result<Prepared> 
     };
     let moved_aside = take_over(dir, how)?;
     std::fs::create_dir_all(dir).with_context(|| format!("{}", dir.display()))?;
-    // Closed before anything is written in it: a folder made in `%ProgramData%` starts out with what that
-    // folder hands down, which lets any user write, and the settings must not sit in one of those even for
-    // the moment the copying takes.
+    // Closed before anything is written: a new folder in `%ProgramData%` inherits a rule that lets any user
+    // write, and the settings must not sit in it even while they are copied
     set_tree(dir, how)?;
     Ok(Prepared { copied: migrate(old, dir)?, moved_aside })
 }
 
-/// A folder that is already there, before anything of ours goes in it. Returns the name it was moved to,
-/// or None when it was ours to begin with. Taking it is what lets us move it at all, whatever rule the one
-/// who made it left on it.
+/// A folder already there: returns the name it was moved to, or None when it was ours. Taking it first is
+/// what lets us move it, whatever rule its maker left on it.
 fn take_over(dir: &Path, how: Closing) -> Result<Option<String>> {
     if !dir.exists() || owner_of(dir).is_ok_and(|sid| how.trusted.contains(&sid.as_str())) {
         return Ok(None);
@@ -137,8 +122,8 @@ fn take_over(dir: &Path, how: Closing) -> Result<Option<String>> {
     Ok(aside.file_name().map(|n| n.to_string_lossy().into_owned()))
 }
 
-/// `StrCu.untrusted-20261022-134501` beside the folder, or the next free name after it. What was in there is
-/// kept rather than deleted: it is not ours to throw away, and it says what was found.
+/// `StrCu.untrusted-20261022-134501` beside the folder, or the next free name. What was in it is kept: it is
+/// not ours to throw away, and it shows what was found.
 fn free_name(dir: &Path) -> PathBuf {
     let name = dir.file_name().unwrap_or_default().to_string_lossy().into_owned();
     let stamp = crate::log::local_time().replace(['-', ':'], "").replace(' ', "-");
@@ -153,24 +138,20 @@ fn free_name(dir: &Path) -> PathBuf {
     at
 }
 
-/// The system and administrators may do anything, everyone else nothing. `P` keeps later changes to the
-/// parent out.
+/// The system and administrators may do anything, everyone else nothing; `P` keeps the parent's rule out.
 const CLOSED: &str = "D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)";
 
-/// The same, with reading added for everybody who uses this computer (`BU`). `P` again, so the folder's own
-/// rule - which shuts them out - does not come back by inheritance.
+/// The same, readable by everybody who uses this computer (`BU`); `P` so the folder's rule is not inherited.
 const READABLE: &str = "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)";
 
-/// Lets anybody on this computer read one file in the closed folder. It is for the file the service hands
-/// its log over in (log.rs): the control window runs as a person, and when the worker never came up that
-/// file is the only place that says why. Nothing in it was ever secret.
+/// Lets anybody here read one file in the closed folder: the service's log handover (log.rs), the only place
+/// the window can read why the worker never came up. Nothing in it is secret.
 pub fn let_anyone_read(file: &Path) -> Result<()> {
     set_dacl(file, READABLE)
 }
 
-/// Writes a file whole or not at all: into a new file beside it, onto the disk, then into its place in one
-/// step. The worker is stopped without warning at every sign-out, and the power can go; either leaves the
-/// old file or the new one, never half of one - and half a settings file reads as no settings at all.
+/// Writes a file whole or not at all (a new file beside it, onto the disk, then renamed into place): the
+/// worker is stopped without warning at every sign-out, and half a settings file reads as no settings.
 pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write;
     let mut name = path.file_name().unwrap_or_default().to_os_string();
@@ -187,8 +168,7 @@ pub fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     done
 }
 
-/// A text file of ours, without the mark some editors put at the front of one: an administrator who opened
-/// a settings file in one and saved it must not find StrCu reading it as no settings at all.
+/// A text file without the byte-order mark some editors add, so a settings file saved in one still reads.
 pub fn read_text(path: &Path) -> std::io::Result<String> {
     let text = std::fs::read_to_string(path)?;
     Ok(match text.strip_prefix('\u{feff}') {
@@ -197,9 +177,8 @@ pub fn read_text(path: &Path) -> std::io::Result<String> {
     })
 }
 
-/// Gives a folder and everything in it to one account with one rule, and takes away whatever the things
-/// inside had of their own: a file somebody left in there keeps no rule of theirs. Afterwards the one file
-/// the control window may read is opened again, since this is what closed it (log.rs).
+/// Gives a folder and everything in it one owner and one rule, dropping any rule of their own, then opens
+/// the one file the control window may read again (log.rs).
 fn set_tree(dir: &Path, how: Closing) -> Result<()> {
     tree(dir, Some(how.owner), how.rule)?;
     let note = dir.join(crate::log::HANDOVER);
@@ -209,9 +188,8 @@ fn set_tree(dir: &Path, how: Closing) -> Result<()> {
     Ok(())
 }
 
-/// One rule over a whole tree, and an owner with it unless `owner` is None. Writing an owner needs a right
-/// of its own, which even the one who owns a folder does not have, so leaving it out is how what we already
-/// own is opened again.
+/// One rule over a whole tree, with an owner unless `owner` is None: writing an owner needs a right even the
+/// owner lacks, so None is how what we own is opened again.
 fn tree(dir: &Path, owner: Option<&str>, sddl: &str) -> Result<()> {
     allow_taking_what_is_not_ours();
     let (path, sddl) = (HSTRING::from(dir.as_os_str()), HSTRING::from(sddl));
@@ -255,8 +233,8 @@ fn tree(dir: &Path, owner: Option<&str>, sddl: &str) -> Result<()> {
     Ok(())
 }
 
-/// Turns on the two rights it takes to pick up a folder that is somebody else's and write an owner that is
-/// not us. The computer has both; a person has neither, and then the picking up fails where it should.
+/// Turns on the rights to take somebody else's folder and write an owner that is not us. The computer has
+/// both; a person has neither, and the taking fails where it should.
 fn allow_taking_what_is_not_ours() {
     unsafe {
         let mut token = HANDLE::default();
@@ -323,12 +301,8 @@ fn set_dacl(dir: &Path, sddl: &str) -> Result<()> {
 }
 
 #[cfg(test)]
-/// The rule that is on a file or folder now, as SDDL: "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)".
-///
-/// The tests ask Windows what it wrote down rather than whether this process can read the folder. That
-/// second question has a different answer for different people - an administrator is let in by the very
-/// rule that shuts everybody else out - and the tests run as a person here and as an administrator on the
-/// build server.
+/// The rule on a file or folder now, as SDDL: "D:PAI(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)". Tests check this
+/// rather than whether they can read the folder, which differs for an administrator (the build server).
 pub(crate) fn dacl_of(path: &Path) -> Result<String> {
     use windows::Win32::Security::Authorization::{
         ConvertSecurityDescriptorToStringSecurityDescriptorW, GetNamedSecurityInfoW,
@@ -351,8 +325,7 @@ pub(crate) fn dacl_of(path: &Path) -> Result<String> {
     }
 }
 
-/// Copies what 1.x left in `old` into `new`, once: a file already in `new` is never overwritten, so a
-/// second start changes nothing. Returns the names copied.
+/// Copies what 1.x left in `old` into `new` without overwriting anything, so a second start changes nothing.
 fn migrate(old: &Path, new: &Path) -> Result<Vec<String>> {
     if !old.exists() || new.join("config.json").exists() {
         return Ok(Vec::new());
@@ -431,10 +404,8 @@ mod tests {
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
-    /// The tests run as a person, who may give what they own to themselves but not to the computer, and
-    /// who has neither of the two rights `set_tree` turns on. So they are the computer with their own name
-    /// in its place: everything else - taking the folder and everything in it, trusting an owner or not -
-    /// is the same code doing the same thing. B11 tries the real one on a service.
+    /// The tests run as a person, who can neither give things to the computer nor turn on `set_tree`'s rights,
+    /// so they are the computer with their own name in its place; B11 tries the real one on a service.
     fn as_me<'a>(trusted: &'a [&'a str]) -> Closing<'a> {
         Closing { owner: me(), rule: CLOSED, trusted }
     }
@@ -445,15 +416,13 @@ mod tests {
         ME.get_or_init(|| crate::sys::token::own_sid().expect("this process has an account"))
     }
 
-    /// The rule with this account in it as well. Moving a folder out of the way means being allowed to move
-    /// it, which the real rule gives the computer and this one gives the test.
+    /// The rule with this account in it too, so the test may move the folder as the computer would.
     fn mine_too() -> &'static str {
         static RULE: OnceLock<String> = OnceLock::new();
         RULE.get_or_init(|| format!("{CLOSED}(A;OICI;FA;;;{})", me()))
     }
 
-    /// Hands a folder and what is in it back, so the test can clear up after closing it to itself. Only the
-    /// rule: the owner is this account already, and writing one needs a right an owner does not have.
+    /// Opens a folder closed to the test again, so it can clear up (the rule only; the owner is ours already).
     fn open_again(dir: &Path) {
         tree(dir, None, "D:P(A;OICI;FA;;;WD)").expect("what we own is ours to open again");
     }
@@ -498,9 +467,8 @@ mod tests {
         set_dacl(&inside, "D:P(A;OICI;FA;;;WD)").unwrap();
         set_dacl(&file, "D:P(A;;FA;;;WD)").unwrap();
 
-        // Whoever Windows wrote down when this folder was made - this account at a person's computer, the
-        // administrators on a build server - so the folder counts as ours and is taken over where it is.
-        // With this account in the rule as well, so the test can still look at what it closed.
+        // Whoever Windows wrote down as its maker (this account here, the administrators on a build server),
+        // so it counts as ours and is taken over where it is
         let owner = owner_of(&dir).unwrap();
         let ours: [&str; 1] = [&owner];
         let how = Closing { owner: me(), rule: mine_too(), trusted: &ours };
@@ -532,8 +500,7 @@ mod tests {
 
     #[test]
     fn a_folder_somebody_else_made_is_moved_out_of_the_way() {
-        // Anybody may make a folder in %ProgramData%, and the one who makes it owns it. Here that is this
-        // test, and it is not in the list of owners the folder may have.
+        // Anybody may make a folder in %ProgramData% and own it; here that is this test, not a trusted owner
         let (dir, nothing) = (temp("squatted"), temp("no-1x"));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("planted.txt"), "not ours").unwrap();
