@@ -1,13 +1,8 @@
 //! What the window knows about the running StrCu.
 //!
-//! From 2.0 the window does not run the panel - it asks the StrCu that does, over the pipe (ipc.rs). About
-//! once a second it asks for the state and for the log entries it has not seen yet, and keeps them for the
-//! screens to draw.
-//!
-//! StrCu can be started again while the window is open: the service does that by itself when the screen
-//! moves to another session, and an update stops and starts it too. So an ask that fails is tried once more
-//! on a new connection before it is called an error, and a StrCu whose log starts from the beginning again
-//! is taken as the new one it is.
+//! The window does not run the panel; about once a second it asks the StrCu that does (ipc.rs) for the state
+//! and the log entries it has not seen. StrCu may be started again meanwhile (a session change, an update), so
+//! a failed ask is tried once more on a new connection, and a log that starts over means a new StrCu.
 
 use std::time::Duration;
 
@@ -27,8 +22,7 @@ pub struct Live {
     state: ipc::Status,
     /// The log, newest first
     log: Vec<ipc::Event>,
-    /// The session StrCu gave the window after the panel password; the password itself is never kept.
-    /// It lasts as long as a panel session does, so once a day at most.
+    /// The session StrCu gave for the panel password; the password itself is never kept.
     token: Option<String>,
     /// StrCu was stopped from this window: it is not coming back before the computer does.
     stopped: bool,
@@ -52,8 +46,7 @@ pub enum Tried {
 }
 
 impl Live {
-    /// Finds the running StrCu and reads its state once. An error means there is none to talk to, which is
-    /// what the window says then: StrCu runs as a service and the window is only its control screen.
+    /// Finds the running StrCu and reads its state once; an error means there is none to talk to.
     pub fn connect() -> Result<Live> {
         let mut live =
             Live { link: link()?, state: ipc::Status::default(), log: Vec::new(), token: None, stopped: false };
@@ -70,8 +63,7 @@ impl Live {
         &self.log
     }
 
-    /// The settings and the phones that may get in, read fresh: the screens draw what StrCu has, not what
-    /// the window remembers.
+    /// The settings and phones, read fresh: the screens draw what StrCu has, not what the window remembers.
     pub fn settings(&mut self) -> Result<ipc::Settings> {
         match self.ask(Ask::Settings)? {
             Answer::Settings(settings) => Ok(settings),
@@ -101,8 +93,7 @@ impl Live {
         }))
     }
 
-    /// What the setup screens collected. While StrCu has no password this is the one thing it takes without
-    /// one; afterwards it is a change like any other and needs a signed-in window.
+    /// What the setup screens collected; needs no password only while StrCu has none (ipc.rs `Setup`).
     pub fn setup(&mut self, language: &str, password: Option<&str>, lan: bool) -> Result<Said<()>> {
         let ask = Ask::Setup {
             language: language.to_string(),
@@ -152,8 +143,8 @@ impl Live {
         }))
     }
 
-    /// Sorts an answer into done, sign in first, or a sentence to show. A session that ran out is dropped
-    /// here, so the screen asks for the password again instead of trying with a token StrCu has forgotten.
+    /// Sorts an answer into done, sign in first, or a sentence to show; a session that ran out is dropped, so
+    /// the screen asks for the password again.
     fn said<T>(&mut self, answer: Answer, done: impl FnOnce(Answer) -> Option<T>) -> Said<T> {
         match answer {
             Answer::SignInNeeded => {
@@ -168,8 +159,7 @@ impl Live {
         }
     }
 
-    /// Asks again. A StrCu that was started again meanwhile is picked up: the window connects once more and
-    /// reads its log from the beginning.
+    /// Asks again, picking up a StrCu that was started again meanwhile.
     pub fn refresh(&mut self) -> Result<()> {
         if self.ask_state().is_ok() {
             return Ok(());
@@ -202,14 +192,13 @@ impl Live {
     }
 }
 
-/// An answer that does not belong to the ask: the two ends are the same program, so this is a mistake of
-/// ours rather than something to explain.
+/// An answer that does not belong to the ask: both ends are this program, so a mistake of ours.
 fn unexpected(_answer: Answer) -> anyhow::Error {
     anyhow::Error::from(Msg::new("err.internal"))
 }
 
-/// The pipe of the StrCu that is running. Finding none is the one error a person is likely to meet, so it
-/// comes with whatever can be found out about why (`svc::not_running`).
+/// The running StrCu's pipe. Finding none is the error a person is likely to meet, so it says why
+/// (`svc::not_running`).
 fn link() -> Result<Link> {
     Link::connect().map_err(|e| e.context(crate::svc::not_running()))
 }
