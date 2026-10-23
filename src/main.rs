@@ -90,9 +90,7 @@ enum Cmd {
 enum TunnelCmd {
     /// Remote access as the running StrCu sees it
     Status,
-    // Remote access is set up from the window since 2.0, through the running StrCu. These three wrote to the
-    // settings themselves, which a person may not and which the running StrCu would not notice; they are
-    // kept only to say where it is done now, whatever was typed after them.
+    // Remote access is set up in the window, through the running StrCu; these three only say so
     #[command(hide = true)]
     Install {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true, hide = true)]
@@ -222,8 +220,7 @@ enum DevCmd {
 async fn main() {
     sys::init();
     let cli = Cli::parse();
-    // Started without a command (double-click, start with Windows): on error keep the window open so the
-    // message can be read.
+    // Started without a command (a double-click): on error keep the window open so the message can be read
     let own_window = cli.cmd.is_none();
     if let Err(e) = run(cli).await {
         let lang = i18n::term();
@@ -239,14 +236,12 @@ async fn main() {
 /// StrCu without a command: the control window, or status lines when the output is not a terminal.
 async fn start() -> Result<()> {
     window::set_console_title(window::CONSOLE_TITLE);
-    // The window only looks at the StrCu that is running: any number of them may be open, and a window
-    // keeps nothing awake.
+    // Any number of windows may be open; each only looks at the running StrCu
     if std::io::stdout().is_terminal() {
         return tui::run().await;
     }
-    // No terminal to open the window in: a shortcut or a task with its output sent elsewhere. Where the service
-    // is installed StrCu already runs as the computer, and one started here as this person would only fight it
-    // for the port and open the same tunnel again; what the running one is doing is written out instead.
+    // No terminal (a task with its output sent elsewhere). With the service installed another StrCu would only
+    // fight it for the port and the tunnel, so the running one's state is written out instead.
     if svc::installed() {
         return show_state();
     }
@@ -272,9 +267,7 @@ async fn run(cli: Cli) -> Result<()> {
             window::set_console_title(window::CONSOLE_TITLE);
             app::serve_plain(bind, !no_tunnel).await?;
         }
-        // Windows starts these two, and they run with the rights of the computer. The service is the one
-        // that makes the settings folder, closes it and takes a 1.x install over; everything else, the
-        // worker included, only uses what is there.
+        // Windows starts these two, as the computer. Only the service prepares the settings folder (paths.rs)
         Cmd::Service => {
             prepare_data_dir()?;
             svc::run()?;
@@ -299,9 +292,8 @@ async fn run(cli: Cli) -> Result<()> {
     Ok(())
 }
 
-/// The settings folder, before anything reads it: taken over, closed to everyone but the computer and its
-/// administrators, and filled from a 1.x install the first time. What it came to is written in the log as
-/// soon as the service has one (svc.rs); the service has no screen for these lines.
+/// The settings folder, before anything reads it (paths.rs `prepare`); what it came to goes in the log once
+/// the service has one (svc.rs).
 fn prepare_data_dir() -> Result<()> {
     let done = paths::prepare().context(Msg::new("err.data_dir"))?;
     if !done.copied.is_empty() {
@@ -428,11 +420,9 @@ async fn dev_cmd(cmd: DevCmd) -> Result<()> {
     Ok(())
 }
 
-/// `strcu passwd`. The password belongs to the StrCu that is running, so it is changed through it, the way
-/// the window changes it: signed in with the one there is, or set as the first one while there is none. An
-/// administrator sets a new one without the old - the settings are theirs to write anyway, and it is the way
-/// back from a forgotten one - with the service stopped meanwhile, so it starts again with the new password
-/// and no sessions.
+/// `strcu passwd`, through the running StrCu as the window does it: signed in with the current password, or
+/// as the first one. An administrator sets one without the old (the way back from a forgotten one) with the
+/// service stopped meanwhile, so it starts again with no sessions.
 fn passwd(stdin: bool) -> Result<()> {
     let lang = i18n::term();
     let mut ask = Asking { lines: stdin.then(|| std::io::stdin().lines()) };
@@ -474,8 +464,7 @@ fn passwd(stdin: bool) -> Result<()> {
     Ok(())
 }
 
-/// A line as it came on standard input. Windows PowerShell puts a byte-order mark in front of what it pipes
-/// to a program, which would otherwise be the first character of the password - one nobody can type.
+/// A line from standard input, without the byte-order mark Windows PowerShell puts in front of what it pipes.
 fn as_typed(line: &str) -> String {
     line.trim_start_matches('\u{feff}').trim_end().to_string()
 }
@@ -496,8 +485,7 @@ impl Asking {
         }
     }
 
-    /// A new password: typed twice at the terminal, once on standard input. Its length is checked here, as
-    /// the setup screens check it, before anything is sent.
+    /// A new password: typed twice at the terminal, once on standard input; its length is checked here.
     fn new_password(&mut self) -> Result<String> {
         let new = self.line("term.pw_new")?;
         if new.chars().count() < auth::MIN_PASSWORD {
@@ -510,8 +498,7 @@ impl Asking {
     }
 }
 
-/// `strcu doctor`: what StrCu sees of this computer, to read or to paste into a report. It is only shown: the
-/// settings folder is no place for a person's command to write, and nothing ever read the file it used to leave.
+/// `strcu doctor`: what StrCu sees of this computer, to read or paste into a report. It writes nothing.
 fn doctor(json: bool) -> Result<()> {
     let profile = sys::discover::profile();
     let tunnel = match running().and_then(|mut live| remote_lines(&mut live)) {
@@ -591,9 +578,8 @@ fn show_state() -> Result<()> {
     Ok(())
 }
 
-/// Remote access as the running StrCu sees it, in the words of the window's main screen: the address and how
-/// it is, why it failed, and who Access lets in. The settings are not read here: a person may not open the
-/// folder, and only the running StrCu knows whether the tunnel is actually up.
+/// Remote access as the running StrCu sees it, in the main screen's words; only it knows whether the tunnel
+/// is up, and a person may not read the settings.
 fn remote_lines(live: &mut tui::live::Live) -> Result<Vec<String>> {
     use ipc::RemoteState as R;
     let t = i18n::term();
