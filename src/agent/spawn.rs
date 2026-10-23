@@ -32,15 +32,13 @@ use crate::i18n::Msg;
 
 use super::{Did, Job, MAX_FRAME};
 
-/// Held while the agent is started, and while anything else the worker starts is: the agent's ends of its
-/// pipes are inheritable until it has them, and a cloudflared started in that moment would take them along
-/// (std's `Command` hands on every inheritable handle). It would then hold the agent's answers open for as
-/// long as the tunnel runs, and the worker would wait on an agent that is gone.
+/// Held while the agent, or anything else the worker starts, is being started: the agent's pipe ends are
+/// inheritable until it has them, and a cloudflared started then (std's `Command` hands on every inheritable
+/// handle) would hold the agent's answers open for as long as the tunnel runs.
 pub(crate) static STARTING: Mutex<()> = Mutex::new(());
 
-/// The list that names the only handles a new process may take with it. Without one, a process started with
-/// inheritance takes every inheritable handle this process holds at that moment - those another thread is
-/// handing to a cloudflared it is starting just then among them - and keeps them for as long as it lives.
+/// The only handles a new process may take with it. Without it, a process started with inheritance takes
+/// every inheritable handle we hold at that moment, another thread's among them.
 struct OnlyThese {
     /// Windows reads the handles from here until the list is deleted, so they are kept beside it
     handles: Box<[HANDLE]>,
@@ -95,9 +93,8 @@ pub struct Agent {
 unsafe impl Send for Agent {}
 
 impl Agent {
-    /// Starts the agent in `session` with the token of whoever is signed in there. It fails while nobody is
-    /// (the sign-in screen), and for a StrCu that is not running as the computer, since asking Windows for
-    /// another account's token is something only the computer may do.
+    /// Starts the agent in `session` with the signed-in user's token. Fails on the sign-in screen, and for a
+    /// StrCu not running as the computer, which alone may ask for another account's token.
     pub fn start(session: u32) -> Result<Agent> {
         let exe = std::env::current_exe()?;
         let mut cmd: Vec<u16> = format!("\"{}\" agent\0", exe.display()).encode_utf16().collect();
@@ -114,8 +111,8 @@ impl Agent {
                     lpSecurityDescriptor: std::ptr::null_mut(),
                     bInheritHandle: true.into(),
                 };
-                // Two pipes: the agent reads its jobs on stdin and writes its answers on stdout. The ends we
-                // keep are ours alone - a handle the agent inherited would outlive it in any child it started.
+                // Jobs on its stdin, answers on its stdout. Our ends are ours alone: one the agent inherited
+                // would outlive it in any child it started.
                 let (mut jobs_read, mut jobs_write) = (HANDLE::default(), HANDLE::default());
                 CreatePipe(&mut jobs_read, &mut jobs_write, Some(&sa), 0)?;
                 let (mut answers_read, mut answers_write) = (HANDLE::default(), HANDLE::default());
@@ -132,8 +129,7 @@ impl Agent {
                     FILE_ATTRIBUTE_NORMAL,
                     None,
                 )?;
-                // The user's own environment: their folders, their settings. Without it the agent would look
-                // at the computer's.
+                // The user's own environment (their folders), not the computer's
                 let mut env = std::ptr::null_mut();
                 CreateEnvironmentBlock(&mut env, Some(token), false)?;
                 // These three and nothing else of ours
@@ -222,8 +218,7 @@ impl Agent {
         unsafe { WaitForSingleObject(self.process, 0) == WAIT_OBJECT_0 }
     }
 
-    /// One job, one answer. An error means the agent is gone, was not understood or took too long over it,
-    /// and the caller drops it.
+    /// One job, one answer. An error means the agent is gone, garbled or too slow, and the caller drops it.
     pub fn ask(&mut self, job: Job) -> Result<Did> {
         let limit = job.limit();
         self.ask_within(job, limit)
@@ -249,9 +244,8 @@ impl Agent {
         self.adopt(serde_json::from_slice(&answer)?)
     }
 
-    /// A file in an answer is a handle in the agent, which means nothing here. It is duplicated into this
-    /// process and closed there (`DUPLICATE_CLOSE_SOURCE`), so the caller is handed a file of its own and
-    /// nothing is left open on the other side. Everything else about the answer is passed through.
+    /// A file in an answer is a handle in the agent: it is duplicated here and closed there
+    /// (`DUPLICATE_CLOSE_SOURCE`), so the caller gets a file of its own and nothing stays open in the agent.
     fn adopt(&self, did: Did) -> Result<Did> {
         match did {
             Did::Opened { file, name, size } => Ok(Did::Opened { file: self.bring(file)?, name, size }),
@@ -281,9 +275,8 @@ impl Agent {
 
 #[cfg(test)]
 impl Agent {
-    /// An agent started as ourselves, for the tests. It is the same program answering the same jobs over the
-    /// same two pipes; what it does not do is take another account's token, which only the computer may ask
-    /// for. That is the one part of `start` the tests cannot reach, and B11 tries it on a real service.
+    /// An agent started as ourselves, for the tests: the same program and pipes, without another account's
+    /// token, which only the computer may ask for (B11 tries that on a real service).
     fn as_ourselves() -> Option<Agent> {
         use std::process::{Command, Stdio};
 
@@ -335,10 +328,9 @@ impl Drop for Agent {
     }
 }
 
-/// Stops an agent that takes too long over a job. A job it never finishes - a clipboard held by a program
-/// that hangs, a shell folder that never answers - would otherwise keep the lock on the agent, and every job
-/// after it would wait behind it for good. Stopping the agent ends the wait: its end of the answers pipe is
-/// the only one (`OnlyThese`, `STARTING`), so the read in `ask` returns, and the worker starts a new agent.
+/// Stops an agent that takes too long over a job (a clipboard held by a hung program, a shell folder that
+/// never answers), which would otherwise hold every later job up for good. Its end of the answers pipe is the
+/// only one (`OnlyThese`, `STARTING`), so the read in `ask` returns and the worker starts a new agent.
 struct Watch {
     /// When the job under way must be answered by; None once it is
     arm: mpsc::Sender<Option<Instant>>,
@@ -431,9 +423,8 @@ mod tests {
     fn a_process_started_with_the_list_takes_nothing_else_of_ours() {
         use windows::Win32::System::Threading::CreateProcessW;
 
-        // How long the read end of an inheritable pipe stays open after we close our write end, while a
-        // program that lives about a second is running: at once if it did not take the write end, after it
-        // ends if it did. The program is given stdin, stdout and stderr of its own either way.
+        // How long a pipe stays open after we close our write end while a program that lives about a second
+        // runs: it closes at once unless the program took the write end along.
         let open_for = |listed: bool| unsafe {
             let (read, write) = inheritable_pipe();
             let sa = SECURITY_ATTRIBUTES {
