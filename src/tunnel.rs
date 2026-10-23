@@ -1,14 +1,11 @@
 //! StrCu runs cloudflared itself: the tunnel is up while the panel is running and goes down with it.
 //!
-//! The tunnel is defined as "remotely managed" in the Cloudflare dashboard (strcu.example.com ->
-//! localhost:8765); only its token is kept on this computer. The token is passed in an environment variable,
-//! not on the command line, so it does not show up in the process list.
+//! The tunnel is "remotely managed" in the Cloudflare dashboard (strcu.example.com -> localhost:8765); only
+//! its token is kept here, passed in an environment variable so it is not in the process list.
 //!
-//! cloudflared runs with the rights of the computer, as StrCu does, so it lives beside the program
-//! (`%ProgramFiles%\StrCu\cloudflared`), where only administrators may write, and it is one exact file: its
-//! size and SHA-256 are written down here and it is read against them before every start. A cloudflared that
-//! is missing or does not pass is fetched again, so remote access comes back on its own after an update.
-//! The token and the log are settings, and stay in the settings folder (paths.rs).
+//! cloudflared runs with the computer's rights, so it lives beside the program, where only administrators may
+//! write, and it is one exact file: its size and SHA-256 are pinned here and checked before every start. One
+//! that is missing or does not pass is fetched again. The token and the log stay in the settings folder.
 
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -25,8 +22,7 @@ use crate::{config, download, sys};
 
 /// The cloudflared version StrCu is tested with.
 pub const CLOUDFLARED_TAG: &str = "2026.9.3";
-/// The one file of it StrCu runs, `cloudflared-windows-amd64.exe` of that release. The size and the SHA-256
-/// were read from GitHub and from the checksum list in the release notes, which agree.
+/// `cloudflared-windows-amd64.exe` of that release; size and SHA-256 as GitHub and the release notes give them.
 const CLOUDFLARED_SIZE: u64 = 55_366_080;
 const CLOUDFLARED_SHA256: &str = "f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2";
 const ASSET: &str = "cloudflared-windows-amd64.exe";
@@ -37,8 +33,7 @@ fn metrics() -> String {
     format!("127.0.0.1:{}", crate::brand::METRICS)
 }
 
-/// Beside the program. A development build run by hand puts it beside that program, which is that person's
-/// own to write, as is what it runs.
+/// Beside the program (for a build run by hand, beside that one, which is that person's own anyway).
 fn dir() -> PathBuf {
     std::env::current_exe().ok().and_then(|p| p.parent().map(Path::to_path_buf)).unwrap_or_default().join("cloudflared")
 }
@@ -60,8 +55,8 @@ fn log_path() -> PathBuf {
     config::data_dir().join("cloudflared.log")
 }
 
-/// Opens cloudflared so that nothing can change, replace or delete it while it stays open, and reads it whole
-/// against `size` and `sha256`. Kept open while it starts, what runs is what was read.
+/// Opens cloudflared so nothing can change or replace it while open, and reads it whole against `size` and
+/// `sha256`. Kept open while it starts, so what runs is what was read.
 fn verified_against(path: &Path, size: u64, sha256: &str) -> Result<std::fs::File> {
     let not_it = || anyhow::Error::new(Msg::new("err.cloudflared_check").with("path", path.display().to_string()));
     let mut file = std::fs::OpenOptions::new()
@@ -79,12 +74,11 @@ fn verified(path: &Path) -> Result<std::fs::File> {
     verified_against(path, CLOUDFLARED_SIZE, CLOUDFLARED_SHA256)
 }
 
-/// The file that passed last, by its size and time, so the window asking about cloudflared once a second does
-/// not read 55 MB each time. Starting it always reads it whole.
+/// The file that passed last, by size and time, so the window's once-a-second ask does not read 55 MB. A start
+/// always reads it whole.
 static PASSED: Mutex<Option<(u64, SystemTime)>> = Mutex::new(None);
 
-/// The version beside the program, if it is the one written down here; anything else counts as not
-/// installed, and is fetched again.
+/// The version beside the program if it is the pinned one; anything else counts as not installed.
 pub fn installed_version() -> Option<String> {
     let seen = std::fs::metadata(exe()).ok().and_then(|m| Some((m.len(), m.modified().ok()?)))?;
     let known = *PASSED.lock().unwrap() == Some(seen);
@@ -103,9 +97,8 @@ pub enum Ensured {
     Fetched,
 }
 
-/// Makes sure the pinned cloudflared is beside the program before the tunnel starts. That is the case
-/// almost every time; after an update from 2.0.3 or older it is taken over from the settings folder if it
-/// passes, and otherwise it is downloaded.
+/// Makes sure the pinned cloudflared is beside the program: taken over from the settings folder after an
+/// update from 2.0.3 or older if it passes, downloaded otherwise.
 pub async fn ensure() -> Result<Ensured> {
     if installed_version().is_some() {
         return Ok(Ensured::Here);
@@ -117,9 +110,8 @@ pub async fn ensure() -> Result<Ensured> {
     Ok(Ensured::Fetched)
 }
 
-/// Takes cloudflared over from `old` if it is the one written down here. It is copied rather than moved, so
-/// it takes the rules of the folder it goes to, and read again where it ended up. The old folder goes either
-/// way: a cloudflared that does not pass is not kept for anything to start.
+/// Takes cloudflared over from `old` if it is the pinned one: copied, so it takes the new folder's rules, and
+/// checked again there. The old folder goes either way.
 fn adopt(old: &Path, new: &Path, size: u64, sha256: &str) -> Result<bool> {
     let from = old.join(EXE);
     if old == new || !from.exists() {
@@ -135,8 +127,7 @@ fn adopt(old: &Path, new: &Path, size: u64, sha256: &str) -> Result<bool> {
     Ok(passes)
 }
 
-/// Downloads the pinned version from GitHub and checks it against what is written down here, not against
-/// anything the download itself says.
+/// Downloads the pinned version and checks it against what is pinned here, not what the download says.
 pub async fn install(report: download::Report<'_>) -> Result<()> {
     if installed_version().as_deref() == Some(CLOUDFLARED_TAG) {
         return Ok(());
@@ -221,9 +212,8 @@ impl Tunnel {
     }
 }
 
-/// Starts cloudflared and comes back at once, without waiting for a connection: whoever asked watches
-/// `connected` and `exited` itself. The control window does, through the pipe, so it keeps drawing while the
-/// tunnel of a freshly pasted token comes up.
+/// Starts cloudflared and returns at once; the caller watches `connected` and `exited` (the window does, while
+/// a freshly pasted token's tunnel comes up).
 pub fn spawn_with(token: &str) -> Result<Tunnel> {
     let exe = exe();
     // Held until it has started: nothing can change the file between the reading and the running
@@ -251,8 +241,8 @@ pub async fn connected(http: &reqwest::Client) -> bool {
     }
 }
 
-/// Starts cloudflared with the saved token and waits 20 s for at least one connection to Cloudflare. If it
-/// cannot connect it keeps running anyway (cloudflared retries by itself); the state is in `ready`.
+/// Starts cloudflared with the saved token and waits 20 s for a connection; without one it keeps running
+/// (cloudflared retries by itself), and the state is in `ready`.
 pub async fn start() -> Result<Tunnel> {
     start_with(&token().context(Msg::new("err.no_tunnel_token"))?).await
 }
