@@ -1,15 +1,10 @@
 //! StrCu as a Windows service: the part Windows starts at boot, before anyone signs in.
 //!
-//! A service runs in session 0, where there is no screen and no keyboard. StrCu needs both, so the service
-//! itself does almost nothing: it keeps one **worker** running in the session on the physical screen, with
-//! the rights of the computer (SYSTEM). That worker is what serves the panel, looks at the screen and types.
-//!
-//! Being SYSTEM on the screen's session is what lets StrCu 2.0 reach the lock screen, the sign-in screen and
-//! windows that run as administrator. A copy of our own token is placed in that session; nothing less than
-//! SYSTEM may do that, which is why 1.x could not.
-//!
-//! Someone signing out or switching users moves the screen to another session: the worker is started again
-//! there. A worker that stops for any other reason is started again as well.
+//! A service runs in session 0, with no screen or keyboard, so it does almost nothing itself: it keeps one
+//! **worker** running as SYSTEM in the session on the physical screen, which serves the panel, sees the screen
+//! and types. SYSTEM there is what reaches the lock screen, the sign-in screen and administrator windows, and
+//! only SYSTEM may put a token in another session. When the screen moves to another session (sign-out, user
+//! switch) or the worker stops, it is started again.
 
 use std::ffi::OsString;
 use std::sync::mpsc::{self, RecvTimeoutError};
@@ -53,19 +48,15 @@ const STEADY: Duration = Duration::from_secs(5 * 60);
 /// The longest the service waits before starting a worker that keeps stopping again.
 const LONGEST: Duration = Duration::from_secs(60);
 
-/// Started by `strcu service`, which is how Windows starts StrCu. Returns when Windows stops the service.
-/// Run by hand it fails with "the service process could not connect to the service controller".
+/// `strcu service`, how Windows starts StrCu; returns when Windows stops it. Run by hand it cannot connect to
+/// the service controller.
 pub fn run() -> Result<()> {
     service_dispatcher::start(crate::brand::KEY, ffi_service_main)?;
     Ok(())
 }
 
-/// Stops StrCu: the service, which takes the worker down with it, and Windows starts it again at the next
-/// boot. The worker may ask for this although stopping a service needs an administrator - it runs with the
-/// rights of the computer itself, and the panel password is what stands in front of it (see ipc.rs).
-///
-/// A worker started by hand while developing has no service; that is not an error, it is the whole of StrCu
-/// and the caller stops it by returning.
+/// Stops the service and the worker with it, until the next boot. The worker may, as SYSTEM; the panel
+/// password stands in front of it (ipc.rs). Without a service (a worker run by hand) the caller just returns.
 pub fn stop() -> Result<()> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     match manager.open_service(crate::brand::KEY, ServiceAccess::STOP) {
@@ -189,24 +180,21 @@ fn serve(log: &ActionLog) -> Result<()> {
     Ok(())
 }
 
-/// Why nothing answered the control window, in words to show: what Windows says about the service, and the
-/// last thing the service itself said (log.rs). StrCu started by hand is no service and hands nothing over,
-/// and then there is nothing to add to "StrCu is not running".
+/// Why nothing answered the control window: what Windows says about the service, and the last thing the
+/// service said (log.rs).
 pub fn not_running() -> Msg {
     why(state(), crate::log::handed_over().into_iter().next_back().map(|e| e.msg))
 }
 
-/// What Windows says about the service, or `None` when StrCu is not installed as one at all. Asking takes
-/// no rights worth having, so the window may ask as whoever opened it.
+/// What Windows says about the service, or `None` when it is not installed; anybody may ask.
 fn state() -> Option<ServiceState> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT).ok()?;
     let service = manager.open_service(crate::brand::KEY, ServiceAccess::QUERY_STATUS).ok()?;
     service.query_status().ok().map(|s| s.current_state)
 }
 
-/// Runs `f` with the service stopped, and starts it again afterwards if it was running: for a change to the
-/// settings that the running StrCu must neither write over meanwhile nor go on without. Without a service,
-/// or with it stopped already, `f` simply runs. Stopping and starting a service needs an administrator.
+/// Runs `f` with the service stopped, and starts it again if it was running: for a settings change the
+/// running StrCu must neither overwrite nor miss. Needs an administrator.
 pub fn while_stopped<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     let access = ServiceAccess::QUERY_STATUS | ServiceAccess::STOP | ServiceAccess::START;
@@ -236,8 +224,8 @@ pub fn while_stopped<T>(f: impl FnOnce() -> Result<T>) -> Result<T> {
     done
 }
 
-/// Is StrCu installed as a service on this computer, running or not? Only Windows saying there is no such
-/// service counts as no: whatever else stops us asking leaves the answer at yes, the side that trusts less.
+/// Is the service installed, running or not? Only "no such service" counts as no; any other failure to ask
+/// leaves it at yes, the side that trusts less.
 pub fn installed() -> bool {
     let Ok(manager) = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT) else {
         return true;
@@ -286,11 +274,9 @@ struct Worker {
     started: Instant,
 }
 
-/// How soon a worker that stopped by itself is started again. One that stops right after every start -
-/// settings it cannot read, a port it cannot have - would otherwise be started every two seconds for good,
-/// writing two lines in the log each time and pushing the one that says why out of the short file the
-/// control window reads (log.rs). The wait doubles with each quick stop, up to a minute; five minutes of a
-/// worker running forgets them.
+/// How soon a worker that stopped by itself is started again. One that stops right after every start would
+/// otherwise restart every two seconds and push the line saying why out of the short file the window reads
+/// (log.rs). The wait doubles with each quick stop, up to a minute; five minutes of running forgets them.
 #[derive(Default, Debug, PartialEq)]
 struct Backoff {
     /// Quick stops in a row
@@ -313,8 +299,7 @@ impl Backoff {
         }
     }
 
-    /// The worker has been running for `lived`. Long enough, and the quick stops are forgotten; true when
-    /// that ends a run of them the log was told about.
+    /// After `lived` long enough the quick stops are forgotten; true when that ends a run the log was told of.
     fn running(&mut self, lived: Duration) -> bool {
         if lived < STEADY || self.quick == 0 {
             return false;
@@ -343,8 +328,8 @@ impl Worker {
     }
 }
 
-/// Runs `strcu worker` as SYSTEM in the session on the physical screen, on its visible desktop. It is a copy
-/// of this service's own token with the session changed; that is the step a normal program cannot take.
+/// Runs `strcu worker` as SYSTEM on the visible desktop of the physical screen's session, with a copy of the
+/// service's own token moved to that session.
 fn start_worker(session: u32) -> Result<Worker> {
     let exe = std::env::current_exe()?;
     let mut cmd: Vec<u16> = format!("\"{}\" worker\0", exe.display()).encode_utf16().collect();
@@ -368,8 +353,7 @@ fn start_worker(session: u32) -> Result<Worker> {
                 None,
                 None,
                 false,
-                // A console of its own for what it writes, with no window on anyone's screen: StrCu runs
-                // with the rights of the computer here, and such a program shows nothing (S7 in the plan)
+                // No window on anyone's screen for a program with the computer's rights (S7 in the plan)
                 CREATE_UNICODE_ENVIRONMENT | CREATE_NO_WINDOW,
                 None,
                 None,
