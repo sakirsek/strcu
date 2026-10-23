@@ -288,7 +288,7 @@ mod tests {
         assert!(text.contains("https://strcu.example.com"), "{text}");
         // Today an event shows the time alone
         assert!(text.contains("12:00  Computer locked"), "{text}");
-        assert!(text.contains("pair a phone") && text.contains("full log"), "{text}");
+        assert!(text.contains("pair a device") && text.contains("full log"), "{text}");
     }
 
     #[test]

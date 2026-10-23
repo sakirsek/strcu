@@ -1,9 +1,10 @@
 # StrCu
 
-**Control your Windows PC from your phone.**
+**Control your Windows PC from your phone, a tablet or another computer.**
 
 When you are away from the desk, StrCu replaces calling someone at home and talking them through "open that
-program, click there". It is a single exe that serves a web panel; the phone needs nothing but its browser.
+program, click there". It is a single exe that serves a web panel, made for the phone first; whatever opens it
+needs nothing but a browser.
 
 <p align="center">
   <img src="docs/panel.png" alt="The StrCu panel on a phone, tab by tab: the live screen with a crosshair on a file, the keyboard with modifier keys, the list of clickable elements, and open windows with their app icons" width="100%">
@@ -23,12 +24,13 @@ program, click there". It is a single exe that serves a web panel; the phone nee
   Your own things - apps, files, the clipboard - are done as you, never as the computer.
 - **Windows and apps:** bring a window to the front, maximize or close it; open any app from the Start menu.
 - **Files:** download from Downloads, Desktop, Documents, Pictures and Videos, or the file selected in File
-  Explorer; send files from the phone into Downloads.
+  Explorer; send files into the computer's Downloads.
 - **Macros:** record what you do in the panel or build the steps yourself (clicks, keys, text, apps, windows,
   waits, repeats), then run them by hand or on a schedule.
-- **Phone first, tablets too:** on a tablet the screen image fills the page and every control stays in view.
+- **Phone first, tablets and computers too:** on a tablet or in a wide browser window the screen image fills the
+  page and every control stays in view; a mouse taps, holds and drags like a finger.
 - **On your home Wi-Fi** out of the box, and **from anywhere** through a free Cloudflare Tunnel if you want.
-- **Sign in** with a password, pair a phone once with a QR code, or use a passkey (fingerprint / Face ID).
+- **Sign in** with a password, pair a device once with a QR code, or use a passkey (fingerprint / Face ID).
 - English and Turkish.
 
 ## Install
@@ -43,9 +45,13 @@ It downloads the latest release, checks its SHA-256 checksum, installs it to `%P
 up as a Windows service, adds StrCu to the Start menu and the desktop, and opens the first-start setup. The
 settings live in `%ProgramData%\StrCu`, which only administrators may write to; the installer makes sure of
 that before anything goes in, and a folder of that name left by anyone else is moved aside rather than used.
-An older StrCu's settings are copied over while installing - the password, paired phones, passkeys, macros
+An older StrCu's settings are copied over while installing - the password, paired devices, passkeys, macros
 and the tunnel - so nothing has to be set up again, and what that older install kept is left where it was. Running the same
-line again updates StrCu (settings stay). To remove StrCu with all its settings, shortcuts and its service:
+line again updates StrCu (settings stay).
+
+To remove StrCu with all its settings, shortcuts and its service, uninstall it in **Settings → Apps → Installed
+apps**, or in StrCu's own settings (**S**, then **9**); both ask for administrator approval and run a copy of the
+installer kept in `%ProgramFiles%\StrCu`. The same from PowerShell:
 
 ```
 & ([scriptblock]::Create((irm https://github.com/sakirsek/strcu/releases/latest/download/install.ps1))) -Uninstall
@@ -64,7 +70,7 @@ StrCu opens in a terminal window. The first start is a short setup:
 
 1. **Language** (Windows' display language is offered first).
 2. **Panel password**, at least 10 characters (kept as an argon2 hash).
-3. **Home network:** whether phones on your Wi-Fi may reach the panel. Windows then asks once whether StrCu may
+3. **Home network:** whether devices on your Wi-Fi may reach the panel. Windows then asks once whether StrCu may
    accept connections; with "Private networks" selected, choose Allow.
 4. **Remote access** through Cloudflare, optional and possible later ([below](#remote-access-optional)).
 
@@ -74,9 +80,10 @@ asked about that, because the service is what StrCu is.
 <img src="docs/terminal.png" alt="StrCu's main screen: the addresses to open on the phone (home network, remote, this computer) and recent events such as a phone paired, sign-ins and a wrong password" width="640">
 
 After that the main screen shows where the phone can open the panel and the important events: sign-ins and
-failed attempts with where they came from, phones paired, fingerprints added, the computer locked, files sent or
-received, the clipboard read, the tunnel coming and going. **P** pairs a phone, **S** opens the settings
-(language, password, home network, remote access, this install, paired phones and fingerprints, port),
+failed attempts with where they came from, devices paired, fingerprints added, the computer locked, files sent or
+received, the clipboard read, the tunnel coming and going. **P** pairs a device, **S** opens the settings
+(language, password, home network, remote access, this install, paired devices and fingerprints, port, stop,
+uninstall),
 **L** shows the full log and **Q** closes the window.
 
 The window is a window onto the StrCu that is running, not StrCu itself: closing it leaves the panel and the
@@ -124,7 +131,8 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
   image is fetched every 2.5 s instead.
 - **Keyboard:** a text box (types into the foreground window), modifier keys held for the next key, common keys,
   arrows, F1–F12 and recent shortcuts. **Clipboard:** *Get PC clipboard* shows the text copied on the computer,
-  to copy on the phone; *Put on PC clipboard* sends the text in the box, to paste on the computer with Ctrl+V.
+  and *Copy here* copies it on your side; *Put on PC clipboard* sends the text in the box, to paste on the
+  computer with Ctrl+V.
   Only when asked, never on its own (it may hold a password just copied).
 - **Elements:** named clickable elements of the foreground window and the taskbar, filterable by name and kind.
 - **Windows:** open windows with their app icons; bring to front, maximize or close. **Open an app** lists the
@@ -163,11 +171,11 @@ On the Files tab:
 
 <img src="docs/files.png" alt="The Files tab on a phone: buttons to get the File Explorer selection and to send files from the phone, the folder chips, the Downloads folder with its subfolders and newest files, one of them selected, and the Download button with its name and size" width="320">
 
-- **To the phone:** the Downloads, Desktop, Documents, Pictures and Videos folders (wherever Windows keeps them,
+- **From the computer:** the Downloads, Desktop, Documents, Pictures and Videos folders (wherever Windows keeps them,
   OneDrive included), folders first and then the newest files. A tap selects a file and **Download** under the
   list, showing its name and size, gets it; so a wrong tap costs no data. **Get File Explorer selection**
   downloads what is selected in File Explorer on the computer; with several selected, a list to choose from.
-- **From the phone:** **Send from phone** puts files into Downloads. They travel in 4 MB pieces, so large files
+- **To the computer:** **Send to computer** puts files into Downloads. They travel in 4 MB pieces, so large files
   get through the tunnel too (Cloudflare takes at most 100 MB a request), and keep a temporary name until they
   are complete. A file of the same name is never replaced: the new one becomes `photo (1).jpg`.
 
@@ -273,9 +281,9 @@ needs the current password, or an administrator (`strcu passwd`, below).
 
 Pairing (`src/pair.rs`): the code is open only while its screen is shown, for five minutes, works once, and
 closes after five wrong tries. The QR code carries it after `#`, which browsers never send to the server, and
-the panel removes it from the address at once. The paired phone's `HttpOnly` cookie works only at the address
-it was paired on, and only a SHA-256 hash of its secret is kept. Remove a phone in Settings → 6, or from the
-phone with "Unpair" under More.
+the panel removes it from the address at once. The paired device's `HttpOnly` cookie works only at the address
+it was paired on, and only a SHA-256 hash of its secret is kept. Remove a device in Settings → 6, or from the
+device itself with "Unpair" under More.
 
 Passkeys (`src/passkey.rs`): the private key never leaves the phone; StrCu keeps the public key and checks the
 one-time challenge, origin, site hash, user verification, ES256 signature and signature counter. No attestation

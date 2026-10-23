@@ -413,9 +413,10 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
                 $have = (Get-CimInstance Win32_Service -Filter "Name='$name'").PathName
                 if ($have -ne $want) { & sc.exe config $name binPath= $want start= auto | Out-Null }
             } else {
-                New-Service -Name $name -BinaryPathName "`"$exe`" service" -DisplayName 'StrCu' -StartupType Automatic `
-                    -Description 'StrCu: control this computer from your phone.' | Out-Null
+                New-Service -Name $name -BinaryPathName "`"$exe`" service" -DisplayName 'StrCu' -StartupType Automatic | Out-Null
             }
+            # Set on updates too, so older installs read the same
+            & sc.exe description $name 'StrCu: control this computer from a phone, a tablet or another computer.' | Out-Null
             # If StrCu itself ever stops, Windows starts it again rather than leaving the phone with nothing
             & sc.exe failure $name reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
 

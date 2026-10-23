@@ -33,7 +33,7 @@ use i18n::Msg;
 use sys::{apps, input, power, screen, uia, window};
 
 #[derive(Parser)]
-#[command(name = "strcu", version, about = "Use your computer from your phone")]
+#[command(name = "strcu", version, about = "Use your computer from your phone, a tablet or another computer")]
 struct Cli {
     /// Without a command StrCu opens in the terminal: the setup on the first start, then the main screen.
     #[command(subcommand)]
