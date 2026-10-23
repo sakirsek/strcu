@@ -17,8 +17,12 @@
 #
 #   & ([scriptblock]::Create((irm https://github.com/sakirsek/strcu/releases/latest/download/install.ps1))) -Uninstall
 #
+# Uninstall in Settings -> Apps -> Installed apps, and in StrCu's own settings, does the same with a copy of this
+# script kept beside the program.
+#
 # Options: -Yes uninstalls without asking; -NoStart does not open StrCu's window afterwards; -From <folder>
-# installs strcu.exe and strcu.exe.sha256 from a folder instead of the latest release.
+# installs strcu.exe and strcu.exe.sha256 from a folder instead of the latest release; -Pause waits for Enter
+# before the window closes.
 #
 # This file is ASCII only: Windows PowerShell reads a downloaded script as Latin-1, so Turkish letters are
 # written as {c} {g} {i} {I} {o} {s} {u} ... and put in when the text is shown.
@@ -28,6 +32,7 @@ param(
     [switch]$Yes,
     [switch]$NoStart,
     [string]$From,
+    [switch]$Pause,
     # The script starts itself again with administrator rights for the half that needs them (the service, the
     # program folder, the settings). These three are how the two halves talk; they are not for typing by hand.
     [switch]$SystemOnly,
@@ -60,6 +65,8 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
     $desktopDir = if ($env:STRCU_DESKTOP) { $env:STRCU_DESKTOP } else { [Environment]::GetFolderPath('Desktop') }
     $desktop = Join-Path $desktopDir 'StrCu.lnk'
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
+    # What Settings -> Apps -> Installed apps lists
+    $appKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$name"
     $rule = 'StrCu'
     # What 1.x kept and 2.0 takes over, settings first. The tunnel program itself is not among them: it runs
     # with the computer's rights, and one that sat in the person's own folder could have been changed by
@@ -130,12 +137,15 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
     if (-not $lang) { $lang = (Get-UICulture).TwoLetterISOLanguageName }
     $turkish = $lang -eq 'tr'
 
-    function Text([string]$en, [string]$tr) {
-        if (-not $turkish) { return $en }
+    function Letters([string]$s) {
         $letters = @(('{c}', 0xE7), ('{C}', 0xC7), ('{g}', 0x11F), ('{G}', 0x11E), ('{i}', 0x131), ('{I}', 0x130),
                      ('{o}', 0xF6), ('{O}', 0xD6), ('{s}', 0x15F), ('{S}', 0x15E), ('{u}', 0xFC), ('{U}', 0xDC))
-        foreach ($l in $letters) { $tr = $tr.Replace($l[0], [string][char]$l[1]) }
-        $tr
+        foreach ($l in $letters) { $s = $s.Replace($l[0], [string][char]$l[1]) }
+        $s
+    }
+
+    function Text([string]$en, [string]$tr) {
+        if ($turkish) { Letters $tr } else { $en }
     }
 
     # The administrator half has a window of its own that nobody sees, so its lines go to a file as well and
@@ -294,6 +304,51 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
         $true
     }
 
+    # The copy of this script that Uninstall in Installed apps and in StrCu's window runs: nothing to download
+    # then, and like the program beside it, only administrators can change it. $null when there is none.
+    function Keep-Installer {
+        $copy = Join-Path $dir 'install.ps1'
+        $new = Join-Path $dir 'install.new.ps1'
+        try {
+            if (Is-Whole $selfSource) {
+                [IO.File]::WriteAllText($new, $selfSource, [Text.Encoding]::ASCII)
+            } else {
+                # An administrator who ran `irm | iex`: this script has no file of its own (see Run-Elevated)
+                Invoke-WebRequest "https://github.com/$repo/releases/latest/download/install.ps1" -UseBasicParsing -OutFile $new
+            }
+            & icacls.exe $new /setowner '*S-1-5-32-544' /q | Out-Null
+            if ((Is-Whole ([IO.File]::ReadAllText($new))) -and (Only-Admins-Change $new)) {
+                Move-Item -LiteralPath $new -Destination $copy -Force
+                return $copy
+            }
+        } catch {}
+        Remove-Item -LiteralPath $new -Force -ErrorAction SilentlyContinue
+        $null
+    }
+
+    # StrCu in Settings -> Apps -> Installed apps, with its icon, version and an Uninstall that runs the copy above.
+    # The window the copy opens waits for Enter, so what it did can be read; tools such as winget use the quiet one.
+    function Register-App([string]$version, [string]$copy) {
+        $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $run = "`"$ps`" -NoProfile -ExecutionPolicy Bypass -File `"$copy`" -Uninstall"
+        $size = (Get-ChildItem -LiteralPath $dir -Recurse -File | Measure-Object Length -Sum).Sum
+        New-Item -Path $appKey -Force | Out-Null
+        $texts = [ordered]@{
+            DisplayName = $name
+            DisplayVersion = $version
+            DisplayIcon = $exe
+            Publisher = Letters '{S}akir {S}ek'
+            URLInfoAbout = "https://github.com/$repo"
+            InstallLocation = $dir
+            InstallDate = (Get-Date).ToString('yyyyMMdd')
+            UninstallString = "$run -Pause"
+            QuietUninstallString = "$run -Yes"
+        }
+        foreach ($k in $texts.Keys) { New-ItemProperty $appKey -Name $k -Value $texts[$k] -PropertyType String -Force | Out-Null }
+        $numbers = [ordered]@{ NoModify = 1; NoRepair = 1; EstimatedSize = [int]($size / 1KB) }
+        foreach ($k in $numbers.Keys) { New-ItemProperty $appKey -Name $k -Value $numbers[$k] -PropertyType DWord -Force | Out-Null }
+    }
+
     function Install-System {
         $tmp = Join-Path ([IO.Path]::GetTempPath()) ('strcu-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory $tmp | Out-Null
@@ -371,6 +426,15 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
 
             Start-Service -Name $name
             (Get-Service -Name $name).WaitForStatus('Running', '00:00:30')
+            # Not worth failing an install over: the command in the README uninstalls all the same
+            $copy = Keep-Installer
+            try {
+                if (-not $copy) { throw 'no copy' }
+                Register-App $version $copy
+            } catch {
+                Say 'StrCu could not be added to Installed apps; the command in the README uninstalls it.' `
+                    'StrCu Y{u}kl{u} uygulamalar''a eklenemedi; README''deki komutla kald{i}r{i}labilir.' 'Yellow'
+            }
             if ($update) {
                 Say "Updated: $exe" "G{u}ncellendi: $exe" 'Green'
             } else {
@@ -380,6 +444,8 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
                     "  Windows ile, kimse giri{s} yapmadan {o}nce servis olarak ba{s}l{i}yor"
                 Say "  the home network is open on port $port (private networks)" `
                     "  ev a{g}{i} $port portunda a{c}{i}k ({o}zel a{g}lar)"
+                Say '  uninstall: Settings -> Apps -> Installed apps, or StrCu''s own settings' `
+                    '  kald{i}rmak i{c}in: Ayarlar -> Uygulamalar -> Y{u}kl{u} uygulamalar ya da StrCu''nun ayarlar{i}'
             }
         } finally {
             # Left only when something failed before the copy took the program's place
@@ -397,6 +463,7 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
         Stop-Under $dir
         Stop-Under $data
         & netsh advfirewall firewall delete rule name="$rule" | Out-Null
+        Remove-Item -Path $appKey -Recurse -Force -ErrorAction SilentlyContinue
         foreach ($d in $dir, $data) {
             if (Test-Path $d) {
                 for ($i = 0; ; $i++) {
@@ -475,6 +542,8 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
         }
         Shortcut $startMenu
         Shortcut $desktop
+        # Windows keeps the icons it has drawn: shortcuts from before StrCu had one would stay blank
+        try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -show } catch {}
         if (Test-Path $oldExe) {
             Say "Its own files are left where they are, to go back to: $old" `
                 "Kendi dosyalar{i} geri d{o}nebilmek i{c}in yerinde b{i}rak{i}ld{i}: $old"
@@ -551,6 +620,9 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
     } catch {
         Say "Failed: $($_.Exception.Message)" "Olmad{i}: $($_.Exception.Message)" 'Red'
         if ($SystemOnly) { exit 1 }
+    } finally {
+        # Started from Installed apps or StrCu's window, whose new window closes as soon as this ends
+        if ($Pause -and -not $SystemOnly) { [void](Read-Host (Text 'Press Enter to close' 'Kapatmak i{c}in Enter''a bas')) }
     }
 }
 
