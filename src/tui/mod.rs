@@ -20,7 +20,7 @@ use anyhow::Result;
 pub use preview::preview;
 
 use crate::i18n::{self, Lang, Msg};
-use live::{Live, Said, Tried};
+use live::{Gone, Live, Said, Tried};
 use crate::sys;
 use frame::{Frame, Span, Tone, span};
 
@@ -114,8 +114,12 @@ pub async fn run() -> Result<()> {
         let t = i18n::term();
         let mut f = Frame::default();
         header(&mut f, "", Vec::new());
-        // Closing the window leaves StrCu running - unless the window is what stopped it
-        let (tone, line) = if live.is_stopped() { (Tone::Warn, "set.stopped") } else { (Tone::Dim, "dash.closing") };
+        // Closing the window leaves StrCu running - unless the window is what stopped or uninstalled it
+        let (tone, line) = match live.gone() {
+            Some(Gone::Stopped) => (Tone::Warn, "set.stopped"),
+            Some(Gone::Uninstalling) => (Tone::Warn, "set.uninstalling"),
+            None => (Tone::Dim, "dash.closing"),
+        };
         f.text(tone, t.t(line));
         io.draw(&f);
     }

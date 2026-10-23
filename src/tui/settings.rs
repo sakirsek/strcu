@@ -1,18 +1,24 @@
-//! Settings: language, password, home network, remote access, this install, phones, port.
+//! Settings: language, password, home network, remote access, this install, phones, port; stopping and
+//! uninstalling StrCu.
 //!
 //! Nothing here writes the settings any more. The window asks the running StrCu to change them (live.rs) and
 //! StrCu is the only one that may (paths.rs), so every item below sends one ask from the closed list and
 //! shows what came back. Anything that changes something needs the panel password once per window, which
 //! `super::sign_in` asks for when StrCu says so.
 
+use std::path::{Path, PathBuf};
+
 use anyhow::Result;
+use windows::Win32::UI::Shell::ShellExecuteW;
+use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+use windows::core::{HSTRING, w};
 
 use super::frame::{Frame, Span, Tone, span};
 use super::live::{Live, Said};
 use super::wizard;
 use super::{Io, Notice, Step, choose, footer, header, hint_back, option, prompt, read_line};
 use crate::i18n::{self, Lang, Msg};
-use crate::ipc;
+use crate::{brand, ipc};
 use crate::pair::unix_now;
 
 /// What the menu shows next to each item.
@@ -36,7 +42,7 @@ pub fn menu_view(t: &Lang, v: &Values, typed: &str, notice: Option<&Notice>) -> 
     let mut f = Frame::default();
     header(&mut f, &title(t, ""), Vec::new());
     let on_off = |on: bool| if on { span(Tone::Ok, t.t("ui.on")) } else { span(Tone::Dim, t.t("ui.off")) };
-    let items: [(&str, Span); 8] = [
+    let items: [(&str, Span); 9] = [
         ("set.language", span(Tone::Plain, &v.lang)),
         ("set.password", span(Tone::Dim, t.t("set.change"))),
         ("set.lan", on_off(v.lan)),
@@ -48,6 +54,7 @@ pub fn menu_view(t: &Lang, v: &Values, typed: &str, notice: Option<&Notice>) -> 
         ("set.phones", span(Tone::Plain, t.render(&Msg::new("set.registered").with("n", v.passkeys)))),
         ("set.port", span(Tone::Plain, v.port.to_string())),
         ("set.stop", span(Tone::Dim, t.t("set.stop_note"))),
+        ("set.uninstall", span(Tone::Dim, t.t("set.uninstall_note"))),
     ];
     let w = items.iter().map(|(k, _)| t.t(k).chars().count()).max().unwrap_or(0) + 3;
     for (i, (k, value)) in items.into_iter().enumerate() {
@@ -113,7 +120,7 @@ pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
         let v = values(live)?;
         let t = i18n::term();
         let shown = notice.take();
-        let r = match choose(io, 8, None, |typed| menu_view(t, &v, typed, shown.as_ref())).await {
+        let r = match choose(io, 9, None, |typed| menu_view(t, &v, typed, shown.as_ref())).await {
             Step::Done(1) => language(io, live).await?,
             Step::Done(2) => password(io, live).await?,
             Step::Done(3) => lan(io, live, v.lan).await?,
@@ -121,11 +128,12 @@ pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
             Step::Done(5) => install(io, &v).await?,
             Step::Done(6) => phones(io, live).await?,
             Step::Done(7) => port(io, live, v.port, v.remote.is_some()).await?,
-            Step::Done(_) => stop(io, live).await?,
+            Step::Done(8) => stop(io, live).await?,
+            Step::Done(_) => uninstall(io, live).await?,
             Step::Back => return Ok(Step::Back),
             Step::Quit => return Ok(Step::Quit),
         };
-        if live.is_stopped() {
+        if live.gone().is_some() {
             return Ok(Step::Back);
         }
         match r {
@@ -378,6 +386,64 @@ async fn stop(io: &mut impl Io, live: &mut Live) -> Result<Step<Option<Notice>>>
         }
     }
     Ok(Step::Back)
+}
+
+// ---------- uninstalling StrCu ----------
+
+/// The copy of install.ps1 the installer keeps beside the program; Uninstall in Installed apps runs it too.
+fn uninstaller() -> PathBuf {
+    let programs = std::env::var("ProgramFiles").unwrap_or_else(|_| r"C:\Program Files".into());
+    PathBuf::from(programs).join(brand::KEY).join("install.ps1")
+}
+
+pub fn uninstall_view(t: &Lang, typed: &str) -> Frame {
+    let mut f = Frame::default();
+    header(&mut f, &title(t, "set.uninstall"), Vec::new());
+    f.text(Tone::Warn, t.t("set.uninstall_ask"));
+    f.blank();
+    f.text(Tone::Dim, t.t("set.uninstall_how"));
+    f.blank();
+    option(&mut f, 1, &t.t("set.uninstall_do"), None);
+    option(&mut f, 2, &t.t("common.cancel"), None);
+    f.blank();
+    prompt(&mut f, t, Some(2), typed);
+    footer(&mut f, &[hint_back(t)]);
+    f
+}
+
+/// Starts the uninstaller in a window of its own, the one Installed apps would open, and closes this one: the
+/// uninstaller stops every StrCu program, this window among them. Not an ask to StrCu: what decides is
+/// Windows' administrator approval, which an administrator at this computer has without any panel password.
+async fn uninstall(io: &mut impl Io, live: &mut Live) -> Result<Step<Option<Notice>>> {
+    let t = i18n::term();
+    match choose(io, 2, Some(2), |typed| uninstall_view(t, typed)).await {
+        Step::Done(1) => {}
+        Step::Done(_) | Step::Back => return Ok(Step::Done(None)),
+        Step::Quit => return Ok(Step::Quit),
+    }
+    let script = uninstaller();
+    if !script.is_file() {
+        let missing = Msg::new("set.uninstall_missing").with("path", script.display().to_string());
+        return Ok(Step::Done(Some(Notice::Err(missing))));
+    }
+    if !start_uninstaller(&script) {
+        return Ok(Step::Done(Some(Notice::Err(Msg::new("set.uninstall_failed")))));
+    }
+    live.uninstalling();
+    Ok(Step::Back)
+}
+
+/// Windows PowerShell in a new console window. It waits for Enter at the end, so what it did can be read.
+fn start_uninstaller(script: &Path) -> bool {
+    let windir = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+    let ps = HSTRING::from(format!(r"{windir}\System32\WindowsPowerShell\v1.0\powershell.exe"));
+    let args = HSTRING::from(format!(
+        r#"-NoProfile -ExecutionPolicy Bypass -File "{}" -Uninstall -Yes -Pause"#,
+        script.display()
+    ));
+    // Started in the Windows folder rather than the program folder, which the uninstaller deletes
+    let r = unsafe { ShellExecuteW(None, w!("open"), &ps, &args, &HSTRING::from(windir), SW_SHOWNORMAL) };
+    r.0 as isize > 32
 }
 
 // ---------- port ----------

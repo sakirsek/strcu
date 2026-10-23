@@ -223,6 +223,7 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("15c-phones", settings::phones_view(t, &phones, unix_now(), "", None)),
         ("16-port", settings::port_view(t, "8765", None)),
         ("16b-stop", settings::stop_view(t, "")),
+        ("16d-uninstall", settings::uninstall_view(t, "")),
         ("16c-install", settings::install_view(t, &values, "")),
     ];
     std::fs::create_dir_all(dir)?;

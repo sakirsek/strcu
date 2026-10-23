@@ -24,8 +24,16 @@ pub struct Live {
     log: Vec<ipc::Event>,
     /// The session StrCu gave for the panel password; the password itself is never kept.
     token: Option<String>,
-    /// StrCu was stopped from this window: it is not coming back before the computer does.
-    stopped: bool,
+    /// Why there is nothing left to show, once StrCu was stopped or uninstalled from this window
+    gone: Option<Gone>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Gone {
+    /// Not coming back before the computer does
+    Stopped,
+    /// The uninstaller is running in a window of its own, and stops this one
+    Uninstalling,
 }
 
 /// What StrCu said about something the window asked it to do.
@@ -49,7 +57,7 @@ impl Live {
     /// Finds the running StrCu and reads its state once; an error means there is none to talk to.
     pub fn connect() -> Result<Live> {
         let mut live =
-            Live { link: link()?, state: ipc::Status::default(), log: Vec::new(), token: None, stopped: false };
+            Live { link: link()?, state: ipc::Status::default(), log: Vec::new(), token: None, gone: None };
         live.ask_state()?;
         Ok(live)
     }
@@ -124,14 +132,19 @@ impl Live {
             _ => None,
         });
         if matches!(said, Said::Done(())) {
-            self.stopped = true;
+            self.gone = Some(Gone::Stopped);
         }
         Ok(said)
     }
 
-    /// Was StrCu stopped from this window? Then there is nothing left to show.
-    pub fn is_stopped(&self) -> bool {
-        self.stopped
+    /// The uninstaller was started from this window (settings.rs).
+    pub fn uninstalling(&mut self) {
+        self.gone = Some(Gone::Uninstalling);
+    }
+
+    /// Was StrCu stopped or uninstalled from this window? Then there is nothing left to show.
+    pub fn gone(&self) -> Option<Gone> {
+        self.gone
     }
 
     /// Pairing a phone: open a code, watch it, close it again.
