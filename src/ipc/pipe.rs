@@ -1,14 +1,16 @@
 //! The pipe itself: the listening end in the worker, the asking end in the window, the messages between
 //! them, and the checks on who is at the other end (see mod.rs for why each one is there).
 
+use std::fs::File;
+use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use tokio::sync::{mpsc, oneshot};
 use windows::Win32::Foundation::{
-    CloseHandle, ERROR_BROKEN_PIPE, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE,
-    HANDLE, HLOCAL, LocalFree,
+    CloseHandle, ERROR_NO_DATA, ERROR_PIPE_BUSY, ERROR_PIPE_CONNECTED, GENERIC_READ, GENERIC_WRITE, HANDLE, HLOCAL,
+    LocalFree,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSidToStringSidW, ConvertStringSecurityDescriptorToSecurityDescriptorW, GetSecurityInfo, SDDL_REVISION_1,
@@ -20,7 +22,7 @@ use windows::Win32::Security::{
 };
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_FLAG_FIRST_PIPE_INSTANCE, FILE_SHARE_MODE, FlushFileBuffers, OPEN_EXISTING,
-    PIPE_ACCESS_DUPLEX, ReadFile, WriteFile,
+    PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId, PIPE_READMODE_BYTE,
@@ -30,22 +32,25 @@ use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows::Win32::System::Threading::{GetCurrentProcess, GetCurrentProcessId, OpenProcessToken};
 use windows::core::{HSTRING, PWSTR};
 
+use crate::frame;
 use crate::i18n::Msg;
 use crate::log::ActionLog;
 
 use super::{ADMINS, Answer, Ask, Reply, Request, SYSTEM, VERSION, path};
 
-/// A pipe handle that may travel to the thread serving it, closed when it is dropped.
-struct Pipe(HANDLE);
+/// A pipe handle that may travel to the thread serving it, closed when it is dropped. It is held as a file,
+/// so the messages are read and written the way the agent's are (frame.rs).
+struct Pipe(File);
 
-// A handle belongs to the process, not to one thread.
-unsafe impl Send for Pipe {}
+impl Pipe {
+    /// Takes over a handle just made.
+    fn of(h: HANDLE) -> Pipe {
+        Pipe(unsafe { File::from_raw_handle(h.0) })
+    }
 
-impl Drop for Pipe {
-    fn drop(&mut self) {
-        unsafe {
-            let _ = CloseHandle(self.0);
-        }
+    /// For what only a pipe can do: connect, flush, disconnect, tell who is at the other end.
+    fn raw(&self) -> HANDLE {
+        HANDLE(self.0.as_raw_handle())
     }
 }
 
@@ -116,13 +121,13 @@ impl Server {
                 Ok(next) => self.next = Some(next),
                 Err(e) => say(e.context("listening for the next window"), &mut said),
             }
-            match unsafe { ConnectNamedPipe(client.0, None) } {
+            match unsafe { ConnectNamedPipe(client.raw(), None) } {
                 Ok(()) => {}
                 Err(e) if e.code() == ERROR_PIPE_CONNECTED.to_hresult() => {}
                 // A window that came and went before it was taken on: nothing to serve
                 Err(e) if e.code() == ERROR_NO_DATA.to_hresult() => {
                     unsafe {
-                        let _ = DisconnectNamedPipe(client.0);
+                        let _ = DisconnectNamedPipe(client.raw());
                     }
                     continue;
                 }
@@ -138,8 +143,8 @@ impl Server {
             std::thread::spawn(move || {
                 let _ = converse(&client, answer);
                 unsafe {
-                    let _ = FlushFileBuffers(client.0);
-                    let _ = DisconnectNamedPipe(client.0);
+                    let _ = FlushFileBuffers(client.raw());
+                    let _ = DisconnectNamedPipe(client.raw());
                 }
             });
         }
@@ -148,8 +153,8 @@ impl Server {
 
 /// One client, until it goes away.
 fn converse(client: &Pipe, answer: impl Fn(Request) -> Answer) -> Result<()> {
-    allowed(client.0)?;
-    while let Some(body) = read_frame(client.0)? {
+    allowed(client.raw())?;
+    while let Some(body) = frame::read(&client.0, MAX_FRAME)? {
         let reply = match serde_json::from_slice::<Request>(&body) {
             Ok(req) if req.v != VERSION => Answer::WrongVersion { want: VERSION },
             Ok(req) => answer(req),
@@ -157,7 +162,7 @@ fn converse(client: &Pipe, answer: impl Fn(Request) -> Answer) -> Result<()> {
             // something this StrCu has never heard of, or a program that is not ours at all
             Err(_) => Answer::Failed { reason: crate::i18n::term().t("err.unknown_ask") },
         };
-        write_frame(client.0, &serde_json::to_vec(&Reply { v: VERSION, answer: reply })?)?;
+        frame::write(&client.0, &serde_json::to_vec(&Reply { v: VERSION, answer: reply })?, MAX_FRAME)?;
     }
     Ok(())
 }
@@ -223,7 +228,7 @@ fn instance(name: &str, sddl: &HSTRING, first: bool) -> Result<Pipe> {
         if h.is_invalid() {
             bail!("{}", std::io::Error::last_os_error());
         }
-        Ok(Pipe(h))
+        Ok(Pipe::of(h))
     }
 }
 
@@ -309,8 +314,8 @@ impl Link {
                 )
             } {
                 Ok(h) => {
-                    let pipe = Pipe(h);
-                    let owner = owner_sid(pipe.0).context("who answers on the pipe")?;
+                    let pipe = Pipe::of(h);
+                    let owner = owner_sid(pipe.raw()).context("who answers on the pipe")?;
                     if !ours(&owner, mine.then(own_sid).flatten().as_deref()) {
                         bail!("the pipe belongs to {owner}, which is neither the computer nor us");
                     }
@@ -328,67 +333,13 @@ impl Link {
     /// One ask, one answer. `token` is the session from [`Ask::SignIn`]; the asks that only read need none.
     pub fn ask(&mut self, ask: Ask, token: Option<&str>) -> Result<Answer> {
         let req = Request { v: VERSION, token: token.map(str::to_string), ask };
-        write_frame(self.pipe.0, &serde_json::to_vec(&req)?)?;
-        let Some(body) = read_frame(self.pipe.0)? else { bail!("StrCu closed the pipe without answering") };
+        frame::write(&self.pipe.0, &serde_json::to_vec(&req)?, MAX_FRAME)?;
+        let Some(body) = frame::read(&self.pipe.0, MAX_FRAME)? else {
+            bail!("StrCu closed the pipe without answering")
+        };
         let reply: Reply = serde_json::from_slice(&body).context("the answer could not be read")?;
         Ok(reply.answer)
     }
-}
-
-// ---------- messages on the wire ----------
-
-/// Four bytes of length, then the message. A pipe in byte mode has no message size of its own to surprise
-/// us with, whatever either end writes.
-fn write_frame(pipe: HANDLE, body: &[u8]) -> Result<()> {
-    let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
-    if len > MAX_FRAME {
-        bail!("a message of {len} bytes is too long to send");
-    }
-    let mut frame = Vec::with_capacity(4 + body.len());
-    frame.extend_from_slice(&len.to_le_bytes());
-    frame.extend_from_slice(body);
-    let mut rest = frame.as_slice();
-    while !rest.is_empty() {
-        let mut wrote = 0u32;
-        unsafe { WriteFile(pipe, Some(rest), Some(&mut wrote), None) }.context("the message could not be sent")?;
-        if wrote == 0 {
-            bail!("the other end stopped reading");
-        }
-        rest = &rest[wrote as usize..];
-    }
-    Ok(())
-}
-
-/// The next message, or None when the other end has gone.
-fn read_frame(pipe: HANDLE) -> Result<Option<Vec<u8>>> {
-    let mut len = [0u8; 4];
-    if !read_exactly(pipe, &mut len)? {
-        return Ok(None);
-    }
-    let len = u32::from_le_bytes(len);
-    if len > MAX_FRAME {
-        bail!("a message of {len} bytes is too long to read");
-    }
-    let mut body = vec![0u8; len as usize];
-    if !read_exactly(pipe, &mut body)? {
-        return Ok(None);
-    }
-    Ok(Some(body))
-}
-
-/// Fills `buf`. False means the other end closed the pipe, which is what a window being closed looks like.
-fn read_exactly(pipe: HANDLE, buf: &mut [u8]) -> Result<bool> {
-    let mut done = 0;
-    while done < buf.len() {
-        let mut read = 0u32;
-        match unsafe { ReadFile(pipe, Some(&mut buf[done..]), Some(&mut read), None) } {
-            Ok(()) if read > 0 => done += read as usize,
-            Ok(()) => return Ok(false),
-            Err(e) if e.code() == ERROR_BROKEN_PIPE.to_hresult() => return Ok(false),
-            Err(e) => return Err(e).context("the message could not be read"),
-        }
-    }
-    Ok(true)
 }
 
 // ---------- who we are ----------
@@ -530,8 +481,8 @@ mod tests {
         serving(&name, |_| panic!("a request of another version must not be answered"));
         let link = Link::connect_named(&name, true).unwrap();
         let req = Request { v: VERSION + 1, token: None, ask: Ask::Settings };
-        write_frame(link.pipe.0, &serde_json::to_vec(&req).unwrap()).unwrap();
-        let body = read_frame(link.pipe.0).unwrap().unwrap();
+        frame::write(&link.pipe.0, &serde_json::to_vec(&req).unwrap(), MAX_FRAME).unwrap();
+        let body = frame::read(&link.pipe.0, MAX_FRAME).unwrap().unwrap();
         let reply: Reply = serde_json::from_slice(&body).unwrap();
         assert_eq!(reply.answer, Answer::WrongVersion { want: VERSION });
     }

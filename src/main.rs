@@ -6,6 +6,7 @@ mod brand;
 mod config;
 mod download;
 mod files;
+mod frame;
 mod i18n;
 mod ipc;
 mod licenses;

@@ -16,10 +16,11 @@ use windows::Win32::System::WindowsProgramming::GetUserNameW;
 use windows::core::PWSTR;
 
 use crate::files;
+use crate::frame;
 use crate::i18n::{Msg, Written};
 use crate::sys::{apps, clipboard, icons};
 
-use super::{Did, Job, read_frame, write_frame};
+use super::{Did, Job, MAX_FRAME};
 
 /// `strcu agent`, started by the worker: jobs come in on stdin, answers go out on stdout, and the end of
 /// stdin is the end of the agent.
@@ -28,13 +29,13 @@ pub fn run() -> Result<()> {
     let mut jobs = std::io::stdin().lock();
     let mut answers = std::io::stdout().lock();
     let mut mind = Mind::default();
-    while let Some(frame) = read_frame(&mut jobs)? {
-        let answer = match serde_json::from_slice::<Job>(&frame) {
+    while let Some(body) = frame::read(&mut jobs, MAX_FRAME)? {
+        let answer = match serde_json::from_slice::<Job>(&body) {
             Ok(job) => done(job, &mut mind),
             // Only the worker is at the other end, so this is a mistake of ours
             Err(e) => Did::Failed { why: Written::of(&anyhow::Error::new(e)) },
         };
-        write_frame(&mut answers, &serde_json::to_vec(&answer)?)?;
+        frame::write(&mut answers, &serde_json::to_vec(&answer)?, MAX_FRAME)?;
         answers.flush()?;
     }
     Ok(())

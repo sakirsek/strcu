@@ -27,9 +27,10 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{HSTRING, PWSTR};
 
+use crate::frame;
 use crate::i18n::Msg;
 
-use super::{Did, Job, read_frame, write_frame};
+use super::{Did, Job, MAX_FRAME};
 
 /// Held while the agent is started, and while anything else the worker starts is: the agent's ends of its
 /// pipes are inheritable until it has them, and a cloudflared started in that moment would take them along
@@ -240,10 +241,12 @@ impl Agent {
     }
 
     fn exchange(&mut self, job: &Job) -> Result<Did> {
-        write_frame(&mut self.jobs, &serde_json::to_vec(job)?)?;
+        frame::write(&mut self.jobs, &serde_json::to_vec(job)?, MAX_FRAME)?;
         self.jobs.flush()?;
-        let Some(frame) = read_frame(&mut self.answers)? else { bail!("the agent stopped without answering") };
-        self.adopt(serde_json::from_slice(&frame)?)
+        let Some(answer) = frame::read(&mut self.answers, MAX_FRAME)? else {
+            bail!("the agent stopped without answering")
+        };
+        self.adopt(serde_json::from_slice(&answer)?)
     }
 
     /// A file in an answer is a handle in the agent, which means nothing here. It is duplicated into this

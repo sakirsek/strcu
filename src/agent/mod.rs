@@ -17,7 +17,6 @@
 //! (`Hand::ask`), which is also how a development build behaves without a service behind it.
 
 use std::fs::File;
-use std::io::{Read, Write};
 use std::os::windows::io::FromRawHandle;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -326,39 +325,6 @@ mod bytes {
     }
 }
 
-// ---------- jobs and answers on the wire ----------
-
-/// Four bytes of length, then the message, the same way the window talks to StrCu (ipc.rs).
-fn write_frame(to: &mut impl Write, body: &[u8]) -> Result<()> {
-    let len = u32::try_from(body.len()).unwrap_or(u32::MAX);
-    if len > MAX_FRAME {
-        bail!("a message of {len} bytes is too long to send");
-    }
-    to.write_all(&len.to_le_bytes())?;
-    to.write_all(body)?;
-    Ok(())
-}
-
-/// The next message, or None when the other end has gone.
-fn read_frame(from: &mut impl Read) -> Result<Option<Vec<u8>>> {
-    let mut len = [0u8; 4];
-    match from.read_exact(&mut len) {
-        Ok(()) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(e.into()),
-    }
-    let len = u32::from_le_bytes(len);
-    if len > MAX_FRAME {
-        bail!("a message of {len} bytes is too long to read");
-    }
-    let mut body = vec![0u8; len as usize];
-    match from.read_exact(&mut body) {
-        Ok(()) => Ok(Some(body)),
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,27 +342,6 @@ mod tests {
         let did = Did::Who { user: "Shakur".to_string(), session: 1, elevated: false };
         let text = serde_json::to_string(&did).unwrap();
         assert_eq!(serde_json::from_str::<Did>(&text).unwrap(), did);
-    }
-
-    #[test]
-    fn messages_survive_the_two_pipes() {
-        let mut wire = Vec::new();
-        write_frame(&mut wire, b"first").unwrap();
-        write_frame(&mut wire, b"second").unwrap();
-        let mut read = wire.as_slice();
-        assert_eq!(read_frame(&mut read).unwrap().unwrap(), b"first");
-        assert_eq!(read_frame(&mut read).unwrap().unwrap(), b"second");
-        // The end of the stream is how the agent learns it is done
-        assert!(read_frame(&mut read).unwrap().is_none());
-    }
-
-    #[test]
-    fn half_a_message_is_the_end_of_it() {
-        let mut wire = Vec::new();
-        write_frame(&mut wire, b"whole").unwrap();
-        wire.truncate(6);
-        let mut read = wire.as_slice();
-        assert!(read_frame(&mut read).unwrap().is_none());
     }
 
     #[test]
