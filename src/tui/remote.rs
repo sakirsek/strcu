@@ -326,7 +326,7 @@ async fn install(io: &mut impl Io, live: &mut Live) -> Result<Step<()>> {
             Step::Quit => return Ok(Step::Quit),
         };
         started = true;
-        if state.version.as_deref() == Some(tunnel::CLOUDFLARED_TAG) {
+        if state.version.is_some() {
             return Ok(Step::Done(()));
         }
         if let Some(failed) = &state.failed {

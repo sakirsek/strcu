@@ -12,6 +12,7 @@ pub mod net;
 pub mod power;
 pub mod proc;
 pub mod screen;
+pub mod sign;
 pub mod token;
 pub mod uia;
 pub mod window;

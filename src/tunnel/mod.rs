@@ -4,8 +4,11 @@
 //! its token is kept here, passed in an environment variable so it is not in the process list.
 //!
 //! cloudflared runs with the computer's rights, so it lives beside the program, where only administrators may
-//! write, and it is one exact file: its size and SHA-256 are pinned here and checked before every start. One
+//! write, and it is one exact file, checked whole before every start: the version pinned here, or a newer one
+//! the update took (update.rs: signed by Cloudflare and written down by size and SHA-256 when it came). One
 //! that is missing or does not pass is fetched again. The token and the log stay in the settings folder.
+
+mod update;
 
 use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
@@ -15,18 +18,38 @@ use std::time::{Duration, SystemTime};
 
 use anyhow::{Context, Result, bail};
 use base64::Engine;
+use serde::{Deserialize, Serialize};
 use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
 use crate::i18n::Msg;
 use crate::{config, download, sys};
 
-/// The cloudflared version StrCu is tested with.
+pub use update::Updater;
+
+/// The cloudflared version StrCu is tested with: downloaded when remote access is set up.
 pub const CLOUDFLARED_TAG: &str = "2026.9.3";
 /// `cloudflared-windows-amd64.exe` of that release; size and SHA-256 as GitHub and the release notes give them.
 const CLOUDFLARED_SIZE: u64 = 55_366_080;
 const CLOUDFLARED_SHA256: &str = "f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2";
 const ASSET: &str = "cloudflared-windows-amd64.exe";
 const EXE: &str = "cloudflared.exe";
+
+/// A cloudflared that may run: its version, and the size and SHA-256 of its file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Known {
+    pub version: String,
+    pub size: u64,
+    pub sha256: String,
+}
+
+fn pinned() -> Known {
+    Known { version: CLOUDFLARED_TAG.into(), size: CLOUDFLARED_SIZE, sha256: CLOUDFLARED_SHA256.into() }
+}
+
+/// What may run: the versions the update took, if any, and the pinned one.
+fn accepted() -> Vec<Known> {
+    update::taken().into_iter().chain(Some(pinned())).collect()
+}
 
 /// Where cloudflared reports its state; the address is built once, from brand.rs.
 fn metrics() -> String {
@@ -55,38 +78,43 @@ fn log_path() -> PathBuf {
     config::data_dir().join("cloudflared.log")
 }
 
-/// Opens cloudflared so nothing can change or replace it while open, and reads it whole against `size` and
-/// `sha256`. Kept open while it starts, so what runs is what was read.
-fn verified_against(path: &Path, size: u64, sha256: &str) -> Result<std::fs::File> {
+/// Opens cloudflared so nothing can change or replace it while open, and reads it whole: it has to be one of
+/// `known`, which is returned with it. Kept open while it starts, so what runs is what was read.
+fn verify(path: &Path, known: &[Known]) -> Result<(std::fs::File, Known)> {
     let not_it = || anyhow::Error::new(Msg::new("err.cloudflared_check").with("path", path.display().to_string()));
     let mut file = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ.0)
         .open(path)
         .map_err(|_| Msg::new("err.cloudflared_missing"))?;
-    if file.metadata()?.len() != size || download::sha256_of(&mut file)? != sha256 {
+    let size = file.metadata()?.len();
+    if !known.iter().any(|k| k.size == size) {
         return Err(not_it());
     }
-    Ok(file)
+    let sha = download::sha256_of(&mut file)?;
+    let k = known.iter().find(|k| k.size == size && k.sha256 == sha).cloned().ok_or_else(not_it)?;
+    Ok((file, k))
 }
 
-fn verified(path: &Path) -> Result<std::fs::File> {
-    verified_against(path, CLOUDFLARED_SIZE, CLOUDFLARED_SHA256)
+fn verified(path: &Path) -> Result<(std::fs::File, Known)> {
+    verify(path, &accepted())
 }
 
-/// The file that passed last, by size and time, so the window's once-a-second ask does not read 55 MB. A start
-/// always reads it whole.
-static PASSED: Mutex<Option<(u64, SystemTime)>> = Mutex::new(None);
+/// The file that passed last, by size and time, and its version, so the window's once-a-second ask does not
+/// read 55 MB. A start always reads it whole.
+static PASSED: Mutex<Option<(u64, SystemTime, String)>> = Mutex::new(None);
 
-/// The version beside the program if it is the pinned one; anything else counts as not installed.
+/// The version beside the program if it is one that may run; anything else counts as not installed.
 pub fn installed_version() -> Option<String> {
-    let seen = std::fs::metadata(exe()).ok().and_then(|m| Some((m.len(), m.modified().ok()?)))?;
-    let known = *PASSED.lock().unwrap() == Some(seen);
-    if !known {
-        verified(&exe()).ok()?;
-        *PASSED.lock().unwrap() = Some(seen);
+    let (len, time) = std::fs::metadata(exe()).ok().and_then(|m| Some((m.len(), m.modified().ok()?)))?;
+    if let Some((l, t, v)) = &*PASSED.lock().unwrap()
+        && (*l, *t) == (len, time)
+    {
+        return Some(v.clone());
     }
-    Some(CLOUDFLARED_TAG.to_string())
+    let (_, k) = verified(&exe()).ok()?;
+    *PASSED.lock().unwrap() = Some((len, time, k.version.clone()));
+    Some(k.version)
 }
 
 /// How cloudflared came to be there, for the log.
@@ -97,13 +125,13 @@ pub enum Ensured {
     Fetched,
 }
 
-/// Makes sure the pinned cloudflared is beside the program: taken over from the settings folder after an
-/// update from 2.0.3 or older if it passes, downloaded otherwise.
+/// Makes sure a cloudflared that may run is beside the program: taken over from the settings folder after an
+/// update from 2.0.3 or older if it passes, the pinned one downloaded otherwise.
 pub async fn ensure() -> Result<Ensured> {
     if installed_version().is_some() {
         return Ok(Ensured::Here);
     }
-    if adopt(&old_dir(), &dir(), CLOUDFLARED_SIZE, CLOUDFLARED_SHA256)? {
+    if adopt(&old_dir(), &dir(), &pinned())? {
         return Ok(Ensured::Moved);
     }
     install(&|_| {}).await?;
@@ -112,16 +140,16 @@ pub async fn ensure() -> Result<Ensured> {
 
 /// Takes cloudflared over from `old` if it is the pinned one: copied, so it takes the new folder's rules, and
 /// checked again there. The old folder goes either way.
-fn adopt(old: &Path, new: &Path, size: u64, sha256: &str) -> Result<bool> {
+fn adopt(old: &Path, new: &Path, pin: &Known) -> Result<bool> {
     let from = old.join(EXE);
     if old == new || !from.exists() {
         return Ok(false);
     }
-    let passes = verified_against(&from, size, sha256).is_ok();
+    let passes = verify(&from, std::slice::from_ref(pin)).is_ok();
     if passes {
         std::fs::create_dir_all(new)?;
         std::fs::copy(&from, new.join(EXE)).with_context(|| format!("{} -> {}", from.display(), new.display()))?;
-        verified_against(&new.join(EXE), size, sha256)?;
+        verify(&new.join(EXE), std::slice::from_ref(pin))?;
     }
     let _ = std::fs::remove_dir_all(old);
     Ok(passes)
@@ -129,7 +157,7 @@ fn adopt(old: &Path, new: &Path, size: u64, sha256: &str) -> Result<bool> {
 
 /// Downloads the pinned version and checks it against what is pinned here, not what the download says.
 pub async fn install(report: download::Report<'_>) -> Result<()> {
-    if installed_version().as_deref() == Some(CLOUDFLARED_TAG) {
+    if installed_version().is_some() {
         return Ok(());
     }
     let remote = download::Remote {
@@ -220,6 +248,7 @@ pub fn spawn_with(token: &str) -> Result<Tunnel> {
     let _held = verified(&exe)?;
     let log = std::fs::File::create(log_path())?;
     let starting = crate::agent::STARTING.lock().unwrap();
+    // Its own updater stays off: StrCu takes a new version only once it has checked it (update.rs)
     let child = Command::new(&exe)
         .args(["tunnel", "--no-autoupdate", "--metrics", &metrics(), "run"])
         .env("TUNNEL_TOKEN", token)
@@ -293,8 +322,12 @@ mod tests {
         (p, bytes.len() as u64, download::sha256_of(&mut &bytes[..]).unwrap())
     }
 
-    fn code(r: Result<std::fs::File>) -> &'static str {
+    fn code(r: Result<(std::fs::File, Known)>) -> &'static str {
         crate::i18n::from_error(&r.expect_err("it must not pass")).code
+    }
+
+    fn known(version: &str, size: u64, sha256: &str) -> Known {
+        Known { version: version.into(), size, sha256: sha256.into() }
     }
 
     #[test]
@@ -312,12 +345,16 @@ mod tests {
     fn only_the_file_written_down_passes() {
         let dir = temp("pass");
         let (p, size, sha) = file_of(&dir, EXE, b"the real one");
-        assert!(verified_against(&p, size, &sha).is_ok());
+        let (_, other_size, other_sha) = file_of(&dir, "other.exe", b"a newer one, taken by the update");
+        let both = [known("2026.10.7", other_size, &other_sha), known("2026.9.3", size, &sha)];
+        // Whichever of those it is, it passes as that version
+        assert_eq!(verify(&p, &both).unwrap().1.version, "2026.9.3");
+        assert_eq!(verify(&dir.join("other.exe"), &both).unwrap().1.version, "2026.10.7");
         // One byte more, or the same length with other bytes, or nothing there at all
-        assert_eq!(code(verified_against(&p, size + 1, &sha)), "err.cloudflared_check");
+        assert_eq!(code(verify(&p, &[known("x", size + 1, &sha)])), "err.cloudflared_check");
         std::fs::write(&p, b"the fake one").unwrap();
-        assert_eq!(code(verified_against(&p, size, &sha)), "err.cloudflared_check");
-        assert_eq!(code(verified_against(&dir.join("absent.exe"), size, &sha)), "err.cloudflared_missing");
+        assert_eq!(code(verify(&p, &both)), "err.cloudflared_check");
+        assert_eq!(code(verify(&dir.join("absent.exe"), &both)), "err.cloudflared_missing");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -330,7 +367,7 @@ mod tests {
         let bytes = std::fs::read(&program).unwrap();
         let sha = download::sha256_of(&mut &bytes[..]).unwrap();
 
-        let held = verified_against(&program, bytes.len() as u64, &sha).unwrap();
+        let held = verify(&program, &[known("x", bytes.len() as u64, &sha)]).unwrap();
         // While it is held nothing may write it, and nothing may put another file in its place
         assert!(std::fs::OpenOptions::new().write(true).open(&program).is_err(), "written while held");
         assert!(std::fs::rename(&program, dir.join("other.exe")).is_err(), "moved while held");
@@ -349,19 +386,20 @@ mod tests {
     fn an_older_copy_is_taken_over_only_when_it_passes() {
         let (old, new) = (temp("old"), temp("new").join("cloudflared"));
         let (_, size, sha) = file_of(&old, EXE, b"the one written down");
-        assert!(adopt(&old, &new, size, &sha).unwrap(), "taken over");
+        let pin = known("2026.9.3", size, &sha);
+        assert!(adopt(&old, &new, &pin).unwrap(), "taken over");
         assert_eq!(std::fs::read(new.join(EXE)).unwrap(), b"the one written down");
         assert!(!old.exists(), "and the settings folder no longer holds a program");
 
         // Something else left where an older StrCu kept it: not taken, and not kept either
         let (old, other) = (temp("old2"), temp("new2").join("cloudflared"));
         file_of(&old, EXE, b"something else");
-        assert!(!adopt(&old, &other, size, &sha).unwrap());
+        assert!(!adopt(&old, &other, &pin).unwrap());
         assert!(!other.join(EXE).exists());
         assert!(!old.exists(), "a cloudflared that does not pass is not kept for anything to start");
 
         // Nothing there at all is nothing to do
-        assert!(!adopt(&temp("none").join("absent"), &other, size, &sha).unwrap());
+        assert!(!adopt(&temp("none").join("absent"), &other, &pin).unwrap());
 
         for d in ["new", "new2", "none"] {
             let _ = std::fs::remove_dir_all(std::env::temp_dir().join(format!("strcu-tunnel-{d}-{}", std::process::id())));

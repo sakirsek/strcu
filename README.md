@@ -245,12 +245,18 @@ a Cloudflare account and a domain whose DNS is on Cloudflare; the tunnel and Acc
 StrCu's own child process: StrCu watches its connection, starts it again if it stops, and closes it with the
 panel. Nothing is installed for it.
 
+cloudflared is kept up to date, since its releases carry its security fixes. A couple of minutes after StrCu
+starts and every six hours, StrCu looks at Cloudflare's newest release on GitHub. A newer one is taken only if
+it matches the SHA-256 in its release notes and Windows finds it signed by Cloudflare, and it replaces the
+running one once nobody has used the tunnel for five minutes. If it does not connect within a minute, the
+version before it comes back and that release is not tried again. The log says what happened.
+
 It is set up from the terminal (in the first-start setup, or Settings → Remote access), which walks through the
 Cloudflare dashboard and checks each step:
 
-1. cloudflared is downloaded: one pinned version, kept beside StrCu in `%ProgramFiles%\StrCu\cloudflared`
-   where only administrators may write, and checked against its SHA-256 before every start. A copy that does
-   not match is never run; StrCu downloads the right one again.
+1. cloudflared is downloaded and kept beside StrCu in `%ProgramFiles%\StrCu\cloudflared`, where only
+   administrators may write. Before every start it is checked against the SHA-256 of the version StrCu took. A
+   copy that does not match is never run; StrCu downloads the right one again.
 2. **Tunnel:** Networking → Tunnels → Create a tunnel. The install command it shows is pasted into StrCu,
    not run. StrCu starts the tunnel at once, so the dashboard sees it connect and lets you go on.
 3. **Address:** on the tunnel's Routes tab, Add route → Published application, with the Service URL
@@ -385,7 +391,8 @@ and placeholders as `lang/en.json`.
 - `src/auth.rs` sign-in, `src/pair.rs` paired phones, `src/passkey.rs` passkeys, `src/access.rs` Cloudflare
   Access verification
 - `src/i18n.rs` + `lang/` languages; the server sends message keys, the panel and the terminal render them
-- `src/tunnel.rs` cloudflared management, `src/download.rs` downloads verified with SHA-256
+- `src/tunnel/` cloudflared management and updates, `src/download.rs` downloads verified with SHA-256,
+  `src/sys/sign.rs` signature checks
 - `install.ps1` the one-line installer; `.github/workflows/` CI, releases and the third-party notices check
 
 ## Support

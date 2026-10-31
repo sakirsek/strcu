@@ -255,7 +255,7 @@ impl App {
 
     /// Starts downloading cloudflared unless the right version is here; closing the window does not stop it.
     fn install_cloudflared(&mut self) {
-        if tunnel::installed_version().as_deref() == Some(tunnel::CLOUDFLARED_TAG) || self.setup.downloading.is_some() {
+        if tunnel::installed_version().is_some() || self.setup.downloading.is_some() {
             return;
         }
         let shared = Arc::new(Mutex::new(Downloading::default()));
@@ -375,10 +375,12 @@ impl App {
 }
 
 /// Keeps cloudflared running and reports its state; a stopped one is started again after a pause. The log
-/// hears when the connection comes or goes, and once per run of failures.
+/// hears when the connection comes or goes, and once per run of failures. On the way, newer versions of
+/// cloudflared are taken in (tunnel/update.rs).
 async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>, pid: Arc<AtomicU32>) {
     let http = reqwest::Client::new();
     let (mut was_up, mut failure_logged) = (false, false);
+    let mut updater = tunnel::Updater::new();
     loop {
         state.send_replace(Remote::Starting);
         let started = match tunnel::ensure().await {
@@ -398,23 +400,52 @@ async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>, pid: Arc
             Ok(mut t) => {
                 pid.store(t.pid(), Ordering::Relaxed);
                 let mut up = t.ready;
-                loop {
+                let turn = loop {
+                    if up {
+                        updater.connected(&log);
+                    }
                     if up != was_up {
                         log.add(Msg::new(if up { "ev.tunnel_up" } else { "ev.tunnel_down" }), up);
                         was_up = up;
                     }
                     failure_logged &= !up;
                     state.send_replace(if up { Remote::Up } else { Remote::Down });
+                    if updater.due(up) {
+                        break Turn::ChangeOver;
+                    }
+                    if !up && updater.trial_over() {
+                        break Turn::GoBack;
+                    }
                     tokio::time::sleep(Duration::from_secs(5)).await;
                     if let Some(why) = t.exited() {
-                        break why;
+                        break Turn::Ended(why);
                     }
                     up = tunnel::connected(&http).await;
+                    updater.tick(&log);
+                };
+                // cloudflared stops here, and its file is free to be changed
+                drop(t);
+                pid.store(0, Ordering::Relaxed);
+                match turn {
+                    Turn::ChangeOver => {
+                        updater.change_over(&log);
+                        continue;
+                    }
+                    Turn::GoBack => {
+                        updater.go_back(&log);
+                        continue;
+                    }
+                    Turn::Ended(why) => why,
                 }
             }
             Err(e) => i18n::from_error(&e),
         };
         pid.store(0, Ordering::Relaxed);
+        // A new version that stopped or would not start: the one before comes back at once
+        if updater.on_trial() {
+            updater.go_back(&log);
+            continue;
+        }
         if !failure_logged {
             log.add(Msg::new("ev.tunnel_failed").with("reason", why.clone()), false);
             failure_logged = true;
@@ -423,6 +454,16 @@ async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>, pid: Arc
         state.send_replace(Remote::Failed(why));
         tokio::time::sleep(RETRY).await;
     }
+}
+
+/// Why the loop that keeps cloudflared running lets the current one go.
+enum Turn {
+    /// A newer version is ready and nobody is using the tunnel
+    ChangeOver,
+    /// The newer version did not connect in time
+    GoBack,
+    /// cloudflared stopped by itself
+    Ended(Msg),
 }
 
 /// `strcu serve`, and a start without a terminal: no screens, status lines on the output instead.

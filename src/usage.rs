@@ -5,9 +5,9 @@
 use std::collections::HashMap;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, LazyLock, Mutex};
 use std::task::{Context, Poll};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::body::{Body, Bytes};
 use axum::response::Response;
@@ -59,6 +59,9 @@ impl Meter {
     pub fn add(&self, way: Way, kind: Kind, up: bool, bytes: u64) {
         if bytes > 0 {
             self.n[Self::slot(way, kind, up)].fetch_add(bytes, Ordering::Relaxed);
+            if way == Way::Tunnel {
+                TUNNEL_AT.store(EPOCH.elapsed().as_millis() as u64, Ordering::Relaxed);
+            }
         }
     }
 
@@ -80,6 +83,15 @@ impl Meter {
             "other": self.sum(&WAYS, &[Kind::Other]),
         })
     }
+}
+
+/// When something last went through the tunnel, either way, in milliseconds from `EPOCH`.
+static TUNNEL_AT: AtomicU64 = AtomicU64::new(0);
+static EPOCH: LazyLock<Instant> = LazyLock::new(Instant::now);
+
+/// How long nothing has gone through the tunnel (cloudflared is changed over only when nobody is using it).
+pub fn tunnel_quiet() -> Duration {
+    EPOCH.elapsed().saturating_sub(Duration::from_millis(TUNNEL_AT.load(Ordering::Relaxed)))
 }
 
 /// The meters, by whose they are ("s:" a sign-in, "d:" a paired phone, "local" this computer).
