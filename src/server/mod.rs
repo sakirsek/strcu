@@ -261,6 +261,7 @@ impl Panel {
             .route("/api/macros/state", get(automation::macros_state))
             .route("/api/macros/save", post(automation::macro_save))
             .route("/api/macros/delete", post(automation::macro_delete))
+            .route("/api/macros/schedule", post(automation::macro_schedule))
             .route("/api/macros/run", post(automation::macro_run))
             .route("/api/macros/stop", post(automation::macro_stop))
             .route("/api/macros/try", post(automation::macro_try))

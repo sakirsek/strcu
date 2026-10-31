@@ -41,6 +41,19 @@ pub(super) async fn macro_delete(State(st): State<AppState>, Json(r): Json<Macro
     Ok(Json(json!({ "ok": true })))
 }
 
+#[derive(Deserialize)]
+pub(super) struct ScheduleReq {
+    id: String,
+    on: bool,
+}
+
+/// The schedule's switch in the list.
+pub(super) async fn macro_schedule(State(st): State<AppState>, Json(r): Json<ScheduleReq>) -> ApiResult<Json<Value>> {
+    let m = st.macros.set_schedule_on(&r.id, r.on).map_err(mac_error)?;
+    st.log.add(Msg::new(if r.on { "ev.mac_resumed" } else { "ev.mac_paused" }).with("name", &m.name), true);
+    Ok(Json(json!({ "ok": true })))
+}
+
 pub(super) async fn macro_run(State(st): State<AppState>, Json(r): Json<MacroReq>) -> ApiResult<Json<Value>> {
     st.macros.run(&r.id).map_err(mac_error)?;
     Ok(Json(json!({ "ok": true })))

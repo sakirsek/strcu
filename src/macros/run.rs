@@ -25,15 +25,13 @@ use crate::worker::{Ctx, Worker};
 
 /// How long a step looks for its window or element (the app may still be opening or drawing)
 const FIND_FOR: Duration = Duration::from_secs(5);
-/// Pause between steps, as a person would leave
-const BETWEEN: Duration = Duration::from_millis(350);
 /// Input this long after a step's own still counts as the step's
 const OWN_INPUT_MS: u32 = 400;
 /// A scheduled macro does not start if the computer was used this recently
 const IN_USE_MS: u32 = 5000;
 /// "Run a macro" inside "run a macro", at most
 const MAX_DEPTH: usize = 3;
-/// Steps one run takes at most, repeats included: a guard against a loop that never ends
+/// Steps one round of a run takes at most, repeats included: a guard against a loop that never ends
 const MAX_RUN_STEPS: u64 = 100_000;
 
 #[derive(Clone, Serialize)]
@@ -43,6 +41,9 @@ struct Running {
     /// The step running now, from 1
     step: usize,
     total: usize,
+    /// The round running now (from 1), of how many the macro is set to run
+    round: u32,
+    rounds: u32,
 }
 
 struct Recording {
@@ -155,10 +156,18 @@ impl Engine {
         let mut m = match &d.id {
             Some(id) => list.iter().find(|m| &m.id == id).cloned().ok_or_else(|| Msg::new("err.mac_gone"))?,
             None if list.len() >= MAX_MACROS => return Err(Msg::new("err.mac_too_many_macros").with("max", MAX_MACROS)),
-            None => Macro { id: new_id(), name: String::new(), steps: Vec::new(), schedule: None, runs: Vec::new() },
+            None => Macro {
+                id: new_id(),
+                name: String::new(),
+                steps: Vec::new(),
+                pace: Pace::default(),
+                schedule: None,
+                runs: Vec::new(),
+            },
         };
         m.name = d.name.trim().to_string();
         m.steps = d.steps;
+        m.pace = d.pace;
         m.schedule = d.schedule;
         if let Some(s) = m.schedule.as_mut() {
             s.normalize()?;
@@ -168,6 +177,17 @@ impl Engine {
             Some(x) => *x = m.clone(),
             None => list.push(m.clone()),
         }
+        write_all(&list).map_err(|e| i18n::from_error(&e))?;
+        Ok(m)
+    }
+
+    /// The schedule's switch in the list: turned off, the macro does not run by itself until it is turned on
+    /// again. The rest of the macro stays as it is.
+    pub fn set_schedule_on(&self, id: &str, on: bool) -> Result<Macro, Msg> {
+        let mut list = self.list.lock().unwrap();
+        let m = list.iter_mut().find(|m| m.id == id).ok_or_else(|| Msg::new("err.mac_gone"))?;
+        m.schedule.as_mut().ok_or_else(|| Msg::new("err.mac_no_schedule"))?.on = on;
+        let m = m.clone();
         write_all(&list).map_err(|e| i18n::from_error(&e))?;
         Ok(m)
     }
@@ -243,6 +263,8 @@ impl Engine {
                         step: None,
                         reason: Some(as_value(&why)),
                         secs: 0,
+                        round: None,
+                        rounds: None,
                     };
                     self.add_run(&m.id, run);
                 }
@@ -265,7 +287,8 @@ impl Engine {
         if scheduled && input::idle_ms() < IN_USE_MS {
             return Err(Msg::new("mac.why_in_use"));
         }
-        *run = Some(Running { id: m.id.clone(), name: m.name.clone(), step: 1, total: m.steps.len() });
+        let rounds = m.pace.times.max(1);
+        *run = Some(Running { id: m.id.clone(), name: m.name.clone(), step: 1, total: m.steps.len(), round: 1, rounds });
         Ok(())
     }
 
@@ -318,7 +341,7 @@ impl Engine {
         let (at, started) = (local_time(), Instant::now());
         let begun = if how == "schedule" { "ev.mac_scheduled" } else { "ev.mac_started" };
         self.log.add(Msg::new(begun).with("name", &m.name), true);
-        let (result, step, reason) = match self.run_steps(&m.steps, 0, true).await {
+        let (result, step, reason) = match self.run_macro(&m, 0, true).await {
             Ok(_) => {
                 self.log.add(Msg::new("ev.mac_done").with("name", &m.name), true);
                 ("ok", None, None)
@@ -335,12 +358,41 @@ impl Engine {
         };
         let secs = started.elapsed().as_secs();
         let reason = reason.as_ref().map(as_value);
-        self.add_run(&m.id, Run { at, how: how.into(), result: result.into(), step, reason, secs });
+        let (round, rounds) = match self.running.lock().unwrap().as_ref() {
+            Some(r) if r.rounds > 1 => (Some(r.round), Some(r.rounds)),
+            _ => (None, None),
+        };
+        // The history first: the panel reads it once it sees the run is over
+        self.add_run(&m.id, Run { at, how: how.into(), result: result.into(), step, reason, secs, round, rounds });
         *self.running.lock().unwrap() = None;
     }
 
-    /// Runs steps in order; an error comes back with the step's number (from 1).
-    fn run_steps<'a>(&'a self, steps: &'a [Step], depth: usize, top: bool) -> Steps<'a> {
+    /// Runs a macro's steps as many times as it is set to, with its waits between steps and between rounds.
+    /// An error comes back with the step's number (from 1).
+    fn run_macro<'a>(&'a self, m: &'a Macro, depth: usize, top: bool) -> Steps<'a> {
+        Box::pin(async move {
+            let gap = Duration::from_millis(m.pace.step_gap_ms.into());
+            for round in 1..=m.pace.times.max(1) {
+                if round > 1 {
+                    let rest = gap + Duration::from_millis(m.pace.round_gap_ms.into());
+                    self.pause(rest).await.map_err(|h| (m.steps.len(), h))?;
+                }
+                if top {
+                    if let Some(r) = self.running.lock().unwrap().as_mut() {
+                        r.round = round;
+                    }
+                    self.taken.store(0, SeqCst);
+                }
+                if let Flow::End = self.run_steps(&m.steps, gap, depth, top).await? {
+                    return Ok(Flow::End);
+                }
+            }
+            Ok(Flow::Next)
+        })
+    }
+
+    /// Runs steps in order, `gap` apart; an error comes back with the step's number (from 1).
+    fn run_steps<'a>(&'a self, steps: &'a [Step], gap: Duration, depth: usize, top: bool) -> Steps<'a> {
         Box::pin(async move {
             // How many times each Repeat step has sent the run back
             let mut rounds = vec![0u32; steps.len()];
@@ -368,7 +420,7 @@ impl Engine {
                     Act::RunMacro { id } => match self.get(id) {
                         None => Err(Halt::Failed(Msg::new("err.mac_gone"))),
                         Some(_) if depth + 1 >= MAX_DEPTH => Err(Halt::Failed(Msg::new("err.mac_too_deep"))),
-                        Some(inner) => match self.run_steps(&inner.steps, depth + 1, false).await {
+                        Some(inner) => match self.run_macro(&inner, depth + 1, false).await {
                             Err((k, Halt::Failed(m))) => {
                                 Err(Halt::Failed(Msg::new("err.mac_inner").with("name", &inner.name).with("n", k).with("msg", m)))
                             }
@@ -385,7 +437,7 @@ impl Engine {
                 }
                 i += 1;
                 if i < steps.len() {
-                    self.pause(BETWEEN).await.map_err(|h| (n, h))?;
+                    self.pause(gap).await.map_err(|h| (n, h))?;
                 }
             }
             Ok(Flow::Next)
@@ -493,8 +545,8 @@ impl Engine {
                 self.window(app, *op).await?;
                 Flow::Next
             }
-            Act::Wait { secs } => {
-                self.pause(Duration::from_secs_f64(*secs)).await?;
+            Act::Wait(p) => {
+                self.pause(Duration::from_millis(p.ms.into())).await?;
                 Flow::Next
             }
             Act::WaitWindow { app, timeout } => {

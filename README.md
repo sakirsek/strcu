@@ -193,7 +193,7 @@ A macro is a list of steps that StrCu runs in order on the computer:
   of times.
 - **Apps and windows:** open a Start menu app, a file, a folder or a web page; bring an app's window to the
   front, maximize, minimize or close it.
-- **Waits:** a number of seconds, until an app's window opens, or until an element appears.
+- **Waits:** a number of milliseconds, until an app's window opens, or until an element appears.
 - **Flow:** repeat the steps before it a number of times, or run another macro.
 - **As the last step:** lock the computer or shut it down.
 
@@ -208,8 +208,12 @@ front, maximized or closed. A red bar shows how many steps there are; **Done** a
 can be edited. Nothing done while Windows has the screen to itself - the lock screen, the sign-in screen, an
 administrator approval - goes into a recording, so a PIN typed there is never kept; the panel says so once.
 
+**How it runs:** the steps run one after the other a set number of times, 1000 at most, with a wait between
+steps (350 ms unless changed) and, if wanted, a longer one between rounds. **Stop** ends all of them.
+
 **When:** by hand, on chosen days at a time, once at a date and time, or every so many minutes between two
 times on chosen days. Schedules use the computer's clock and run on the computer, so the phone can be off.
+The pause button in the list stops a schedule: the macro does not run by itself until it is turned back on.
 A scheduled start is skipped and logged when the computer is locked, someone is using it at that moment, or
 another macro is running or being recorded. A run stops as soon as someone uses the mouse or keyboard at the
 computer or uses the panel; a step that fails stops it too, and a screenshot of that moment is kept with the

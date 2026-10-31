@@ -34,7 +34,7 @@
   body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif; -webkit-tap-highlight-color: transparent; }
   button, input, textarea, select { font: inherit; color: inherit; }
   button { cursor: pointer; }
-  button:disabled { opacity: .6; cursor: default; }
+  button:disabled, .field:disabled { opacity: .6; cursor: default; }
   :focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
   [hidden] { display: none !important; }
   .mono { font-family: var(--mono); }
@@ -990,6 +990,7 @@ const ICON = {
   lock: 'M7 11h10a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2zM8 11V8a4 4 0 0 1 8 0v3',
   check: 'M5 12l5 5 9-10',
   play: 'M8 5v14l11-7z',
+  pause: 'M9 5v14M15 5v14',
   stop: 'M7 7h10v10H7z',
   clock: 'M12 7v5l3 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0',
   back: 'M15 5l-7 7 7 7',
@@ -2751,7 +2752,7 @@ function stepText(s) {
     case 'launch': return t('mac.s_launch', { name: s.name || '…' });
     case 'open': return t('mac.s_open', { path: s.path || '…' });
     case 'window': return t(WIN_OP[s.op] || 'mac.s_front', { app: appText(s.app) });
-    case 'wait': return t('mac.s_wait', { s: (+s.secs).toLocaleString(I18N.lang) });
+    case 'wait': return t('mac.s_wait', { ms: (+s.ms).toLocaleString(I18N.lang) });
     case 'wait_window': return t('mac.s_wait_window', { app: appText(s.app), s: s.timeout });
     case 'wait_element': return t('mac.s_wait_element', { name: (s.target && s.target.name) || '…', s: s.timeout });
     case 'repeat': return t(s.back === 1 ? 'mac.s_repeat_1' : 'mac.s_repeat', { back: s.back, n: s.times });
@@ -2798,10 +2799,12 @@ function lastText(r) {
 
 function runText(r) {
   const how = t(r.how === 'schedule' ? 'mac.how_schedule' : 'mac.how_manual');
-  if (r.result === 'ok') return t('mac.r_ok', { how, s: r.secs });
-  if (r.result === 'failed') return t('mac.r_failed', { n: r.step, reason: r.reason, how });
+  // A macro set to run more than once: how many rounds it did, or the round it ended in
+  const rounds = !(r.rounds > 1) ? '' : ' · ' + (r.result === 'ok' ? t('mac.r_rounds', { n: r.rounds }) : t('mac.r_round', { round: r.round, rounds: r.rounds }));
+  if (r.result === 'ok') return t('mac.r_ok', { how, s: r.secs }) + rounds;
+  if (r.result === 'failed') return t('mac.r_failed', { n: r.step, reason: r.reason, how }) + rounds;
   if (r.result === 'skipped') return t('mac.r_skipped', { reason: r.reason });
-  return t('mac.r_stopped', { n: r.step, reason: r.reason });
+  return t('mac.r_stopped', { n: r.step, reason: r.reason }) + rounds;
 }
 
 // The edited macro survives a reload (a language change, or the page reopened during a recording)
@@ -2855,7 +2858,11 @@ function renderMacBar() {
   bar.hidden = !mode; bar.dataset.mode = mode;
   alt.hidden = mode !== 'rec';
   if (mode === 'pick') { $('#macBarText').textContent = t(PICK_TEXT[S.mac.pick.which]); main.textContent = t('common.cancel'); main.className = 'btn'; }
-  if (mode === 'run') { $('#macBarText').textContent = t('mac.bar_run', { name: st.running.name, step: st.running.step, total: st.running.total }); main.textContent = t('mac.stop'); main.className = 'btn danger'; }
+  if (mode === 'run') {
+    const r = st.running;
+    $('#macBarText').textContent = t(r.rounds > 1 ? 'mac.bar_run_rounds' : 'mac.bar_run', { name: r.name, step: r.step, total: r.total, round: r.round, rounds: r.rounds });
+    main.textContent = t('mac.stop'); main.className = 'btn danger';
+  }
   if (mode === 'rec') { $('#macBarText').textContent = t('mac.bar_rec', { n: st.recording }); main.textContent = t('mac.rec_done'); main.className = 'btn primary'; alt.textContent = t('common.cancel'); }
 }
 $('#macBarMain').onclick = () => {
@@ -2877,22 +2884,44 @@ function renderMacHome() {
 
 function macRow(m) {
   const running = S.mac.state.running && S.mac.state.running.id === m.id, last = m.runs && m.runs[0];
+  const sched = m.schedule, on = !!(sched && sched.on);
+  const schedLabel = sched && t(on ? 'mac.pause_sched' : 'mac.resume_sched', { name: m.name });
   return h('li', {},
     h('button', { type: 'button', class: 'rowmain', onclick: () => openEditor(m) },
-      h('span', { class: 'appic' + (m.schedule && m.schedule.on ? ' on' : ''), 'aria-hidden': 'true' }, svgIcon(m.schedule && m.schedule.on ? ICON.clock : STEP_ICON.repeat)),
+      h('span', { class: 'appic' + (on ? ' on' : ''), 'aria-hidden': 'true' }, svgIcon(on ? ICON.clock : STEP_ICON.repeat)),
       h('span', { class: 'rowtext' },
         h('span', { class: 'rowname' }, m.name),
-        h('span', { class: 'rowsub' }, schedText(m.schedule) + ' · ' + t('mac.n_steps', { n: m.steps.length })),
+        h('span', { class: 'rowsub' }, schedText(sched) + ' · ' + t('mac.n_steps', { n: m.steps.length })),
+        on && m.next ? h('span', { class: 'rowsub' }, t('mac.next_short', { when: fmtWhen(m.next) })) : null,
         h('span', { class: 'rowsub' + (last && last.result !== 'ok' ? ' bad' : '') }, lastText(last)))),
+    // A schedule is stopped until it is turned back on, not only its next start
+    sched ? h('button', { type: 'button', class: 'rowact', 'aria-label': schedLabel, title: schedLabel, onclick: e => setSchedule(e.currentTarget, m, !on) },
+      svgIcon(on ? ICON.pause : ICON.clock)) : null,
     h('button', { type: 'button', class: 'rowact', disabled: !running && !m.steps.length, 'aria-label': running ? t('mac.stop') : t('mac.run_label', { name: m.name }), onclick: () => running ? stopMacro() : runMacro(m.id) },
       svgIcon(running ? ICON.stop : ICON.play)));
+}
+
+async function setSchedule(btn, m, on) {
+  btn.disabled = true;
+  try { await api('/api/macros/schedule', { id: m.id, on }); }
+  catch (e) { toast(e.message, true); btn.disabled = false; return; }
+  await loadMacros();
+  const now = (S.mac.list || []).find(x => x.id === m.id);
+  toast(!on ? t('mac.paused', { name: m.name })
+    : t('mac.resumed', { name: m.name }) + (now && now.next ? ' · ' + t('mac.next_short', { when: fmtWhen(now.next) }) : ''));
+}
+
+// A new macro: runs once, with the usual wait between steps (macros/mod.rs)
+const MAC_TIMES = 1000, MAC_STEP_GAP = 350;
+function newMacro(steps) {
+  return { id: null, name: t('mac.default_name', { n: (S.mac.list || []).length + 1 }), steps, times: 1, step_gap_ms: MAC_STEP_GAP, round_gap_ms: 0, schedule: null, runs: [] };
 }
 
 function openEditor(m) {
   S.mac.edit = clone(m); S.mac.dirty = !m.id; S.mac.open = -1; S.mac.adding = false;
   persistDraft(); renderMacros(); $('#main').scrollTop = 0;
 }
-$('#macNew').onclick = () => openEditor({ id: null, name: t('mac.default_name', { n: (S.mac.list || []).length + 1 }), steps: [], schedule: null, runs: [] });
+$('#macNew').onclick = () => openEditor(newMacro([]));
 $('#macRec').onclick = () => startRecording(false);
 
 async function closeEditor() {
@@ -2934,6 +2963,8 @@ function renderEditor() {
       h('button', { type: 'button', class: 'btn primary', id: 'macSaveBtn', disabled: !S.mac.dirty && !!d.id, onclick: saveMacro }, t('mac.save'))),
     h('h2', { class: 'eyebrow' }, t('mac.when')),
     schedCard(d),
+    h('h2', { class: 'eyebrow' }, t('mac.how')),
+    paceCard(d),
     h('h2', { class: 'eyebrow' }, t('mac.steps', { n: d.steps.length })),
     d.steps.length ? h('ul', { class: 'msteps' }, d.steps.map(stepItem)) : h('p', { class: 'note' }, t('mac.no_steps')),
     h('div', { class: 'two' },
@@ -2994,6 +3025,18 @@ function schedCard(d) {
     ...body,
     s ? chk(t('mac.sched_on'), s.on, v => { s.on = v; changed(-1); }) : null,
     s ? h('p', { class: 'note' }, note) : null);
+}
+
+// How many times the steps run, and the waits between steps and between rounds (in milliseconds)
+function paceCard(d) {
+  const rest = num(d.round_gap_ms, 0, 3600000, 1, v => { d.round_gap_ms = Math.round(v); changed(-1); });
+  rest.disabled = d.times < 2;
+  return h('section', { class: 'card stack' },
+    h('div', { class: 'mrow' },
+      fld(t('mac.f_times'), num(d.times, 1, MAC_TIMES, 1, v => { d.times = Math.round(v); rest.disabled = d.times < 2; changed(-1); })),
+      fld(t('mac.f_round_gap'), rest)),
+    fld(t('mac.f_step_gap'), num(d.step_gap_ms, 0, 60000, 1, v => { d.step_gap_ms = Math.round(v); changed(-1); })),
+    h('p', { class: 'note' }, t('mac.times_note', { max: MAC_TIMES })));
 }
 
 function stepItem(s, i) {
@@ -3097,7 +3140,7 @@ function stepForm(s, i) {
     case 'window': return [
       fld(t('mac.f_window'), winSelect(s.app, a => set('app', a))),
       segc([['front', t('mac.op_front')], ['maximize', t('mac.op_maximize')], ['minimize', t('mac.op_minimize')], ['close', t('mac.op_close')]], s.op, v => set('op', v, true)), goOn];
-    case 'wait': return [fld(t('mac.f_secs'), num(s.secs, 0.1, 3600, 0.1, v => set('secs', Math.round(v * 10) / 10))), goOn];
+    case 'wait': return [fld(t('mac.f_ms'), num(s.ms, 1, 3600000, 1, v => set('ms', Math.round(v)))), goOn];
     case 'wait_window': return [fld(t('mac.f_window'), winSelect(s.app, a => set('app', a))), timeout(), goOn];
     case 'wait_element': return [targetBox(s, 'target', i, null, true), timeout(), goOn];
     case 'repeat': return [h('div', { class: 'mrow' },
@@ -3147,7 +3190,7 @@ function addStep(kind) {
     case 'launch': return put({ do: 'launch', id: '', name: '' });
     case 'open': return put({ do: 'open', path: '' });
     case 'window': return put({ do: 'window', app: null, op: 'front' });
-    case 'wait': return put({ do: 'wait', secs: 2 });
+    case 'wait': return put({ do: 'wait', ms: 2000 });
     case 'wait_window': return put({ do: 'wait_window', app: null, timeout: 30 });
     case 'repeat': return put({ do: 'repeat', back: Math.max(1, at), times: 2 });
     case 'run_macro': return put({ do: 'run_macro', id: '' });
@@ -3191,7 +3234,7 @@ async function saveMacro() {
   const d = S.mac.edit, bad = draftProblem(d);
   if (bad) { S.mac.open = bad.i; renderEditor(); toast(bad.msg, true); return false; }
   try {
-    const m = await api('/api/macros/save', { id: d.id, name: d.name, steps: d.steps, schedule: d.schedule });
+    const m = await api('/api/macros/save', { id: d.id, name: d.name, steps: d.steps, times: d.times, step_gap_ms: d.step_gap_ms, round_gap_ms: d.round_gap_ms, schedule: d.schedule });
     S.mac.edit = { ...m, shot: d.shot }; S.mac.dirty = false; persistDraft();
     toast(t('mac.saved'));
     await loadMacros();
@@ -3284,7 +3327,7 @@ async function finishRecording(keep) {
   if (!steps.length) { toast(t('mac.rec_empty'), true); return; }
   const d = S.mac.edit;
   if (into && d) d.steps.splice(Math.min(into.at, d.steps.length), 0, ...steps);
-  else S.mac.edit = { id: null, name: t('mac.default_name', { n: (S.mac.list || []).length + 1 }), steps, schedule: null, runs: [] };
+  else S.mac.edit = newMacro(steps);
   S.mac.dirty = true; S.mac.open = -1; S.mac.adding = false; persistDraft();
   exitFs(); showTab('macros');
   toast(t('mac.rec_added', { n: steps.length }));
@@ -3293,6 +3336,12 @@ async function finishRecording(keep) {
 {
   const saved = store.get('macEdit', null);
   if (saved && saved.edit) { S.mac.edit = saved.edit; S.mac.dirty = !!saved.dirty; }
+  // Kept by StrCu 2.1 or older: waits in seconds, and nothing about rounds or the wait between steps
+  const d = S.mac.edit;
+  if (d) {
+    d.times = d.times || 1; d.step_gap_ms = d.step_gap_ms ?? MAC_STEP_GAP; d.round_gap_ms = d.round_gap_ms || 0;
+    for (const s of d.steps) if (s.do === 'wait' && s.ms == null) { s.ms = Math.max(1, Math.round((+s.secs || 0) * 1000)); delete s.secs; }
+  }
 }
 
 // ---------- tabs ----------

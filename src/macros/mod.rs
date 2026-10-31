@@ -27,6 +27,13 @@ const MAX_MACROS: usize = 100;
 const KEEP_RUNS: usize = 20;
 /// Characters of text a step types, at most (as the panel's typing)
 const MAX_TEXT: usize = 5000;
+/// Times a macro runs its steps one after the other, at most: there is no "until stopped"
+pub const MAX_TIMES: u32 = 1000;
+/// The wait between two steps unless the macro sets another, as a person would leave
+const STEP_GAP_MS: u32 = 350;
+/// Waits, at most: between steps, between rounds and as a step of their own
+const MAX_STEP_GAP_MS: u32 = 60_000;
+const MAX_WAIT_MS: u32 = 3_600_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Macro {
@@ -34,11 +41,62 @@ pub struct Macro {
     pub name: String,
     #[serde(default)]
     pub steps: Vec<Step>,
+    #[serde(flatten)]
+    pub pace: Pace,
     #[serde(default)]
     pub schedule: Option<Schedule>,
     /// Newest first
     #[serde(default)]
     pub runs: Vec<Run>,
+}
+
+/// How a macro's steps follow each other.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Pace {
+    /// The steps run this many times one after the other
+    #[serde(default = "one")]
+    pub times: u32,
+    /// Milliseconds between two steps
+    #[serde(default = "step_gap")]
+    pub step_gap_ms: u32,
+    /// Milliseconds waited, besides `step_gap_ms`, before the steps run again
+    #[serde(default)]
+    pub round_gap_ms: u32,
+}
+
+impl Default for Pace {
+    fn default() -> Pace {
+        Pace { times: 1, step_gap_ms: STEP_GAP_MS, round_gap_ms: 0 }
+    }
+}
+
+fn step_gap() -> u32 {
+    STEP_GAP_MS
+}
+
+/// How long a wait step waits, in milliseconds. A macro saved before 2.2 kept it in seconds.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "PauseIn")]
+pub struct Pause {
+    pub ms: u32,
+}
+
+#[derive(Deserialize)]
+struct PauseIn {
+    ms: Option<u32>,
+    secs: Option<f64>,
+}
+
+impl TryFrom<PauseIn> for Pause {
+    type Error = &'static str;
+
+    fn try_from(p: PauseIn) -> Result<Pause, Self::Error> {
+        match (p.ms, p.secs) {
+            (Some(ms), _) => Ok(Pause { ms }),
+            (None, Some(s)) if s.is_finite() && s >= 0.0 => Ok(Pause { ms: (s * 1000.0).round().min(u32::MAX as f64) as u32 }),
+            _ => Err("missing field `ms`"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,7 +152,7 @@ pub enum Act {
     /// A file, a folder or a web page
     Open { path: String },
     Window { app: AppRef, op: WinOp },
-    Wait { secs: f64 },
+    Wait(Pause),
     WaitWindow {
         app: AppRef,
         #[serde(default = "thirty")]
@@ -186,6 +244,11 @@ pub struct Run {
     pub reason: Option<Value>,
     #[serde(default)]
     pub secs: u64,
+    /// For a macro that runs more than once: the round it ended in (from 1), and of how many
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub round: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rounds: Option<u32>,
 }
 
 /// A macro as the panel sends it to be saved; its history stays on the computer.
@@ -195,6 +258,8 @@ pub struct Draft {
     pub name: String,
     #[serde(default)]
     pub steps: Vec<Step>,
+    #[serde(flatten)]
+    pub pace: Pace,
     #[serde(default)]
     pub schedule: Option<Schedule>,
 }
@@ -257,6 +322,13 @@ fn check(m: &Macro, all: &[Macro]) -> Result<(), Msg> {
     if m.steps.len() > MAX_STEPS {
         return Err(Msg::new("err.mac_too_many").with("max", MAX_STEPS));
     }
+    let p = &m.pace;
+    if !(1..=MAX_TIMES).contains(&p.times) || p.step_gap_ms > MAX_STEP_GAP_MS || p.round_gap_ms > MAX_WAIT_MS {
+        return Err(Msg::new("err.mac_value"));
+    }
+    if p.times > 1 && m.steps.last().is_some_and(|s| matches!(s.act, Act::Lock | Act::Shutdown)) {
+        return Err(Msg::new("err.mac_once_only"));
+    }
     for (i, s) in m.steps.iter().enumerate() {
         check_step(i, &s.act, i + 1 == m.steps.len(), all, &m.id)
             .map_err(|e| Msg::new("err.mac_step").with("n", i + 1).with("msg", e))?;
@@ -306,7 +378,7 @@ fn check_step(i: usize, act: &Act, last: bool, all: &[Macro], me: &str) -> Resul
         }
         Act::Launch { id, .. } if id.trim().is_empty() => return bad(),
         Act::Open { path } => apps::check_open(path)?,
-        Act::Wait { secs } if !(0.1..=3600.0).contains(secs) => return bad(),
+        Act::Wait(p) if !(1..=MAX_WAIT_MS).contains(&p.ms) => return bad(),
         Act::WaitWindow { timeout, .. } if !(1..=600).contains(timeout) => return bad(),
         Act::WaitElement { target: t, timeout } => {
             if t.name.trim().is_empty() {
@@ -344,7 +416,7 @@ mod tests {
     }
 
     fn mac(steps: Vec<Step>) -> Macro {
-        Macro { id: "a".into(), name: "Test".into(), steps, schedule: None, runs: Vec::new() }
+        Macro { id: "a".into(), name: "Test".into(), steps, pace: Pace::default(), schedule: None, runs: Vec::new() }
     }
 
     fn code(r: Result<(), Msg>) -> String {
@@ -356,14 +428,15 @@ mod tests {
 
     #[test]
     fn steps_are_checked() {
-        let wait = step(Act::Wait { secs: 1.0 });
+        let wait = step(Act::Wait(Pause { ms: 1000 }));
         assert!(check(&mac(vec![wait.clone(), step(Act::Repeat { back: 1, times: 3 })]), &[]).is_ok());
         assert_eq!(code(check(&mac(vec![step(Act::Repeat { back: 1, times: 3 })]), &[])), "err.mac_repeat_back");
         assert_eq!(code(check(&mac(vec![step(Act::Lock), wait.clone()]), &[])), "err.mac_last_only");
         assert!(check(&mac(vec![wait.clone(), step(Act::Shutdown)]), &[]).is_ok());
         assert_eq!(code(check(&mac(vec![step(Act::Key { combo: "ctrl+nope".into(), times: 1 })]), &[])), "err.unknown_key");
         assert!(check(&mac(vec![step(Act::Key { combo: "ctrl+shift+s".into(), times: 2 })]), &[]).is_ok());
-        assert_eq!(code(check(&mac(vec![step(Act::Wait { secs: 0.0 })]), &[])), "err.mac_value");
+        assert_eq!(code(check(&mac(vec![step(Act::Wait(Pause { ms: 0 }))]), &[])), "err.mac_value");
+        assert!(check(&mac(vec![step(Act::Wait(Pause { ms: 1 }))]), &[]).is_ok());
         assert_eq!(code(check(&mac(vec![step(Act::Open { path: r"C:\x\a.exe".into() })]), &[])), "err.open_program");
         assert_eq!(code(check(&mac(vec![step(Act::RunMacro { id: "a".into() })]), &[])), "err.mac_gone");
         let other = mac(vec![]);
@@ -373,6 +446,28 @@ mod tests {
         let mut unnamed = mac(vec![]);
         unnamed.name = "  ".into();
         assert_eq!(check(&unnamed, &[]).unwrap_err().code, "err.mac_name");
+    }
+
+    #[test]
+    fn rounds_are_checked() {
+        let mut m = mac(vec![step(Act::Wait(Pause { ms: 1000 }))]);
+        for times in [1, 2, MAX_TIMES] {
+            m.pace.times = times;
+            assert!(check(&m, &[]).is_ok(), "{times}");
+        }
+        for times in [0, MAX_TIMES + 1] {
+            m.pace.times = times;
+            assert_eq!(check(&m, &[]).unwrap_err().code, "err.mac_value", "{times}");
+        }
+        m.pace = Pace { step_gap_ms: 0, round_gap_ms: MAX_WAIT_MS, ..Pace::default() };
+        assert!(check(&m, &[]).is_ok());
+        m.pace.step_gap_ms = MAX_STEP_GAP_MS + 1;
+        assert_eq!(check(&m, &[]).unwrap_err().code, "err.mac_value");
+        // Locking or shutting down ends the run: a second round could not follow
+        let mut lock = mac(vec![step(Act::Wait(Pause { ms: 1000 })), step(Act::Lock)]);
+        assert!(check(&lock, &[]).is_ok());
+        lock.pace.times = 2;
+        assert_eq!(check(&lock, &[]).unwrap_err().code, "err.mac_once_only");
     }
 
     #[test]
@@ -388,6 +483,31 @@ mod tests {
         assert!(matches!(lock.act, Act::Lock) && !lock.go_on);
         let key: Step = serde_json::from_str(r#"{"do":"key","combo":"enter"}"#).unwrap();
         assert!(matches!(key.act, Act::Key { times: 1, .. }));
+        let wait = r#"{"do":"wait","ms":1500,"go_on":true}"#;
+        let s: Step = serde_json::from_str(wait).unwrap();
+        assert!(matches!(s.act, Act::Wait(Pause { ms: 1500 })) && s.go_on);
+        assert_eq!(serde_json::to_string(&s).unwrap(), wait);
+        assert!(serde_json::from_str::<Step>(r#"{"do":"wait"}"#).is_err());
+    }
+
+    /// Macros saved before 2.2: waits in seconds, and nothing about rounds or the pause between steps.
+    #[test]
+    fn older_macros() {
+        let json = r#"{"id":"a","name":"Old","steps":[{"do":"wait","secs":2.0},{"do":"wait","secs":0.5,"go_on":true}],"schedule":null,"runs":[]}"#;
+        let m: Macro = serde_json::from_str(json).unwrap();
+        assert!(matches!(m.steps[0].act, Act::Wait(Pause { ms: 2000 })));
+        assert!(matches!(m.steps[1].act, Act::Wait(Pause { ms: 500 })) && m.steps[1].go_on);
+        assert_eq!(m.pace, Pace::default());
+        assert_eq!(m.pace.step_gap_ms, 350);
+        // Written back in the new form
+        let again = serde_json::to_value(&m).unwrap();
+        assert_eq!(again["steps"][0], serde_json::json!({ "do": "wait", "ms": 2000 }));
+        assert_eq!((again["times"].as_u64(), again["step_gap_ms"].as_u64(), again["round_gap_ms"].as_u64()), (Some(1), Some(350), Some(0)));
+        // A panel left open from before the update sends seconds too
+        let d: Draft = serde_json::from_str(r#"{"id":null,"name":"x","steps":[{"do":"wait","secs":3}],"schedule":null}"#).unwrap();
+        assert!(matches!(d.steps[0].act, Act::Wait(Pause { ms: 3000 })));
+        let d: Draft = serde_json::from_str(r#"{"name":"x","times":5,"step_gap_ms":0,"round_gap_ms":1000}"#).unwrap();
+        assert_eq!(d.pace, Pace { times: 5, step_gap_ms: 0, round_gap_ms: 1000 });
     }
 
     #[test]
