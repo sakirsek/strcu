@@ -160,7 +160,7 @@ On an iPhone a web page can neither fill the screen nor turn itself sideways, so
 turns the full screen instead: turn the phone to the left, with rotation lock on or off. While the keyboard is
 open, it stands upright.
 
-<img src="docs/fullscreen.png" alt="The panel in full screen on a phone held sideways, with the crosshair on a file and the click bar, and the keyboard button and the Quick switch at the bottom right" width="640">
+<img src="docs/fullscreen.png" alt="The panel in full screen on a phone held sideways, with the crosshair on a file and the click bar, the exit and screenshot buttons at the top left, and the keyboard button and the Quick switch at the bottom right" width="640">
 
 **Tablets** (and wide browser windows): the Screen tab fills the page and the image takes all the room the
 controls leave. Held sideways, the tabs move to a rail on the left and the controls sit in one row under the
@@ -191,7 +191,7 @@ either way is logged and shown on the computer's main screen.
 
 ### Macros
 
-<img src="docs/macros.png" alt="The Macros tab on a phone: the list of macros with their schedules and last runs, a macro set to run on weekdays at 09:00, its steps and recent runs, and the Screen tab while recording with Quick on" width="100%">
+<img src="docs/macros.png" alt="The Macros tab on a phone: the list of macros with their schedules, next and last runs and pause buttons, a macro set to run on weekdays at 09:00 with how many times it runs, its steps and recent runs, and the Screen tab while recording with Quick on" width="100%">
 
 A macro is a list of steps that StrCu runs in order on the computer:
 
