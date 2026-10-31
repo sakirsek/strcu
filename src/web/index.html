@@ -482,8 +482,11 @@
     #p-screen { display: grid; grid-template-columns: minmax(0, 330px) minmax(180px, 1fr) minmax(0, 330px); grid-template-rows: minmax(0, 1fr) auto auto; gap: 8px 10px; }
     #p-screen .view { grid-area: 1 / 1 / 2 / -1; align-items: center; margin-bottom: 2px; }
     #p-screen .toolbar { grid-area: 2 / 1; }
-    /* With Quick on there is no typing box under the view buttons */
-    #p-screen.qmode .toolbar { grid-area: 2 / 1 / 4 / 2; }
+    /* With Quick on there is no typing box under the view buttons, and the keyboard button joins them: the
+       view switch gets a line of its own and the buttons go under it */
+    #p-screen.qmode .toolbar { grid-area: 2 / 1 / 4 / 2; flex-wrap: wrap; align-content: center; }
+    #p-screen.qmode .toolbar .seg { flex-basis: 100%; }
+    #p-screen.qmode #quickSw { flex: 1; }
     #p-screen .toolbar .tool { height: 44px; }
     #p-screen .toolbar .seg button { min-height: 36px; }
     #p-screen .tstrip { grid-area: 2 / 2 / 4 / 3; height: auto; gap: 14px; padding: 8px 14px 8px 8px; }
