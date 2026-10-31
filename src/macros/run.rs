@@ -318,6 +318,11 @@ impl Engine {
         tokio::spawn(self.clone().run_task(m, how));
     }
 
+    /// A macro is running, or a step is being tried.
+    pub fn busy(&self) -> bool {
+        self.running.lock().unwrap().is_some() || self.trying.load(SeqCst)
+    }
+
     /// The stop button. False if nothing was running.
     pub fn stop(&self) -> bool {
         let running = self.running.lock().unwrap().is_some();
@@ -883,7 +888,6 @@ pub fn target_at(ctx: &mut Ctx, x: i32, y: i32) -> Target {
     t
 }
 
-/// Adds a step; the same key pressed again becomes one step with a count.
 /// Adds a step to the recording, if there is one - unless it was done while Windows had the screen to itself:
 /// the lock screen, the sign-in screen, the "allow this app" prompt. What is typed there is a PIN or a
 /// password, which a macro must never keep, and nothing else done there means anything to play back.
@@ -900,12 +904,23 @@ fn add_to(rec: Option<&mut Recording>, secure: bool, add: impl FnOnce(&mut Vec<S
     }
 }
 
+/// Adds a step. The same key pressed again becomes one step with a count, and so does the wheel turned the same
+/// way on the same spot.
 fn add_step(steps: &mut Vec<Step>, act: Act) {
     if let (Act::Key { combo, .. }, Some(Step { act: Act::Key { combo: last, times }, .. })) = (&act, steps.last_mut())
         && combo == last
         && *times < 100
     {
         *times += 1;
+        return;
+    }
+    if let (Act::Scroll { target, notches }, Some(Step { act: Act::Scroll { target: last, notches: so_far }, .. })) =
+        (&act, steps.last_mut())
+        && target == last
+        && notches.signum() == so_far.signum()
+        && (*so_far + notches).abs() <= 30
+    {
+        *so_far += notches;
         return;
     }
     if steps.len() < MAX_STEPS {
@@ -975,6 +990,28 @@ mod tests {
         assert_eq!(steps.len(), 3);
         assert!(matches!(&steps[1].act, Act::Key { combo, times: 2 } if combo == "backspace"));
         assert!(matches!(&steps[2].act, Act::Key { combo, times: 1 } if combo == "enter"));
+    }
+
+    #[test]
+    fn a_wheel_turned_on_one_spot_is_one_step() {
+        let at = |x| Target { name: String::new(), kind: String::new(), by_name: false, fx: 0.5, fy: 0.5, app: None, rel: None, x, y: 10 };
+        let notches = |steps: &[Step]| -> Vec<i32> {
+            steps.iter().map(|s| if let Act::Scroll { notches, .. } = s.act { notches } else { 0 }).collect()
+        };
+        let mut steps = Vec::new();
+        for n in [-1, -1, -2] {
+            add_step(&mut steps, Act::Scroll { target: at(5), notches: n });
+        }
+        assert_eq!(notches(&steps), [-4]);
+        // Turned the other way, or somewhere else: a step of its own
+        add_step(&mut steps, Act::Scroll { target: at(5), notches: 1 });
+        add_step(&mut steps, Act::Scroll { target: at(6), notches: 1 });
+        assert_eq!(notches(&steps), [-4, 1, 1]);
+        // 30 notches at most in a step, as a step made by hand
+        for _ in 0..40 {
+            add_step(&mut steps, Act::Scroll { target: at(6), notches: 1 });
+        }
+        assert_eq!(notches(&steps), [-4, 1, 30, 11]);
     }
 
     #[test]

@@ -121,7 +121,9 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
   button by itself after three seconds. The typing box gives way to a keyboard button (next to the switch): it
   opens the phone keyboard, and each key goes to the computer as it is pressed. The keyboard's corrections and
   suggestions come out right on the computer, and Enter presses Enter. A hardware keyboard (a tablet's) needs
-  no button: its keys, shortcuts included, go straight to the computer.
+  no button: its keys, shortcuts included, go straight to the computer. A mouse works as the computer's own:
+  moving it moves the computer's pointer, its buttons press and let go there (a click, a double-click, a drag,
+  a right- or middle-click) and the wheel scrolls under the pointer. Moving it does nothing while a macro runs.
 - **Live view:** SD scales the long side to 1280 pixels, HD sends full resolution. The computer looks at the
   screen several times a second and sends only the parts that changed, as JPEG pieces, and nothing while the
   screen is still. While something keeps changing (scrolling, a video) the pieces are a little softer, and they
@@ -147,7 +149,8 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
 
 **Full screen:** ⛶ or turn the phone sideways. Pinch to zoom, drag to pan, tap to aim. At the bottom right, the
 keyboard button and the Quick switch. With Quick on, taps and long presses work as above, a quick drag still
-pans the zoomed image, and the keyboard button opens the phone keyboard.
+pans the zoomed image, and the keyboard button opens the phone keyboard. A mouse works as above, and Ctrl+wheel
+zooms.
 
 On an iPhone a web page can neither fill the screen nor turn itself sideways, so ⛶ on a phone held upright
 turns the full screen instead: turn the phone to the left, with rotation lock on or off. While the keyboard is

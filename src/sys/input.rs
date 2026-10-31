@@ -53,14 +53,19 @@ pub fn move_to(x: i32, y: i32) -> Result<()> {
     Ok(())
 }
 
-pub fn click(x: i32, y: i32, button: Button, count: u32) -> Result<()> {
-    move_to(x, y)?;
-    thread::sleep(Duration::from_millis(30));
-    let (down, up) = match button {
+/// The flags that press and let go of a button.
+fn flags(button: Button) -> (MOUSE_EVENT_FLAGS, MOUSE_EVENT_FLAGS) {
+    match button {
         Button::Left => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
         Button::Right => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
         Button::Middle => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
-    };
+    }
+}
+
+pub fn click(x: i32, y: i32, button: Button, count: u32) -> Result<()> {
+    move_to(x, y)?;
+    thread::sleep(Duration::from_millis(30));
+    let (down, up) = flags(button);
     for i in 0..count.max(1) {
         send(&[mouse(down, 0), mouse(up, 0)])?;
         if i + 1 < count {
@@ -89,16 +94,12 @@ pub fn drag(from: (i32, i32), to: (i32, i32)) -> Result<()> {
     moved.and(up)
 }
 
-/// Presses the left button at a point and keeps it held: a drag the phone steers with `hold_move` and ends
+/// Presses the left button at a point and keeps it held: a drag the phone steers with `pointer_to` and ends
 /// with `hold_up`.
 pub fn hold_down(x: i32, y: i32) -> Result<()> {
     move_to(x, y)?;
     thread::sleep(Duration::from_millis(30));
     send(&[mouse(MOUSEEVENTF_LEFTDOWN, 0)])
-}
-
-pub fn hold_move(x: i32, y: i32) -> Result<()> {
-    send(&[move_abs(x, y)])
 }
 
 /// Lets go at the point (also if the last move fails).
@@ -109,9 +110,29 @@ pub fn hold_up(x: i32, y: i32) -> Result<()> {
     moved.and(up)
 }
 
-/// Lets go of a held left button wherever the pointer is.
-pub fn let_go() -> Result<()> {
-    send(&[mouse(MOUSEEVENTF_LEFTUP, 0)])
+/// Lets go of a held button wherever the pointer is.
+pub fn let_go(button: Button) -> Result<()> {
+    send(&[mouse(flags(button).1, 0)])
+}
+
+// A mouse on the phone or tablet, used as the computer's own: every move, press, release and wheel turn is
+// passed on as it comes, each in one go with the move to its point.
+
+pub fn pointer_to(x: i32, y: i32) -> Result<()> {
+    send(&[move_abs(x, y)])
+}
+
+pub fn press(x: i32, y: i32, button: Button) -> Result<()> {
+    send(&[move_abs(x, y), mouse(flags(button).0, 0)])
+}
+
+pub fn release(x: i32, y: i32, button: Button) -> Result<()> {
+    send(&[move_abs(x, y), mouse(flags(button).1, 0)])
+}
+
+/// `units`: 120 to a wheel notch, positive up; a touchpad gives less.
+pub fn wheel(x: i32, y: i32, units: i32) -> Result<()> {
+    send(&[move_abs(x, y), mouse(MOUSEEVENTF_WHEEL, units)])
 }
 
 /// A real mouse move (some apps only start dragging on one), in the whole desktop's 0..65535 coordinates.

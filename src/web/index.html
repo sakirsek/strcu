@@ -1034,7 +1034,7 @@ function busy(on) { $$('.livedot').forEach(d => d.classList.toggle('busy', on));
 function authError() { const e = new Error(t('err.signin_required')); e.auth = true; return e; }
 
 // Clicking or typing from the panel while a macro runs would mix with its steps: ask to stop it first
-const INPUT_PATHS = new Set(['/api/click', '/api/type', '/api/key', '/api/scroll', '/api/live', '/api/hold', '/api/focus', '/api/close', '/api/launch', '/api/lock', '/api/shutdown']);
+const INPUT_PATHS = new Set(['/api/click', '/api/type', '/api/key', '/api/scroll', '/api/live', '/api/hold', '/api/mouse', '/api/focus', '/api/close', '/api/launch', '/api/lock', '/api/shutdown']);
 
 async function api(path, body) {
   if (INPUT_PATHS.has(path) && S.mac.state.running) {
@@ -1907,19 +1907,97 @@ function quickGestures(img, host) {
   };
 }
 
+// ---------- a mouse at the phone or tablet ----------
+// With Quick on, a mouse plugged into the device (or a computer's, in its browser) is the computer's own:
+// moving it moves the computer's pointer, its buttons press and let go there (a click, or a drag if it moved in
+// between) and the wheel scrolls under the pointer. Touch stays as above. What piles up while a request is on
+// its way goes together in the next one, so a double-click keeps its pace; moves keep only the newest.
+const MQ = { ops: [], busy: false, at: 0, held: null, keep: null };
+const MOUSE_BUTTONS = ['left', 'middle', 'right'];
+function mouseQuick(e) { return e.pointerType === 'mouse' && quickOn(); }
+function mouseSend(op) {
+  const last = MQ.ops[MQ.ops.length - 1];
+  if (op.do === 'move' && last && last.do === 'move') MQ.ops[MQ.ops.length - 1] = op;
+  else if (op.do === 'wheel' && last && last.do === 'wheel' && Math.sign(op.units) === Math.sign(last.units)) Object.assign(last, op, { units: last.units + op.units });
+  else MQ.ops.push(op);
+  if (!MQ.busy) pumpMouse();
+}
+async function pumpMouse() {
+  MQ.busy = true;
+  while (MQ.ops.length) {
+    // Moves alone go some 30 times a second at most
+    const wait = MQ.at + 33 - Date.now();
+    if (wait > 0 && MQ.ops.every(o => o.do === 'move')) await new Promise(r => setTimeout(r, wait));
+    const ops = MQ.ops.splice(0, 64);
+    MQ.at = Date.now();
+    try { await api('/api/mouse', { ops }); }
+    catch (e) {
+      // What came after it is dropped, the release of a press too: the computer lets go by itself
+      MQ.ops = []; clearInterval(MQ.keep); MQ.held = null;
+      if (!e.auth) toast(e.message, true);
+    }
+  }
+  MQ.busy = false;
+}
+function mouseDown(e, img) {
+  const button = MOUSE_BUTTONS[e.button], p = pcAt(img, e);
+  if (!button || !p || MQ.held) return;
+  e.currentTarget.setPointerCapture(e.pointerId);
+  MQ.held = { button, last: p };
+  mouseSend({ do: 'down', button, ...p });
+  // Tells the computer the button is still held even if the mouse does not move
+  MQ.keep = setInterval(() => { if (MQ.held) mouseSend({ do: 'move', ...MQ.held.last }); }, 1000);
+}
+function mouseMove(e, img) {
+  if (MQ.held) {
+    const p = pcAt(img, e, true);
+    if (p) { MQ.held.last = p; mouseSend({ do: 'move', ...p }); }
+    return;
+  }
+  // Not while a macro runs: the computer would take it for someone there and stop the macro
+  if (e.buttons || S.mac.state.running) return;
+  const p = pcAt(img, e);
+  if (p) mouseSend({ do: 'move', ...p });
+}
+function mouseUp(e, img) {
+  const h = MQ.held;
+  if (!h) return;
+  clearInterval(MQ.keep); MQ.held = null;
+  mouseSend({ do: 'up', button: h.button, ...((e && pcAt(img, e, true)) || h.last) });
+}
+// Windows counts 120 to a wheel notch, up positive. A wheel that clicks gives whole notches (as Chrome's
+// wheelDeltaY says); a touchpad gives pixels, passed on in proportion (100 pixels to a notch).
+function mouseWheel(e, img) {
+  const p = pcAt(img, e);
+  if (!p) return;
+  e.preventDefault();
+  const px = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaMode === 2 ? e.deltaY * 300 : e.deltaY;
+  const units = e.wheelDeltaY && e.wheelDeltaY % 120 === 0 ? e.wheelDeltaY : -Math.round(px * 1.2);
+  if (units) mouseSend({ do: 'wheel', units, ...p });
+}
+
 const QV = quickGestures(() => $('#shot'), () => $('#view .stage'));
 (() => {
   const tap = $('#tap');
-  tap.addEventListener('pointerdown', e => { if (quickOn() && e.isPrimary && e.button === 0) { tap.setPointerCapture(e.pointerId); QV.down(e); } });
-  tap.addEventListener('pointermove', e => { if (e.isPrimary) QV.move(e); });
-  tap.addEventListener('pointerup', e => { if (e.isPrimary) QV.up(e); });
-  tap.addEventListener('pointercancel', () => QV.cancel());
+  tap.addEventListener('pointerdown', e => {
+    if (mouseQuick(e)) mouseDown(e, $('#shot'));
+    else if (quickOn() && e.isPrimary && e.button === 0) { tap.setPointerCapture(e.pointerId); QV.down(e); }
+  });
+  tap.addEventListener('pointermove', e => {
+    if (e.pointerType === 'mouse') { if (quickOn() || MQ.held) mouseMove(e, $('#shot')); }
+    else if (e.isPrimary) QV.move(e);
+  });
+  tap.addEventListener('pointerup', e => { if (e.pointerType === 'mouse') mouseUp(e, $('#shot')); else if (e.isPrimary) QV.up(e); });
+  tap.addEventListener('pointercancel', () => { mouseUp(null); QV.cancel(); });
   // Once the hold has started the finger drags on the computer, not the page
   tap.addEventListener('touchmove', e => { if (QV.holding()) e.preventDefault(); }, { passive: false });
   tap.addEventListener('contextmenu', e => { if (quickOn()) e.preventDefault(); });
+  // The middle button would start the browser's own scrolling
+  tap.addEventListener('mousedown', e => { if (quickOn() && e.button === 1) e.preventDefault(); });
+  tap.addEventListener('wheel', e => { if (quickOn() && !e.ctrlKey) mouseWheel(e, $('#shot')); }, { passive: false });
 })();
 const QF = quickGestures(() => $('#fsImg'), () => $('#fs'));
-function quickStop() { QV.cancel(); QF.cancel(); }
+function quickStop() { QV.cancel(); QF.cancel(); mouseUp(null); }
 document.addEventListener('visibilitychange', () => { if (document.hidden) quickStop(); });
 
 // ---------- keys ----------
@@ -2441,7 +2519,7 @@ function enterFs(real) {
 
 function exitFs() {
   if (!S.fs) return;
-  QF.cancel();
+  QF.cancel(); mouseUp(null);
   S.fs = false; S.fsAuto = false;
   fsTurn();
   copyPicture($('#fsImg'), $('#shot'));
@@ -2476,6 +2554,7 @@ LAND.addEventListener('change', () => {
     return { pinch: true, d0: Math.hypot(a.x - b.x, a.y - b.y) || 1, k0: Z.k, px: (m.x - Z.x) / Z.k, py: (m.y - Z.y) / Z.k };
   };
   stage.addEventListener('pointerdown', e => {
+    if (mouseQuick(e)) { mouseDown(e, $('#fsImg')); return; }
     stage.setPointerCapture(e.pointerId);
     const p = fsPt(e);
     P.set(e.pointerId, p);
@@ -2483,6 +2562,7 @@ LAND.addEventListener('change', () => {
     else if (P.size === 2) { QF.cancel(); G = pinch(); }
   });
   stage.addEventListener('pointermove', e => {
+    if (e.pointerType === 'mouse' && (quickOn() || MQ.held)) { mouseMove(e, $('#fsImg')); return; }
     if (!P.has(e.pointerId) || !G) return;
     const p = fsPt(e);
     P.set(e.pointerId, p);
@@ -2502,6 +2582,7 @@ LAND.addEventListener('change', () => {
     }
   });
   const end = e => {
+    if (e.pointerType === 'mouse' && MQ.held) { mouseUp(e.type === 'pointerup' ? e : null, $('#fsImg')); return; }
     if (!P.has(e.pointerId)) return;
     P.delete(e.pointerId);
     if (QF.active()) { if (e.type === 'pointerup' && !P.size) QF.up(e); else QF.cancel(); }
@@ -2515,7 +2596,13 @@ LAND.addEventListener('change', () => {
   stage.addEventListener('pointerup', end);
   stage.addEventListener('pointercancel', end);
   stage.addEventListener('contextmenu', e => e.preventDefault());
-  stage.addEventListener('wheel', e => { e.preventDefault(); const p = fsPt(e); fsZoom(Z.k * Math.exp(-e.deltaY * 0.0015), p.x, p.y); }, { passive: false });
+  stage.addEventListener('mousedown', e => { if (quickOn() && e.button === 1) e.preventDefault(); });
+  // With Quick on the wheel scrolls the computer, and Ctrl+wheel (a touchpad's pinch too) zooms the image
+  stage.addEventListener('wheel', e => {
+    e.preventDefault();
+    if (quickOn() && !e.ctrlKey) { mouseWheel(e, $('#fsImg')); return; }
+    const p = fsPt(e); fsZoom(Z.k * Math.exp(-e.deltaY * 0.0015), p.x, p.y);
+  }, { passive: false });
 })();
 
 function showFsType(on) {
@@ -3347,7 +3434,7 @@ async function finishRecording(keep) {
 
 function showTab(name) {
   if (S.tab === 'keyboard' && name !== 'keyboard') clearMods();
-  if (name !== 'screen') QV.cancel();
+  if (name !== 'screen') { QV.cancel(); mouseUp(null); }
   // Leaving Screen while choosing a target for a macro gives up the choice
   if (S.mac.pick && name !== 'screen') { S.mac.pick = null; renderMacBar(); }
   S.tab = name;

@@ -154,12 +154,7 @@ pub(super) struct ClickReq {
 pub(super) async fn click(State(st): State<AppState>, Json(r): Json<ClickReq>) -> ApiResult<Json<Value>> {
     let button = r.button.unwrap_or(input::Button::Left);
     let count = r.count.unwrap_or(1).clamp(1, 3);
-    let verb = Msg::new(match (button, count) {
-        (input::Button::Right, _) => "ev.right_click",
-        (input::Button::Middle, _) => "ev.middle_click",
-        (_, 1) => "ev.click",
-        _ => "ev.double_click",
-    });
+    let verb = click_verb(button, count);
     let desc = match r.label.as_deref().map(str::trim) {
         Some(l) if !l.is_empty() => Msg::new("ev.labeled").with("action", verb).with("label", short(l)),
         _ => verb,
@@ -293,9 +288,10 @@ pub(super) async fn scroll(State(st): State<AppState>, Json(r): Json<ScrollReq>)
     Ok(answered(left_out))
 }
 
-/// A left button held down from the panel: pressed on a long press, moved as the finger moves, let go when it
-/// lifts. If the panel goes quiet (the phone lost its connection) it is let go by itself, so it is never left
-/// held. The panel sends a move at least every second while holding.
+/// A button held down from the panel: the left one on a long press, moved as the finger moves and let go when
+/// it lifts, or any of them pressed on a mouse at the phone or tablet (`mouse`). If the panel goes quiet (the
+/// phone lost its connection) it is let go by itself, so it is never left held. The panel sends a move at least
+/// every second while holding.
 #[derive(Default)]
 pub(super) struct Hold {
     /// Counts presses: the watchdog of an earlier one leaves a newer one alone
@@ -304,9 +300,26 @@ pub(super) struct Hold {
 }
 
 struct Held {
-    /// Where the button went down (for recording)
+    button: input::Button,
+    /// Where it went down
+    at: (i32, i32),
+    /// It went further than a click's wobble: let go, it is a drag
+    moved: bool,
+    /// What it went down on (only while recording)
     from: Option<macros::Target>,
     last: Instant,
+}
+
+impl Held {
+    fn new(button: input::Button, at: (i32, i32), from: Option<macros::Target>) -> Held {
+        Held { button, at, moved: false, from, last: Instant::now() }
+    }
+
+    fn went(&mut self, x: i32, y: i32) {
+        self.last = Instant::now();
+        // As far as Windows lets a double-click's pointer wander (4 pixels by default)
+        self.moved |= (x - self.at.0).abs() > 4 || (y - self.at.1).abs() > 4;
+    }
 }
 
 const HOLD_QUIET: Duration = Duration::from_secs(3);
@@ -350,20 +363,14 @@ pub(super) async fn hold(State(st): State<AppState>, Json(r): Json<HoldReq>) -> 
                     return Err(e.into());
                 }
             };
-            let seq = {
-                let mut h = st.hold.lock().unwrap();
-                h.seq += 1;
-                h.on = Some(Held { from, last: Instant::now() });
-                h.seq
-            };
-            tokio::spawn(watch_hold(st.clone(), seq));
+            start_hold(&st, Held::new(input::Button::Left, (x, y), from));
         }
         HoldStep::Move => {
             match st.hold.lock().unwrap().on.as_mut() {
-                Some(held) => held.last = Instant::now(),
+                Some(held) => held.went(x, y),
                 None => return Err(ApiError(StatusCode::CONFLICT, Msg::new("err.not_held"))),
             }
-            st.worker.run(move |_| input::hold_move(x, y)).await?;
+            st.worker.run(move |_| input::pointer_to(x, y)).await?;
         }
         HoldStep::Up => {
             let Some(held) = st.hold.lock().unwrap().on.take() else {
@@ -384,10 +391,21 @@ pub(super) async fn hold(State(st): State<AppState>, Json(r): Json<HoldReq>) -> 
     Ok(Json(json!({ "ok": true })))
 }
 
+fn start_hold(st: &AppState, held: Held) {
+    let seq = {
+        let mut h = st.hold.lock().unwrap();
+        h.seq += 1;
+        h.on = Some(held);
+        h.seq
+    };
+    tokio::spawn(watch_hold(st.clone(), seq));
+}
+
 /// Lets go of a button the panel left held (a lost "up").
 async fn let_go(st: &AppState) {
-    if st.hold.lock().unwrap().on.take().is_some() {
-        let r = st.worker.run(|_| input::let_go()).await;
+    let held = st.hold.lock().unwrap().on.take();
+    if let Some(held) = held {
+        let r = st.worker.run(move |_| input::let_go(held.button)).await;
         st.log.add(Msg::new("ev.drag_let_go"), r.is_ok());
     }
 }
@@ -407,6 +425,139 @@ async fn watch_hold(st: AppState, seq: u64) {
             return;
         }
     }
+}
+
+/// What a mouse at the phone or tablet did, in order (Quick on): the panel sends it as it happens, and what
+/// piles up while a request is on its way comes together in the next one, so a double-click keeps its pace.
+#[derive(Deserialize)]
+#[serde(tag = "do", rename_all = "lowercase")]
+pub(super) enum MouseOp {
+    Move { x: i32, y: i32 },
+    Down { x: i32, y: i32, button: input::Button },
+    Up { x: i32, y: i32, button: input::Button },
+    /// 120 to a notch, positive up
+    Wheel { x: i32, y: i32, units: i32 },
+}
+
+#[derive(Deserialize)]
+pub(super) struct MouseReq {
+    ops: Vec<MouseOp>,
+}
+
+/// After this long without the wheel, the next turn starts a new line in the log.
+const WHEEL_GAP: Duration = Duration::from_secs(5);
+
+/// The mouse at the phone or tablet, used as the computer's own. Moving it moves the pointer (not while a
+/// macro runs: it would take that for someone at the computer and stop); a press and its release are a click,
+/// or a drag if it moved in between; the wheel scrolls under the pointer.
+pub(super) async fn mouse(State(st): State<AppState>, Json(r): Json<MouseReq>) -> ApiResult<Json<Value>> {
+    if r.ops.len() > 64 {
+        return Err(ApiError(StatusCode::BAD_REQUEST, Msg::new("err.mac_value")));
+    }
+    let mut left_out = false;
+    for op in r.ops {
+        match op {
+            MouseOp::Move { x, y } => {
+                // A press stops the macro first (and the panel asks before it); until it has stopped, a button
+                // held here still drags
+                let holding = match st.hold.lock().unwrap().on.as_mut() {
+                    Some(held) => {
+                        held.went(x, y);
+                        true
+                    }
+                    None => false,
+                };
+                if !holding && st.macros.busy() {
+                    continue;
+                }
+                st.worker.run(move |_| input::pointer_to(x, y)).await?;
+            }
+            MouseOp::Down { x, y, button } => {
+                st.macros.interrupt();
+                let_go(&st).await;
+                let rec = st.macros.recording();
+                let pressed = st
+                    .worker
+                    .run(move |ctx| {
+                        // Read before the press changes the screen
+                        let from = rec.then(|| macros::target_at(ctx, x, y));
+                        input::press(x, y, button)?;
+                        Ok(from)
+                    })
+                    .await;
+                let from = match pressed {
+                    Ok(from) => from,
+                    Err(e) => {
+                        st.log.add(click_verb(button, 1), false);
+                        return Err(e.into());
+                    }
+                };
+                start_hold(&st, Held::new(button, (x, y), from));
+            }
+            MouseOp::Up { x, y, button } => {
+                let held = {
+                    let mut h = st.hold.lock().unwrap();
+                    if h.on.as_ref().is_some_and(|held| held.button == button) { h.on.take() } else { None }
+                };
+                // Already let go (by the watchdog, or a press that failed): nothing is held to let go of
+                let Some(mut held) = held else { continue };
+                held.went(x, y);
+                let drag = held.moved && button == input::Button::Left;
+                let (rec, secure) = (drag && held.from.is_some(), desk::secure_in_front());
+                let desc = if drag { Msg::new("ev.dragged") } else { click_verb(button, 1) };
+                let to = logged(&st, desc, move |ctx| {
+                    let to = rec.then(|| macros::target_at(ctx, x, y));
+                    input::release(x, y, button)?;
+                    Ok(to)
+                })
+                .await?;
+                let step = match (held.from, to) {
+                    (Some(from), Some(to)) => Some(Act::Drag { from, to }),
+                    (Some(target), None) if !held.moved => Some(Act::Click { target, button, count: 1 }),
+                    _ => None,
+                };
+                if let Some(step) = step {
+                    left_out |= st.macros.record(step, secure);
+                }
+            }
+            MouseOp::Wheel { x, y, units } => {
+                let units = units.clamp(-3600, 3600);
+                if units == 0 {
+                    continue;
+                }
+                st.macros.interrupt();
+                let (rec, secure) = (st.macros.recording(), desk::secure_in_front());
+                let done = st
+                    .worker
+                    .run(move |ctx| {
+                        let target = rec.then(|| macros::target_at(ctx, x, y));
+                        input::wheel(x, y, units)?;
+                        Ok(target)
+                    })
+                    .await;
+                let first = st.wheel_at.lock().unwrap().replace(Instant::now()).is_none_or(|t| t.elapsed() > WHEEL_GAP);
+                if first || done.is_err() {
+                    st.log.add(Msg::new(if units > 0 { "ev.scroll_up" } else { "ev.scroll_down" }), done.is_ok());
+                }
+                let notches = (units as f64 / 120.0).round() as i32;
+                if let Some(target) = done?
+                    && notches != 0
+                {
+                    left_out |= st.macros.record(Act::Scroll { target, notches }, secure);
+                }
+            }
+        }
+    }
+    Ok(answered(left_out))
+}
+
+fn click_verb(button: input::Button, count: u32) -> Msg {
+    Msg::new(match (button, count) {
+        (input::Button::Right, _) => "ev.right_click",
+        (input::Button::Middle, _) => "ev.middle_click",
+        (_, 1) => "ev.click",
+        _ => "ev.double_click",
+    })
 }
 
 #[derive(Deserialize)]

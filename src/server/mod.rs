@@ -76,10 +76,11 @@ struct AppState {
     /// When a turned-away address was last logged
     denied: Arc<Mutex<HashMap<String, Instant>>>,
     macros: Arc<macros::Engine>,
-    /// The left button held from the panel (long press, then drag)
+    /// A button held from the panel (a long press, then a drag; or a mouse at the phone or tablet)
     hold: Arc<Mutex<Hold>>,
-    /// When the panel last typed live (key by key); one log line per burst
+    /// When the panel last typed live (key by key), and last turned a mouse wheel: one log line per burst
     live_at: Arc<Mutex<Option<Instant>>>,
+    wheel_at: Arc<Mutex<Option<Instant>>>,
     /// Changes whenever the panel acts: the live view looks at the screen more often for a moment
     kick: Arc<tokio::sync::watch::Sender<u64>>,
     /// Files arriving from the phone
@@ -158,6 +159,7 @@ impl Panel {
             macros,
             hold: Arc::default(),
             live_at: Arc::default(),
+            wheel_at: Arc::default(),
             kick: Arc::new(tokio::sync::watch::Sender::new(0)),
             uploads: Arc::default(),
             usage: Arc::default(),
@@ -237,6 +239,7 @@ impl Panel {
             )
             .route("/api/scroll", post(control::scroll))
             .route("/api/hold", post(control::hold))
+            .route("/api/mouse", post(control::mouse))
             .route("/api/live", post(control::live))
             .route("/api/elements", get(desktop::elements))
             .route("/api/target", get(control::target))
