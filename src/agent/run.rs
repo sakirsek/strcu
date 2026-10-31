@@ -93,6 +93,7 @@ pub(super) fn done(job: Job, mind: &mut Mind) -> Did {
         Job::Throw { token } => Ok(throw(token, mind)),
         Job::Clip => clipboard::get().map(|text| Did::Clip { text }),
         Job::Copy { text } => clipboard::set(&text).map(|()| Did::Done),
+        Job::CopyImage { png } => clipboard::set_image(&png).map(|()| Did::Done),
         Job::Icon { path, size } => icons::png(&path, size).map(|png| Did::Icon { png }),
     };
     did.unwrap_or_else(|e| Did::Failed { why: Written::of(&e) })

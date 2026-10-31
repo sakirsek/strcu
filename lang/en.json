@@ -36,6 +36,7 @@
   "screen.quick_label": "Quick: a tap clicks, two taps double-click, a long press right-clicks or drags, and keys go to the computer one by one as they are pressed",
   "screen.kb": "Keyboard: each key goes to the computer at once",
   "screen.fullscreen": "Full screen",
+  "screen.snap": "Copy a screenshot",
   "screen.type_ph": "Type into the foreground window",
   "screen.type_label": "Text to type into the foreground window",
   "screen.type_to": "Type → {name}",
@@ -503,6 +504,11 @@
   "fs.keys": "Keyboard and Quick",
   "fs.kb": "Typing box",
   "toast.sent": "Sent: {combo}",
+  "toast.snap_both": "Screenshot copied: paste it here or on the computer",
+  "toast.snap_pc": "Screenshot copied to the computer's clipboard. This device's clipboard takes a picture only over https (the tunnel address).",
+  "toast.snap_pc_refused": "Screenshot copied to the computer's clipboard; this device's clipboard did not take it",
+  "toast.snap_here": "Screenshot copied on this device; the computer's clipboard did not take it: {msg}",
+  "toast.snap_none": "The screenshot could not be copied: {msg}",
   "toast.typed": {
     "one": "{n} character typed → {where}",
     "other": "{n} characters typed → {where}"
@@ -590,6 +596,7 @@
     "one": "Text put on the clipboard ({n} character)",
     "other": "Text put on the clipboard ({n} characters)"
   },
+  "ev.snap_copied": "Screenshot copied to the clipboard",
   "ev.file_sent": "File sent to a device: {name}",
   "ev.file_received": "File received from a device: {name}",
   "ev.maximized": "Maximized",

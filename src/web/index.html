@@ -199,13 +199,18 @@
   .tool[aria-checked="true"] .knob, .fsquick[aria-checked="true"] .knob { background: var(--acc); box-shadow: none; }
   .tool[aria-checked="true"] .knob::after, .fsquick[aria-checked="true"] .knob::after { transform: translateX(12px); background: var(--acc-ink); }
   .tool[aria-pressed="true"] { border-color: var(--acc); background: var(--acc-soft); color: var(--acc); }
+  /* Narrow phones: with Quick on, five things share the row under the image */
+  @media (max-width: 380px) {
+    .toolbar { gap: 6px; }
+    .tool.sq { width: 34px; }
+  }
   /* On very narrow phones (320 px) keep the view buttons and the foreground window name from being cut */
   @media (max-width: 340px) {
     .top { gap: 6px; }
     .live button { min-width: 32px; padding: 0 4px; }
-    .toolbar { gap: 6px; }
     .toolbar .seg button { padding: 0 2px; font-size: 12px; }
     .tool { gap: 6px; padding: 0 6px 0 8px; }
+    .tool.sq { width: 32px; }
   }
   /* Target strip: fixed height, so the buttons below do not move when aiming */
   .tstrip { flex: none; width: 100%; height: 64px; display: flex; align-items: center; gap: 10px; padding: 4px 12px 4px 4px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel); color: var(--fg); text-align: left; }
@@ -578,6 +583,7 @@
         </div>
         <button type="button" id="quickSw" class="tool" role="switch" aria-checked="false" data-i18n-label="screen.quick_label"><span data-i18n="screen.quick"></span><span class="knob" aria-hidden="true"></span></button>
         <button type="button" id="kbBtn" class="tool sq" aria-pressed="false" data-i18n-label="screen.kb" hidden><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="2.5" y="6" width="19" height="12" rx="2"/><path d="M6.5 10h.01M10.5 10h.01M14.5 10h.01M18 10h.01M7.5 14h9"/></svg></button>
+        <button type="button" id="snapBtn" class="tool sq" data-i18n-label="screen.snap"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
         <button type="button" id="fsBtn" class="tool sq" data-i18n-label="screen.fullscreen"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg></button>
       </div>
 
@@ -876,6 +882,7 @@
   <span class="qmark" aria-hidden="true"></span>
   <div class="fsbar tl">
     <button type="button" id="fsExit" class="fsbtn glass" data-i18n-label="fs.exit"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5"/></svg></button>
+    <button type="button" id="fsSnap" class="fsbtn glass" data-i18n-label="screen.snap"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 8h3l2-3h6l2 3h3a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V9a1 1 0 0 1 1-1z"/><circle cx="12" cy="13" r="3.5"/></svg></button>
   </div>
   <div class="fsbar tr">
     <div class="live" role="group" data-i18n-label="live.group">
@@ -2621,6 +2628,40 @@ $('#fsType').addEventListener('submit', async e => {
   if (!inp.value) { inp.focus(); return; }
   if (await sendText(inp.value, false)) { liveReset(inp); showFsType(false); }
 });
+
+// ---------- screenshot ----------
+// The screen (or, in the window view, the window) at full size goes onto the computer's clipboard and, where the
+// browser lets a page do it (https, as through the tunnel, or on the computer itself), onto this device's too.
+function copyHere(got) {
+  if (!(window.isSecureContext && navigator.clipboard && navigator.clipboard.write && window.ClipboardItem)) return Promise.resolve(null);
+  // Asked while the tap is fresh, with the picture still on its way; a browser that wants the picture itself
+  // gets it once it is here
+  try { return navigator.clipboard.write([new ClipboardItem({ 'image/png': got })]).then(() => true, () => false); }
+  catch (_) { return got.then(b => navigator.clipboard.write([new ClipboardItem({ 'image/png': b })])).then(() => true, () => false); }
+}
+async function snapshot(btn) {
+  if (btn.disabled) return;
+  btn.disabled = true;
+  let pc = null;
+  const got = fetch('/api/screenshot', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ view: S.view }) })
+    .then(async r => {
+      if (r.status === 401) { showLogin(); throw authError(); }
+      if (!r.ok) { const d = await r.json().catch(() => null); throw new Error(d && d.error ? tm(d.error) : 'HTTP ' + r.status); }
+      pc = r.headers.get('x-pc-clip');
+      return r.blob();
+    });
+  const here = copyHere(got);
+  try {
+    await got;
+    const onDevice = await here, pcOk = pc === 'ok', msg = pcOk ? '' : t(pc || 'err.internal');
+    if (pcOk && onDevice) toast(t('toast.snap_both'));
+    else if (pcOk) toast(t(onDevice === null ? 'toast.snap_pc' : 'toast.snap_pc_refused'), onDevice === false);
+    else toast(t(onDevice ? 'toast.snap_here' : 'toast.snap_none', { msg }), true);
+  } catch (e) { if (!e.auth) toast(e.message, true); }
+  finally { btn.disabled = false; }
+}
+$('#snapBtn').onclick = e => snapshot(e.currentTarget);
+$('#fsSnap').onclick = e => snapshot(e.currentTarget);
 
 // ---------- data used ----------
 // What StrCu sent to this phone and got from it since sign-in, by the computer's own count (usage.rs)

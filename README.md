@@ -124,6 +124,10 @@ Seven tabs: Screen, Keyboard, Elements, Windows, Files, Macros, More.
   no button: its keys, shortcuts included, go straight to the computer. A mouse works as the computer's own:
   moving it moves the computer's pointer, its buttons press and let go there (a click, a double-click, a drag,
   a right- or middle-click) and the wheel scrolls under the pointer. Moving it does nothing while a macro runs.
+- **Screenshot** (the camera button, also in full screen): the screen, or the window in the window view, at
+  full size and without the pointer goes onto the computer's clipboard and onto the device's, to paste on
+  either. Browsers let a page put a picture on the device's clipboard only over https (the tunnel); on the home
+  network it goes onto the computer's alone, and the panel says so.
 - **Live view:** SD scales the long side to 1280 pixels, HD sends full resolution. The computer looks at the
   screen several times a second and sends only the parts that changed, as JPEG pieces, and nothing while the
   screen is still. While something keeps changing (scrolling, a video) the pieces are a little softer, and they

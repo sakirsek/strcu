@@ -29,8 +29,8 @@ pub use spawn::Agent;
 pub(crate) use spawn::STARTING;
 use run::{Mind, done, who};
 
-/// The biggest job or answer.
-const MAX_FRAME: u32 = 8 << 20;
+/// The biggest job or answer: a screenshot of a large screen as a PNG, in base64.
+const MAX_FRAME: u32 = 32 << 20;
 
 // ---------- what the worker asks for ----------
 
@@ -64,6 +64,11 @@ pub enum Job {
     Clip,
     /// Puts text on the clipboard in place of what is there.
     Copy { text: String },
+    /// Puts a screenshot (a PNG) on the clipboard in place of what is there.
+    CopyImage {
+        #[serde(with = "bytes")]
+        png: Vec<u8>,
+    },
     /// A program's or Start menu app's icon as a PNG; a Store app's comes from its package, read through the
     /// user's own `shell:AppsFolder\<id>`.
     Icon { path: String, size: u32 },
@@ -133,7 +138,8 @@ impl Job {
     fn limit(&self) -> Duration {
         Duration::from_secs(match self {
             Job::Who | Job::Clip | Job::Copy { .. } | Job::Icon { .. } => 5,
-            Job::Selected
+            Job::CopyImage { .. }
+            | Job::Selected
             | Job::TakeSelected { .. }
             | Job::Folder { .. }
             | Job::Take { .. }
@@ -330,6 +336,12 @@ mod tests {
         assert_eq!(text, r#"{"job":"launch","with":{"id":"Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"}}"#);
         assert_eq!(serde_json::from_str::<Job>(&text).unwrap(), launch);
         assert_eq!(serde_json::to_string(&Job::Apps).unwrap(), r#"{"job":"apps"}"#);
+        // A screenshot travels in base64: a large screen's still fits in a frame
+        let shot = Job::CopyImage { png: vec![1, 2, 3] };
+        let text = serde_json::to_string(&shot).unwrap();
+        assert_eq!(text, r#"{"job":"copy_image","with":{"png":"AQID"}}"#);
+        assert_eq!(serde_json::from_str::<Job>(&text).unwrap(), shot);
+        assert!(serde_json::to_vec(&Job::CopyImage { png: vec![0; 20 << 20] }).unwrap().len() < MAX_FRAME as usize);
         let did = Did::Launched {
             app: apps::App { name: "Hesap Makinesi".to_string(), id: "Calc!App".to_string(), store: true },
         };

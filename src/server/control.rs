@@ -15,7 +15,7 @@ use super::signin::paired;
 use super::{ApiError, ApiResult, AppState, logged, short};
 use crate::agent;
 use crate::auth;
-use crate::i18n::Msg;
+use crate::i18n::{self, Msg};
 use crate::log::LogEntry;
 use crate::macros::{self, Act};
 use crate::pair;
@@ -286,6 +286,45 @@ pub(super) async fn scroll(State(st): State<AppState>, Json(r): Json<ScrollReq>)
         _ => false,
     };
     Ok(answered(left_out))
+}
+
+#[derive(Deserialize)]
+pub(super) struct SnapReq {
+    /// "window": only the window in front, as the panel's view shows it
+    view: Option<String>,
+}
+
+/// A screenshot: the screen (or the window in front) at full size and without the pointer, as Print Screen
+/// takes it. It goes onto the computer's clipboard, and back to the panel as a PNG for the device's own;
+/// `x-pc-clip` says whether the computer's took it ("ok", else the reason's code).
+pub(super) async fn screenshot(State(st): State<AppState>, Json(r): Json<SnapReq>) -> ApiResult<Response> {
+    let window = r.view.as_deref() == Some("window");
+    let png = st
+        .worker
+        .run(move |_| {
+            let area = window.then(crate::stream::window_area).flatten().unwrap_or_else(screen::virtual_screen);
+            screen::encode_png(&screen::capture(area)?)
+        })
+        .await?;
+    let copied = st.agent.done(agent::Job::CopyImage { png: png.clone() }).await;
+    st.log.add(Msg::new("ev.snap_copied"), copied.is_ok());
+    let pc = match &copied {
+        Ok(()) => "ok",
+        // Only a code travels in a header: the reason itself, without the detail around it
+        Err(e) => match i18n::from_error(e) {
+            m if m.code == "err.detail" => match m.args.iter().find(|(k, _)| *k == "msg") {
+                Some((_, i18n::Arg::Msg(inner))) => inner.code,
+                _ => "err.internal",
+            },
+            m => m.code,
+        },
+    };
+    let mut res = png.into_response();
+    let h = res.headers_mut();
+    h.insert(header::CONTENT_TYPE, HeaderValue::from_static("image/png"));
+    h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    h.insert("x-pc-clip", HeaderValue::from_static(pc));
+    Ok(res)
 }
 
 /// A button held down from the panel: the left one on a long press, moved as the finger moves and let go when

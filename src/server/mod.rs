@@ -225,6 +225,7 @@ impl Panel {
         let api = Router::new()
             .route("/api/status", get(control::status))
             .route("/api/shot", get(control::shot))
+            .route("/api/screenshot", post(control::screenshot))
             .route("/api/stream", get(control::stream))
             .route("/api/click", post(control::click))
             .route("/api/type", post(control::type_text))
