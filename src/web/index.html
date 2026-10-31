@@ -1922,6 +1922,34 @@ function quickGestures(img, host) {
 // moving it moves the computer's pointer, its buttons press and let go there (a click, or a drag if it moved in
 // between) and the wheel scrolls under the pointer. Touch stays as above. What piles up while a request is on
 // its way goes together in the next one, so a double-click keeps its pace; moves keep only the newest.
+// Why a mouse at the device does or does not move the computer's pointer, counted step by step. Shown with #tani
+// in the address; only while a tablet's mouse that does not move the pointer is looked into.
+const MD = { on: false, n: {}, last: '', el: null, t: 0 };
+function md(k, last) {
+  if (!MD.on) return;
+  MD.n[k] = (MD.n[k] || 0) + 1;
+  if (last !== undefined) MD.last = last;
+  if (MD.t) return;
+  MD.t = setTimeout(() => {
+    MD.t = 0;
+    const lines = Object.entries(MD.n).map(([k, v]) => v + '  ' + k);
+    lines.unshift(`now: quick=${quickOn()} running=${!!S.mac.state.running} held=${!!MQ.held} busy=${MQ.busy} queued=${MQ.ops.length}`);
+    if (MD.last) lines.push(MD.last);
+    MD.el.textContent = lines.join(String.fromCharCode(10));
+  }, 100);
+}
+function mdStart() {
+  if (MD.on || location.hash !== '#tani') return;
+  MD.on = true;
+  MD.el = document.createElement('pre');
+  MD.el.style.cssText = 'position:fixed;left:8px;top:8px;z-index:2147483000;margin:0;padding:8px 10px;max-width:70vw;background:rgba(0,0,0,.88);color:#7cfc00;font:14px/1.35 monospace;white-space:pre-wrap;pointer-events:none';
+  document.body.append(MD.el);
+  addEventListener('pointermove', e => md(`page: ${e.pointerType} buttons=${e.buttons} on #${e.target.id || e.target.tagName.toLowerCase()}`), true);
+  md('on', `quick=${S.quick} pick=${!!S.mac.pick} running=${!!S.mac.state.running}`);
+}
+mdStart();
+addEventListener('hashchange', mdStart);
+
 const MQ = { ops: [], busy: false, at: 0, held: null, keep: null };
 const MOUSE_BUTTONS = ['left', 'middle', 'right'];
 function mouseQuick(e) { return e.pointerType === 'mouse' && quickOn(); }
@@ -1940,8 +1968,10 @@ async function pumpMouse() {
     if (wait > 0 && MQ.ops.every(o => o.do === 'move')) await new Promise(r => setTimeout(r, wait));
     const ops = MQ.ops.splice(0, 64);
     MQ.at = Date.now();
-    try { await api('/api/mouse', { ops }); }
+    md('request: sent', 'last request: ' + ops.map(o => o.do).join(','));
+    try { await api('/api/mouse', { ops }); md('request: answered'); }
     catch (e) {
+      md('request: failed', 'failed: ' + e.message);
       // What came after it is dropped, the release of a press too: the computer lets go by itself
       MQ.ops = []; clearInterval(MQ.keep); MQ.held = null;
       if (!e.auth) toast(e.message, true);
@@ -1962,11 +1992,14 @@ function mouseMove(e, img) {
   if (MQ.held) {
     const p = pcAt(img, e, true);
     if (p) { MQ.held.last = p; mouseSend({ do: 'move', ...p }); }
+    md('move: button held, queued');
     return;
   }
   // Not while a macro runs: the computer would take it for someone there and stop the macro
-  if (e.buttons || S.mac.state.running) return;
+  if (e.buttons) { md(`move: left out, buttons=${e.buttons}`); return; }
+  if (S.mac.state.running) { md('move: left out, a macro runs'); return; }
   const p = pcAt(img, e);
+  md(p ? 'move: queued' : 'move: left out, off the picture');
   if (p) mouseSend({ do: 'move', ...p });
 }
 function mouseUp(e, img) {
@@ -1994,6 +2027,7 @@ const QV = quickGestures(() => $('#shot'), () => $('#view .stage'));
     else if (quickOn() && e.isPrimary && e.button === 0) { tap.setPointerCapture(e.pointerId); QV.down(e); }
   });
   tap.addEventListener('pointermove', e => {
+    md(`#tap: ${e.pointerType} quick=${quickOn()}`);
     if (e.pointerType === 'mouse') { if (quickOn() || MQ.held) mouseMove(e, $('#shot')); }
     else if (e.isPrimary) QV.move(e);
   });
@@ -2572,6 +2606,7 @@ LAND.addEventListener('change', () => {
     else if (P.size === 2) { QF.cancel(); G = pinch(); }
   });
   stage.addEventListener('pointermove', e => {
+    md(`#fsStage: ${e.pointerType} quick=${quickOn()}`);
     if (e.pointerType === 'mouse' && (quickOn() || MQ.held)) { mouseMove(e, $('#fsImg')); return; }
     if (!P.has(e.pointerId) || !G) return;
     const p = fsPt(e);
