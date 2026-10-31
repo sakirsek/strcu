@@ -25,6 +25,9 @@ use crate::worker::{Ctx, Worker};
 
 /// How long a step looks for its window or element (the app may still be opening or drawing)
 const FIND_FOR: Duration = Duration::from_secs(5);
+/// Pause between steps: only a breath, for the stop checks. How long the computer needs between two steps is
+/// for the macro's maker to say, with a wait step.
+const BETWEEN: Duration = Duration::from_millis(20);
 /// Input this long after a step's own still counts as the step's
 const OWN_INPUT_MS: u32 = 400;
 /// A scheduled macro does not start if the computer was used this recently
@@ -367,14 +370,13 @@ impl Engine {
         *self.running.lock().unwrap() = None;
     }
 
-    /// Runs a macro's steps as many times as it is set to, with its waits between steps and between rounds.
-    /// An error comes back with the step's number (from 1).
+    /// Runs a macro's steps as many times as it is set to, with its wait between rounds. An error comes back
+    /// with the step's number (from 1).
     fn run_macro<'a>(&'a self, m: &'a Macro, depth: usize, top: bool) -> Steps<'a> {
         Box::pin(async move {
-            let gap = Duration::from_millis(m.pace.step_gap_ms.into());
             for round in 1..=m.pace.times.max(1) {
                 if round > 1 {
-                    let rest = gap + Duration::from_millis(m.pace.round_gap_ms.into());
+                    let rest = BETWEEN + Duration::from_millis(m.pace.round_gap_ms.into());
                     self.pause(rest).await.map_err(|h| (m.steps.len(), h))?;
                 }
                 if top {
@@ -383,7 +385,7 @@ impl Engine {
                     }
                     self.taken.store(0, SeqCst);
                 }
-                if let Flow::End = self.run_steps(&m.steps, gap, depth, top).await? {
+                if let Flow::End = self.run_steps(&m.steps, depth, top).await? {
                     return Ok(Flow::End);
                 }
             }
@@ -391,8 +393,8 @@ impl Engine {
         })
     }
 
-    /// Runs steps in order, `gap` apart; an error comes back with the step's number (from 1).
-    fn run_steps<'a>(&'a self, steps: &'a [Step], gap: Duration, depth: usize, top: bool) -> Steps<'a> {
+    /// Runs steps in order; an error comes back with the step's number (from 1).
+    fn run_steps<'a>(&'a self, steps: &'a [Step], depth: usize, top: bool) -> Steps<'a> {
         Box::pin(async move {
             // How many times each Repeat step has sent the run back
             let mut rounds = vec![0u32; steps.len()];
@@ -437,7 +439,7 @@ impl Engine {
                 }
                 i += 1;
                 if i < steps.len() {
-                    self.pause(gap).await.map_err(|h| (n, h))?;
+                    self.pause(BETWEEN).await.map_err(|h| (n, h))?;
                 }
             }
             Ok(Flow::Next)

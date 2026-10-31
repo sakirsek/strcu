@@ -2911,10 +2911,10 @@ async function setSchedule(btn, m, on) {
     : t('mac.resumed', { name: m.name }) + (now && now.next ? ' · ' + t('mac.next_short', { when: fmtWhen(now.next) }) : ''));
 }
 
-// A new macro: runs once, with the usual wait between steps (macros/mod.rs)
-const MAC_TIMES = 1000, MAC_STEP_GAP = 350;
+// A new macro runs once; MAC_TIMES as in macros/mod.rs
+const MAC_TIMES = 1000;
 function newMacro(steps) {
-  return { id: null, name: t('mac.default_name', { n: (S.mac.list || []).length + 1 }), steps, times: 1, step_gap_ms: MAC_STEP_GAP, round_gap_ms: 0, schedule: null, runs: [] };
+  return { id: null, name: t('mac.default_name', { n: (S.mac.list || []).length + 1 }), steps, times: 1, round_gap_ms: 0, schedule: null, runs: [] };
 }
 
 function openEditor(m) {
@@ -3027,7 +3027,7 @@ function schedCard(d) {
     s ? h('p', { class: 'note' }, note) : null);
 }
 
-// How many times the steps run, and the waits between steps and between rounds (in milliseconds)
+// How many times the steps run, and an extra wait between rounds (in milliseconds)
 function paceCard(d) {
   const rest = num(d.round_gap_ms, 0, 3600000, 1, v => { d.round_gap_ms = Math.round(v); changed(-1); });
   rest.disabled = d.times < 2;
@@ -3035,7 +3035,6 @@ function paceCard(d) {
     h('div', { class: 'mrow' },
       fld(t('mac.f_times'), num(d.times, 1, MAC_TIMES, 1, v => { d.times = Math.round(v); rest.disabled = d.times < 2; changed(-1); })),
       fld(t('mac.f_round_gap'), rest)),
-    fld(t('mac.f_step_gap'), num(d.step_gap_ms, 0, 60000, 1, v => { d.step_gap_ms = Math.round(v); changed(-1); })),
     h('p', { class: 'note' }, t('mac.times_note', { max: MAC_TIMES })));
 }
 
@@ -3234,7 +3233,7 @@ async function saveMacro() {
   const d = S.mac.edit, bad = draftProblem(d);
   if (bad) { S.mac.open = bad.i; renderEditor(); toast(bad.msg, true); return false; }
   try {
-    const m = await api('/api/macros/save', { id: d.id, name: d.name, steps: d.steps, times: d.times, step_gap_ms: d.step_gap_ms, round_gap_ms: d.round_gap_ms, schedule: d.schedule });
+    const m = await api('/api/macros/save', { id: d.id, name: d.name, steps: d.steps, times: d.times, round_gap_ms: d.round_gap_ms, schedule: d.schedule });
     S.mac.edit = { ...m, shot: d.shot }; S.mac.dirty = false; persistDraft();
     toast(t('mac.saved'));
     await loadMacros();
@@ -3336,10 +3335,10 @@ async function finishRecording(keep) {
 {
   const saved = store.get('macEdit', null);
   if (saved && saved.edit) { S.mac.edit = saved.edit; S.mac.dirty = !!saved.dirty; }
-  // Kept by StrCu 2.1 or older: waits in seconds, and nothing about rounds or the wait between steps
+  // Kept by StrCu 2.1 or older: waits in seconds, and nothing about rounds
   const d = S.mac.edit;
   if (d) {
-    d.times = d.times || 1; d.step_gap_ms = d.step_gap_ms ?? MAC_STEP_GAP; d.round_gap_ms = d.round_gap_ms || 0;
+    d.times = d.times || 1; d.round_gap_ms = d.round_gap_ms || 0;
     for (const s of d.steps) if (s.do === 'wait' && s.ms == null) { s.ms = Math.max(1, Math.round((+s.secs || 0) * 1000)); delete s.secs; }
   }
 }

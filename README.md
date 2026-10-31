@@ -208,8 +208,10 @@ front, maximized or closed. A red bar shows how many steps there are; **Done** a
 can be edited. Nothing done while Windows has the screen to itself - the lock screen, the sign-in screen, an
 administrator approval - goes into a recording, so a PIN typed there is never kept; the panel says so once.
 
-**How it runs:** the steps run one after the other a set number of times, 1000 at most, with a wait between
-steps (350 ms unless changed) and, if wanted, a longer one between rounds. **Stop** ends all of them.
+**How it runs:** each step starts as soon as the one before it is done; where the computer needs time, a wait
+step gives it. A step that looks for an element by its name waits for it by itself, for a few seconds. The
+steps run one after the other a set number of times, 1000 at most, with a wait between rounds if wanted.
+**Stop** ends all of them.
 
 **When:** by hand, on chosen days at a time, once at a date and time, or every so many minutes between two
 times on chosen days. Schedules use the computer's clock and run on the computer, so the phone can be off.
