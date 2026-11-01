@@ -61,9 +61,10 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
     $old = if ($OldData) { $OldData } else { Join-Path $env:LOCALAPPDATA 'strcu' }
     $oldExe = Join-Path $old 'strcu.exe'
     $startMenu = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\StrCu.lnk'
-    # STRCU_DESKTOP: another folder for the desktop shortcut (tests)
+    # STRCU_DESKTOP: another folder for the desktop shortcut (tests). The computer's own account usually has no
+    # desktop: StrCu updating itself runs the administrator half as the computer, and that half makes no shortcuts
     $desktopDir = if ($env:STRCU_DESKTOP) { $env:STRCU_DESKTOP } else { [Environment]::GetFolderPath('Desktop') }
-    $desktop = Join-Path $desktopDir 'StrCu.lnk'
+    $desktop = if ($desktopDir) { Join-Path $desktopDir 'StrCu.lnk' } else { '' }
     $runKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
     # What Settings -> Apps -> Installed apps lists
     $appKey = "HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$name"
@@ -197,7 +198,7 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
     }
 
     function Points-Here([string]$lnk) {
-        (Test-Path $lnk) -and (Same-Path (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath $exe)
+        $lnk -and (Test-Path $lnk) -and (Same-Path (New-Object -ComObject WScript.Shell).CreateShortcut($lnk).TargetPath $exe)
     }
 
     # The port the panel listens on, from the settings 2.0 keeps or the ones 1.x left; the way through the
@@ -549,7 +550,7 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
                 'Buradaki StrCu art{i}k Windows ile ba{s}lam{i}yor; onu art{i}k servis yap{i}yor.'
         }
         Shortcut $startMenu
-        Shortcut $desktop
+        if ($desktop) { Shortcut $desktop }
         # Windows keeps the icons it has drawn: shortcuts from before StrCu had one would stay blank
         try { & (Join-Path $env:SystemRoot 'System32\ie4uinit.exe') -show } catch {}
         if (Test-Path $oldExe) {
