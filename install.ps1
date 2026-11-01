@@ -356,6 +356,10 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
         # file moved out of it keeps the rules it had there, the person's right to change it among them; a copy is
         # a new file and takes the rules of the folder it is made in, where only administrators may write.
         $staged = Join-Path $dir 'strcu.new.exe'
+        # The running StrCu stopped and its program not replaced yet: anything that fails in between starts it
+        # again as it was, so a failed update does not leave the computer without StrCu
+        $stopped = $false
+        $replaced = $false
         try {
             $newExe = Join-Path $tmp 'strcu.exe'
             $sum = Join-Path $tmp 'strcu.exe.sha256'
@@ -383,6 +387,7 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
             $update = Test-Path $exe
             if ($service -and $service.Status -ne 'Stopped') {
                 Say 'Stopping the running StrCu...' '{C}al{i}{s}an StrCu durduruluyor...'
+                $stopped = $true
                 Stop-Service -Name $name -Force
                 (Get-Service -Name $name).WaitForStatus('Stopped', '00:00:30')
             }
@@ -393,6 +398,7 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
                 try { Move-Item -LiteralPath $staged -Destination $exe -Force; break }
                 catch { if ($i -ge 20) { throw }; Start-Sleep -Milliseconds 300 }
             }
+            $replaced = $true
             # Both belong to the administrators, whoever Windows makes new files belong to, and the program takes the
             # folder's rules: an install by 2.0.3 or older left it with rules of its own
             foreach ($p in $dir, $exe) { & icacls.exe $p /setowner '*S-1-5-32-544' /q | Out-Null }
@@ -449,6 +455,7 @@ $selfSource = if ($PSCommandPath) { [IO.File]::ReadAllText($PSCommandPath) } els
                     '  kald{i}rmak i{c}in: Ayarlar -> Uygulamalar -> Y{u}kl{u} uygulamalar ya da StrCu''nun ayarlar{i}'
             }
         } finally {
+            if ($stopped -and -not $replaced) { Start-Service -Name $name -ErrorAction SilentlyContinue }
             # Left only when something failed before the copy took the program's place
             Remove-Item -LiteralPath $staged -Force -ErrorAction SilentlyContinue
             Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue
