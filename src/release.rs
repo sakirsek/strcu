@@ -51,6 +51,8 @@ const SUM: &str = "strcu.exe.sha256";
 const SCRIPT: &str = "install.ps1";
 /// What the installer says, line by line ("Color<tab>text"; see `Say` in install.ps1)
 const SAID: &str = "install.log";
+/// What PowerShell itself writes: an error before the installer could say anything
+const ERRORS: &str = "install-errors.txt";
 /// Which update was started, for the StrCu that comes after it
 const PENDING: &str = "pending.json";
 
@@ -165,10 +167,15 @@ fn whole(script: &[u8]) -> bool {
         && text.lines().rev().find(|l| !l.trim().is_empty()).map(str::trim) == Some("# STRCU-INSTALLER-END")
 }
 
-/// The installer's last red line, which is why it stopped: written in the language it found.
+/// Why the installer stopped: its last red line, written in the language it found, or else the first line of an
+/// error PowerShell wrote before the installer could say anything.
 fn why_it_failed(dir: &Path) -> Option<String> {
-    let said = std::fs::read_to_string(dir.join(SAID)).ok()?;
-    said.lines().rev().find_map(|l| l.trim_start_matches('\u{feff}').strip_prefix("Red\t")).map(|s| s.trim().to_string())
+    let said = std::fs::read_to_string(dir.join(SAID)).unwrap_or_default();
+    let red = said.lines().rev().find_map(|l| l.trim_start_matches('\u{feff}').strip_prefix("Red\t"));
+    let errors = std::fs::read(dir.join(ERRORS)).unwrap_or_default();
+    let errors = String::from_utf8_lossy(&errors);
+    let first_error = || errors.lines().map(str::trim).find(|l| !l.is_empty());
+    red.or_else(first_error).map(|s| s.trim().chars().take(300).collect())
 }
 
 /// What an update started here is doing.
@@ -199,6 +206,7 @@ fn run_installer(dir: &Path) -> Result<Child> {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
     let windows = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     let ps = Path::new(&windows).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    let errors = std::fs::File::create(dir.join(ERRORS)).context(Msg::new("err.update_start"))?;
     Command::new(ps)
         .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(dir.join(SCRIPT))
@@ -211,7 +219,7 @@ fn run_installer(dir: &Path) -> Result<Child> {
         .current_dir(&windows)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
+        .stderr(errors)
         .creation_flags(CREATE_NO_WINDOW)
         .spawn()
         .context(Msg::new("err.update_start"))
@@ -449,6 +457,26 @@ mod tests {
         assert_eq!(why_it_failed(&dir).as_deref(), Some("Failed: the port is taken"));
         std::fs::write(dir.join(SAID), "Green\tStrCu 2.3.0, SHA-256 verified.\n").unwrap();
         assert_eq!(why_it_failed(&dir), None);
+        // Nothing red, but PowerShell had something to say: its first line
+        std::fs::write(dir.join(ERRORS), "\r\nJoin-Path : Cannot bind argument to parameter 'Path'.\r\nAt line:62\r\n").unwrap();
+        assert_eq!(why_it_failed(&dir).as_deref(), Some("Join-Path : Cannot bind argument to parameter 'Path'."));
+        // A red line is the installer's own word, and comes first
+        std::fs::write(dir.join(SAID), "Red\tOlmad\u{131}: port dolu\n").unwrap();
+        assert_eq!(why_it_failed(&dir).as_deref(), Some("Olmad\u{131}: port dolu"));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn an_installer_that_fails_before_it_speaks_still_says_why() {
+        // The way the update starts the installer, with a script that fails before its first line is said, as
+        // install.ps1 once did where the computer's account has no desktop
+        let dir = std::env::temp_dir().join(format!("strcu-release-errors-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(SCRIPT), "$ErrorActionPreference = 'Stop'\r\n$x = Join-Path '' 'StrCu.lnk'\r\n").unwrap();
+        let ended = run_installer(&dir).unwrap().wait().unwrap();
+        assert!(!ended.success());
+        let why = why_it_failed(&dir).unwrap();
+        assert!(why.contains("Join-Path"), "{why}");
         std::fs::remove_dir_all(&dir).unwrap();
     }
 
