@@ -418,6 +418,9 @@
   .macbar .recdot { animation: pulse 1.2s ease-in-out infinite; }
   .macbar[data-mode="run"] .recdot, .macbar[data-mode="pick"] .recdot { background: var(--acc); }
   .macbar[data-mode="pick"] .recdot { animation: none; }
+  .updbar a { color: var(--acc); font-weight: 500; white-space: nowrap; }
+  .settext a { color: var(--acc); }
+  .settext span.bad { color: var(--bad-soft); }
   .macs .appic { color: var(--fg2); }
   .macs .appic.on { color: var(--acc); }
   .macs .appic .ic { width: 20px; height: 20px; }
@@ -472,11 +475,12 @@
   }
   /* Sideways: tabs move to a rail on the left (the height goes to the image) and the controls sit in one row under it */
   @media (min-width: 700px) and (min-height: 560px) and (min-aspect-ratio: 5/4) {
-    #app { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto auto minmax(0, 1fr); }
+    #app { display: grid; grid-template-columns: auto minmax(0, 1fr); grid-template-rows: auto auto auto auto minmax(0, 1fr); }
     #app > .top { grid-area: 1 / 2; }
-    #macBar { grid-area: 2 / 2; }
-    #offBanner { grid-area: 3 / 2; }
-    #main { grid-area: 4 / 2; }
+    #updBar { grid-area: 2 / 2; }
+    #macBar { grid-area: 3 / 2; }
+    #offBanner { grid-area: 4 / 2; }
+    #main { grid-area: 5 / 2; }
     nav.tabs { grid-area: 1 / 1 / -1 / 2; width: calc(76px + env(safe-area-inset-left)); display: flex; flex-direction: column; gap: 4px; padding: calc(12px + env(safe-area-inset-top)) 6px calc(12px + env(safe-area-inset-bottom)) calc(6px + env(safe-area-inset-left)); border-top: 0; border-right: 1px solid #23272D; }
     nav.tabs button { flex: none; min-height: 62px; }
     #p-screen { display: grid; grid-template-columns: minmax(0, 330px) minmax(180px, 1fr) minmax(0, 330px); grid-template-rows: minmax(0, 1fr) auto auto; gap: 8px 10px; }
@@ -555,6 +559,7 @@
       <button type="button" data-live="off" data-i18n-label="live.off"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6v12M15 6v12"/></svg></button>
     </div>
   </header>
+  <div id="updBar" class="macbar updbar" role="status" hidden><span class="mbtext"><span id="updText"></span> <a id="updNotes" target="_blank" rel="noopener" data-i18n="upd.notes"></a></span><button type="button" id="updLater" class="btn" data-i18n="upd.later"></button><button type="button" id="updGo" class="btn primary" data-i18n="upd.go"></button></div>
   <div id="macBar" class="macbar" role="status" hidden><span class="recdot" aria-hidden="true"></span><span id="macBarText" class="mbtext"></span><button type="button" id="macBarAlt" class="btn" hidden></button><button type="button" id="macBarMain" class="btn"></button></div>
   <div id="offBanner" class="offbanner" role="alert" hidden><span id="offLeft"></span><button type="button" id="offCancel" class="btn" data-i18n="off.cancel"></button></div>
 
@@ -846,6 +851,15 @@
         </div>
       </section>
 
+      <h2 class="eyebrow" style="margin-top:4px" data-i18n="upd.title"></h2>
+      <section class="card setlist" data-i18n-label="upd.title">
+        <div class="setrow">
+          <svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5"/><path d="M5 20h14"/></svg>
+          <div class="settext"><b id="updHead"></b><span id="updSub"></span></div>
+          <button type="button" id="updCardGo" class="btn sm primary" data-i18n="upd.go" hidden></button>
+        </div>
+      </section>
+
       <h2 class="eyebrow" style="margin-top:4px" data-i18n="use.title"></h2>
       <section class="card" data-i18n-label="use.title">
         <table class="usage">
@@ -912,6 +926,7 @@
 
 <form id="qkForm" class="qkey"><input id="qk" type="text" tabindex="-1" autocomplete="off" autocapitalize="off" enterkeyhint="enter" data-i18n-label="screen.kb"></form>
 
+<div id="updating" class="ask" hidden><div class="askbox" role="alertdialog" aria-modal="true" aria-labelledby="updatingText"><p id="updatingText"></p><p id="updatingNote" class="note"></p></div></div>
 <div id="ask" class="ask" hidden><div class="askbox" role="alertdialog" aria-modal="true" aria-labelledby="askText"><p id="askText"></p><div class="two"><button type="button" id="askNo" class="btn"></button><button type="button" id="askYes" class="btn primary"></button></div></div></div>
 
 <div id="toast" role="status" aria-live="polite"></div>
@@ -1371,7 +1386,7 @@ async function refresh(why) {
 async function status() {
   try {
     S.status = await api('/api/status');
-    renderFg(); renderQtPlaceholder(); renderSecure();
+    renderFg(); renderQtPlaceholder(); renderSecure(); renderUpdate();
     syncShutdown(S.status.shutdown_in);
     renderSession();
   } catch (_) {}
@@ -2457,6 +2472,73 @@ $('#langSel').onchange = e => {
   location.reload();
 };
 
+// ---------- StrCu's own update ----------
+// The running StrCu looks for a newer release on GitHub; one it found is offered here and installed only when
+// somebody says so. StrCu then stops for a moment and starts again, and the page waits for the new one.
+const UPD = { waiting: null, timer: 0, gaveUp: null };
+
+function renderUpdate() {
+  const s = S.status || {}, offer = s.update, doing = s.updating || { state: 'idle' };
+  const busy = doing.state === 'fetching' || doing.state === 'installing';
+  // Started from another phone or from the window on the computer: this page waits for it too
+  if (busy && !UPD.waiting && UPD.gaveUp !== doing.version) waitForUpdate(doing.version, s.version);
+  $('#updBar').hidden = !offer || busy || store.get('updLater', null) === offer.version;
+  if (offer) { $('#updText').textContent = t('upd.bar', { version: offer.version }); $('#updNotes').href = offer.notes; }
+  $('#updHead').textContent = t('upd.running', { version: s.version || '' });
+  const sub = $('#updSub'), failed = doing.state === 'failed';
+  sub.classList.toggle('bad', failed);
+  if (failed) sub.textContent = t('upd.failed', { reason: doing.reason });
+  else if (offer) sub.replaceChildren(t('upd.card_new', { version: offer.version }) + ' · ', h('a', { href: offer.notes, target: '_blank', rel: 'noopener' }, t('upd.notes')));
+  else sub.textContent = t('upd.card_none');
+  $('#updCardGo').hidden = !offer || busy;
+}
+
+async function startUpdate() {
+  const s = S.status || {}, offer = s.update;
+  if (!offer) return;
+  if (!(await ask(t('upd.ask', { from: s.version, version: offer.version }), t('upd.go')))) return;
+  try { await api('/api/update', { version: offer.version }); } catch (e) { if (!e.auth) toast(e.message, true); status(); return; }
+  waitForUpdate(offer.version, s.version);
+}
+$('#updGo').onclick = startUpdate;
+$('#updCardGo').onclick = startUpdate;
+$('#updLater').onclick = () => { const o = S.status && S.status.update; if (o) store.set('updLater', o.version); renderUpdate(); };
+
+// Asks every 2 s until a StrCu of another version answers, then loads its page. The one that was there saying
+// the update failed means it did not go through; four minutes without either, the log knows how it went.
+function waitForUpdate(version, from) {
+  UPD.waiting = { version, from, since: Date.now() };
+  exitFs(); stopLive();
+  $('#updatingText').textContent = t('upd.updating', { version });
+  $('#updatingNote').textContent = t('upd.updating_note');
+  $('#updating').hidden = false;
+  const look = async () => {
+    const w = UPD.waiting;
+    if (!w) return;
+    let s = null;
+    try {
+      const r = await fetch('/api/status', { cache: 'no-store' });
+      if (r.ok) s = await r.json();
+      else if (r.status === 401) { location.reload(); return; }
+    } catch (_) {}
+    if (s && s.version !== w.from) { store.set('updated', s.version); location.reload(); return; }
+    if (s && s.updating && s.updating.state === 'failed') return updateEnded(s, t('upd.failed', { reason: s.updating.reason }));
+    if (Date.now() - w.since > 4 * 60000) return updateEnded(s, t('upd.slow'));
+    UPD.timer = setTimeout(look, 2000);
+  };
+  clearTimeout(UPD.timer);
+  UPD.timer = setTimeout(look, 2000);
+}
+
+function updateEnded(s, why) {
+  UPD.gaveUp = UPD.waiting && UPD.waiting.version;
+  UPD.waiting = null; clearTimeout(UPD.timer);
+  $('#updating').hidden = true;
+  if (s) S.status = s;
+  toast(why, true);
+  renderUpdate(); startLive(); loadLog();
+}
+
 // ---------- full screen ----------
 
 // The image fits the screen; pinch to zoom, drag with one finger to pan, tap to aim.
@@ -3518,6 +3600,8 @@ showPassword(false); renderLang(); updateCount();
 // After a language change the page reloads; come back to More
 const reopen = store.get('reopen', null);
 if (reopen) { store.set('reopen', null); S.tab = reopen; }
+const updated = store.get('updated', null);
+if (updated) { store.set('updated', null); toast(t('upd.done', { version: updated })); }
 
 // Opened from the QR code on the computer: pair with the code in the address, then drop it from the address.
 // Also when the panel is already open at this address: then only the part after # changes, and nothing reloads.

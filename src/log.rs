@@ -50,6 +50,10 @@ impl LogEntry {
             "ev.mac_scheduled",
             "ev.mac_failed",
             "ev.mac_skipped",
+            "ev.update_found",
+            "ev.update_started",
+            "ev.updated",
+            "ev.update_failed",
         ];
         CODES.contains(&self.msg.code)
     }

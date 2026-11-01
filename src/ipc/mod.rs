@@ -71,6 +71,9 @@ pub enum Ask {
         password: Option<String>,
         lan: bool,
     },
+    /// Install the newer StrCu on offer ([`Status::update`]), which has to be this version. StrCu stops and
+    /// starts again a little later.
+    Update { version: String },
 }
 
 impl Ask {
@@ -80,7 +83,7 @@ impl Ask {
             Ask::Status { .. } | Ask::Settings | Ask::SignIn { .. } => false,
             // Looked at where it is answered: free while there is no password, signed in afterwards
             Ask::Setup { .. } => false,
-            Ask::Change(_) | Ask::Pair(_) | Ask::Stop | Ask::Tunnel(_) => true,
+            Ask::Change(_) | Ask::Pair(_) | Ask::Stop | Ask::Tunnel(_) | Ask::Update { .. } => true,
         }
     }
 }
@@ -205,6 +208,19 @@ pub struct Status {
     pub log_count: u64,
     /// The entries since `log_since`, newest first.
     pub events: Vec<Event>,
+    /// A newer StrCu, which [`Ask::Update`] installs
+    #[serde(default)]
+    pub update: Option<Offer>,
+    /// The version an update started here is installing
+    #[serde(default)]
+    pub updating: Option<String>,
+}
+
+/// A newer StrCu on GitHub: its version, and the page that says what is new.
+#[derive(Serialize, Deserialize, Debug, PartialEq, Clone)]
+pub struct Offer {
+    pub version: String,
+    pub notes: String,
 }
 
 /// Remote access, as app.rs keeps it.
@@ -324,6 +340,7 @@ mod tests {
         assert!(Ask::Change(Change::Lan(true)).needs_token());
         assert!(Ask::Pair(Pair::Open).needs_token());
         assert!(Ask::Stop.needs_token());
+        assert!(Ask::Update { version: "2.3.0".into() }.needs_token());
     }
 
     #[test]

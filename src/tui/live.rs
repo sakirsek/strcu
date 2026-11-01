@@ -34,6 +34,8 @@ pub enum Gone {
     Stopped,
     /// The uninstaller is running in a window of its own, and stops this one
     Uninstalling,
+    /// A newer StrCu is being installed; the installer would stop this window
+    Updating,
 }
 
 /// What StrCu said about something the window asked it to do.
@@ -137,12 +139,26 @@ impl Live {
         Ok(said)
     }
 
+    /// Installs the newer StrCu on offer, which has to be `version`. StrCu stops and starts again a little later,
+    /// and the installer stops every StrCu program, this window among them: nothing can be asked after this.
+    pub fn update(&mut self, version: &str) -> Result<Said<()>> {
+        let answer = self.ask(Ask::Update { version: version.to_string() })?;
+        let said = self.said(answer, |a| match a {
+            Answer::Done => Some(()),
+            _ => None,
+        });
+        if matches!(said, Said::Done(())) {
+            self.gone = Some(Gone::Updating);
+        }
+        Ok(said)
+    }
+
     /// The uninstaller was started from this window (settings.rs).
     pub fn uninstalling(&mut self) {
         self.gone = Some(Gone::Uninstalling);
     }
 
-    /// Was StrCu stopped or uninstalled from this window? Then there is nothing left to show.
+    /// Was StrCu stopped, uninstalled or updated from this window? Then there is nothing left to show.
     pub fn gone(&self) -> Option<Gone> {
         self.gone
     }

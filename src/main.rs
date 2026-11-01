@@ -15,6 +15,7 @@ mod macros;
 mod pair;
 mod passkey;
 mod paths;
+mod release;
 mod server;
 mod stream;
 mod svc;

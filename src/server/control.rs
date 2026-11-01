@@ -12,7 +12,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use super::signin::paired;
-use super::{ApiError, ApiResult, AppState, logged, short};
+use super::{ApiError, ApiResult, AppState, Via, logged, short};
 use crate::agent;
 use crate::auth;
 use crate::i18n::{self, Msg};
@@ -38,7 +38,7 @@ pub(super) async fn status(State(st): State<AppState>, headers: HeaderMap) -> Ap
         .map(|d| d.as_secs_f64().ceil() as u64);
     // Who StrCu can work as, and whether Windows has the desktop to itself: both change what the panel says
     let user = st.agent.user();
-    let v = st
+    let mut v = st
         .worker
         .run(move |_| {
             // The desktop (after Win+D) and untitled windows count as "no foreground window"
@@ -57,6 +57,9 @@ pub(super) async fn status(State(st): State<AppState>, headers: HeaderMap) -> Ap
             }))
         })
         .await?;
+    // A newer StrCu to offer, and an update under way (release.rs)
+    v["update"] = json!(st.releases.offer().map(|r| json!({ "version": r.version, "notes": r.notes })));
+    v["updating"] = json!(st.releases.doing());
     Ok(Json(v))
 }
 
@@ -659,6 +662,25 @@ pub(super) async fn cancel_shutdown(State(st): State<AppState>) -> ApiResult<Jso
     let r = logged(&st, Msg::new("ev.shutdown_cancelled"), |_| power::cancel_shutdown()).await;
     *st.shutdown_at.lock().unwrap() = None;
     r?;
+    Ok(Json(json!({ "ok": true })))
+}
+
+#[derive(Deserialize)]
+pub(super) struct UpdateReq {
+    /// The release the panel offered: only that one is installed
+    version: String,
+}
+
+/// Installs the newer StrCu the panel offered. Answers once it has started: StrCu stops and starts again a little
+/// later, and the panel waits for it.
+pub(super) async fn update(
+    State(st): State<AppState>,
+    Extension(via): Extension<Via>,
+    headers: HeaderMap,
+    Json(r): Json<UpdateReq>,
+) -> ApiResult<Json<Value>> {
+    let by = via.source(&headers);
+    st.releases.start(&r.version, by, st.log.clone()).map_err(|e| ApiError(StatusCode::CONFLICT, i18n::from_error(&e)))?;
     Ok(Json(json!({ "ok": true })))
 }
 

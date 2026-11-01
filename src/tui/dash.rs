@@ -6,7 +6,7 @@
 use anyhow::Result;
 
 use super::frame::{Frame, Span, Tone, layout, span};
-use super::live::{self, Live};
+use super::live::{self, Live, Said};
 use super::{Io, Key, Step, footer, header, is_key};
 use crate::i18n::{self, Lang, Msg};
 use crate::ipc;
@@ -66,6 +66,19 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
         top.push(span(Tone::Dim, format!(" · {}", t.render(&Msg::new("dash.as_user").with("user", user)))));
     }
     header(&mut f, "", top);
+
+    // A newer StrCu (release.rs): said at the top, as the panel does, with the key that installs it. The keys
+    // at the bottom already fill a line.
+    if let Some(version) = &v.state.updating {
+        f.hang(vec![], vec![span(Tone::Warn, t.render(&Msg::new("dash.updating").with("version", version)))]);
+        f.blank();
+    } else if let Some(offer) = &v.state.update {
+        let mut line = vec![span(Tone::Accent, t.render(&Msg::new("dash.update_out").with("version", &offer.version)))];
+        line.push(span(Tone::Plain, "   "));
+        line.extend(keys(t, &[("dash.key_update", "dash.update")]));
+        f.hang(vec![], line);
+        f.blank();
+    }
 
     f.text(Tone::Strong, t.t(if v.state.password_set { "dash.open_from_phone" } else { "dash.not_set_up" }));
     if !v.state.password_set {
@@ -146,6 +159,11 @@ fn build(t: &Lang, v: &View, n_events: usize) -> Frame {
     f
 }
 
+/// The newer StrCu its key installs: none while an update is under way.
+fn offered(state: &ipc::Status) -> Option<&ipc::Offer> {
+    state.update.as_ref().filter(|_| state.updating.is_none())
+}
+
 /// The main screen until the window is closed. It asks the running StrCu again every second; an answer that
 /// never comes ends the screen, since there is nothing left to show.
 pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<()> {
@@ -181,13 +199,70 @@ pub async fn run(io: &mut impl Io, live: &mut Live) -> Result<()> {
             confirm = super::settings::run(io, live).await? == Step::Quit;
         } else if is_key(t, k, "dash.key_log") && full_log(io, live).await? == Step::Quit {
             confirm = true;
+        } else if is_key(t, k, "dash.key_update")
+            && let Some(offer) = offered(live.state()).cloned()
+        {
+            confirm = update(io, live, &offer).await? == Step::Quit;
         }
-        // There is nothing left to show once StrCu has been stopped or uninstalled from here
+        // There is nothing left to show once StrCu has been stopped, uninstalled or updated from here
         if live.gone().is_some() {
             return Ok(());
         }
         // Pairing or a new port changes what this screen shows: ask now rather than in a second
         live.refresh()?;
+    }
+}
+
+// ---------- update ----------
+
+pub fn update_view(t: &Lang, from: &str, offer: &ipc::Offer, typed: &str, failed: Option<&str>) -> Frame {
+    let mut f = Frame::default();
+    header(&mut f, &t.t("dash.update_title"), Vec::new());
+    let ask = Msg::new("set.update_ask").with("from", from).with("version", &offer.version);
+    f.hang(vec![], vec![span(Tone::Warn, t.render(&ask))]);
+    f.blank();
+    f.hang(vec![span(Tone::Dim, format!("{}  ", t.t("dash.update_notes")))], vec![span(Tone::Accent, &offer.notes)]);
+    f.blank();
+    if let Some(said) = failed {
+        f.hang(vec![], vec![span(Tone::Bad, said)]);
+        f.blank();
+    }
+    super::option(&mut f, 1, &t.t("dash.update_do"), None);
+    super::option(&mut f, 2, &t.t("common.cancel"), None);
+    f.blank();
+    super::prompt(&mut f, t, Some(2), typed);
+    footer(&mut f, &[super::hint_back(t)]);
+    f
+}
+
+/// Asks first, then has StrCu install the newer release (release.rs). The installer stops every StrCu program,
+/// so once it has started this window closes by itself (see `tui::run`).
+async fn update(io: &mut impl Io, live: &mut Live, offer: &ipc::Offer) -> Result<Step<()>> {
+    let t = i18n::term();
+    let from = live.state().version.clone();
+    let mut failed: Option<String> = None;
+    loop {
+        match super::choose(io, 2, Some(2), |typed| update_view(t, &from, offer, typed, failed.as_deref())).await {
+            Step::Done(1) => {}
+            Step::Done(_) | Step::Back => return Ok(Step::Back),
+            Step::Quit => return Ok(Step::Quit),
+        }
+        failed = None;
+        for _ in 0..2 {
+            match live.update(&offer.version)? {
+                Said::Done(()) => return Ok(Step::Back),
+                // Said on the same screen, which can be left from there
+                Said::Failed(said) => {
+                    failed = Some(said);
+                    break;
+                }
+                Said::SignInNeeded => match super::sign_in(io, live).await? {
+                    Step::Done(true) => {}
+                    Step::Done(false) | Step::Back => return Ok(Step::Back),
+                    Step::Quit => return Ok(Step::Quit),
+                },
+            }
+        }
     }
 }
 

@@ -114,10 +114,11 @@ pub async fn run() -> Result<()> {
         let t = i18n::term();
         let mut f = Frame::default();
         header(&mut f, "", Vec::new());
-        // Closing the window leaves StrCu running - unless the window is what stopped or uninstalled it
+        // Closing the window leaves StrCu running - unless the window is what stopped, uninstalled or updated it
         let (tone, line) = match live.gone() {
             Some(Gone::Stopped) => (Tone::Warn, "set.stopped"),
             Some(Gone::Uninstalling) => (Tone::Warn, "set.uninstalling"),
+            Some(Gone::Updating) => (Tone::Warn, "set.updating"),
             None => (Tone::Dim, "dash.closing"),
         };
         f.text(tone, t.t(line));

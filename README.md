@@ -49,6 +49,15 @@ An older StrCu's settings are copied over while installing - the password, paire
 and the tunnel - so nothing has to be set up again, and what that older install kept is left where it was. Running the same
 line again updates StrCu (settings stay).
 
+StrCu also says when a new version is out. A couple of minutes after it starts and every six hours, it looks at
+the newest release on GitHub; a newer one shows as a bar at the top of the panel, under More, and on the main
+screen of the window on this computer. Nothing is installed until you choose **Update** there (in the window,
+**U**). StrCu then downloads the release's `strcu.exe`, `strcu.exe.sha256` and `install.ps1` into
+`%ProgramData%\StrCu\update`, checks the program against its checksum and runs the installer itself, as the
+install line would, with no approval to give and no command to type. StrCu stops for less than a minute and
+starts again, the panel connects again by itself, and the log says how it went. If the update fails before the
+new program is in place, the StrCu that was there starts again.
+
 To remove StrCu with all its settings, shortcuts and its service, uninstall it in **Settings → Apps → Installed
 apps**, or in StrCu's own settings (**S**, then **9**); both ask for administrator approval and run a copy of the
 installer kept in `%ProgramFiles%\StrCu`. The same from PowerShell:
@@ -394,7 +403,8 @@ and placeholders as `lang/en.json`.
   Access verification
 - `src/i18n.rs` + `lang/` languages; the server sends message keys, the panel and the terminal render them
 - `src/tunnel/` cloudflared management and updates, `src/download.rs` downloads verified with SHA-256,
-  `src/sys/sign.rs` signature checks
+  `src/sys/sign.rs` signature checks; `src/release.rs` StrCu's own new releases, offered in the panel and the
+  window and installed when asked
 - `install.ps1` the one-line installer; `.github/workflows/` CI, releases and the third-party notices check
 
 ## Support

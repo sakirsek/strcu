@@ -8,6 +8,7 @@ use crate::auth::Check;
 use crate::i18n::{self, Lang, Msg};
 use crate::log::LogEntry;
 use crate::pair::Code;
+use crate::release::Doing;
 use crate::{config, ipc, tunnel};
 
 use super::{App, Remote, Urls};
@@ -70,6 +71,11 @@ pub(super) async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) 
             let remote = app.remote();
             let (state, why) = remote_state(&remote.borrow(), lang);
             let urls = shown.urls(app).clone();
+            let releases = app.panel.releases();
+            let updating = match releases.doing() {
+                Doing::Fetching { version } | Doing::Installing { version } => Some(version),
+                Doing::Idle | Doing::Failed { .. } => None,
+            };
             ipc::Answer::Status(ipc::Status {
                 version: env!("CARGO_PKG_VERSION").to_string(),
                 serving: app.listen_error.is_none(),
@@ -85,6 +91,8 @@ pub(super) async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) 
                 password_set: app.panel.auth().is_set(),
                 log_count: count,
                 events: events(&entries, lang),
+                update: releases.offer().map(|r| ipc::Offer { version: r.version, notes: r.notes }),
+                updating,
             })
         }
         ipc::Ask::Settings => ipc::Answer::Settings(settings(app)),
@@ -92,6 +100,10 @@ pub(super) async fn answer(app: &mut App, shown: &mut Shown, req: ipc::Request) 
         ipc::Ask::Change(what) => change(app, shown, what, lang).await,
         ipc::Ask::Pair(ask) => ipc::Answer::Pair(pairing(app, ask)),
         ipc::Ask::Tunnel(ask) => ipc::Answer::Tunnel(remote_setup(app, shown, ask, lang).await),
+        ipc::Ask::Update { version } => match app.panel.releases().start(&version, Msg::new("src.local"), app.panel.log()) {
+            Ok(()) => ipc::Answer::Done,
+            Err(e) => ipc::Answer::Failed { reason: lang.render(&i18n::from_error(&e)) },
+        },
         // Taken care of above, before the password was even looked at
         ipc::Ask::Stop => ipc::Answer::Done,
     };

@@ -87,6 +87,8 @@ struct AppState {
     uploads: Arc<files::Uploads>,
     /// What each phone got and sent (More → Data used)
     usage: Arc<Usage>,
+    /// StrCu's own newer release, and an update started from the panel or the window (release.rs)
+    releases: Arc<crate::release::Releases>,
 }
 
 impl AppState {
@@ -163,6 +165,7 @@ impl Panel {
             kick: Arc::new(tokio::sync::watch::Sender::new(0)),
             uploads: Arc::default(),
             usage: Arc::default(),
+            releases: crate::release::Releases::new(),
         };
         Ok(Panel { state })
     }
@@ -183,6 +186,10 @@ impl Panel {
 
     pub fn auth(&self) -> &Auth {
         &self.state.auth
+    }
+
+    pub fn releases(&self) -> Arc<crate::release::Releases> {
+        self.state.releases.clone()
     }
 
     pub fn passkeys(&self) -> &passkey::Store {
@@ -254,6 +261,7 @@ impl Panel {
             .route("/api/lock", post(control::lock))
             .route("/api/shutdown", post(control::shutdown))
             .route("/api/shutdown/cancel", post(control::cancel_shutdown))
+            .route("/api/update", post(control::update))
             .route("/api/log", get(control::log))
             .route("/api/usage", get(control::usage_report))
             .route("/api/logout", post(signin::logout))

@@ -98,8 +98,12 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
             password_set: true,
             log_count: 0,
             events: Vec::new(),
+            update: None,
+            updating: None,
         }
     };
+    // A newer StrCu on offer, as the release watcher finds it (release.rs)
+    let offer = ipc::Offer { version: "9.9.0".into(), notes: "https://github.com/sakirsek/strcu/releases/tag/v9.9.0".into() };
     let dash_view = |state: &ipc::Status, events: &[LogEntry], confirm_quit: bool| {
         let shown = app::events(events, t);
         let picked: Vec<&ipc::Event> = shown.iter().collect();
@@ -147,6 +151,10 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("06b-sign-in", super::sign_in_view(t, &super::dots(12), None)),
         ("06c-sign-in-wrong", super::sign_in_view(t, "", Some(&Notice::Err(Msg::new("err.wrong_password"))))),
         ("07-dashboard", dash_view(&state(&urls, true, &Remote::Up), &events, false)),
+        ("07b-dashboard-update", {
+            let out = ipc::Status { update: Some(offer.clone()), ..state(&urls, true, &Remote::Up) };
+            dash_view(&out, &events, false)
+        }),
         ("08-dashboard-first-start", dash_view(&state(&fresh, false, &Remote::Off), &[], false)),
         ("08b-dashboard-no-password", {
             let unset = ipc::Status { password_set: false, ..state(&fresh, false, &Remote::Off) };
@@ -224,6 +232,7 @@ pub fn preview(dir: &Path, code: &str) -> Result<Vec<PathBuf>> {
         ("16-port", settings::port_view(t, "8765", None)),
         ("16b-stop", settings::stop_view(t, "")),
         ("16d-uninstall", settings::uninstall_view(t, "")),
+        ("16e-update", dash::update_view(t, env!("CARGO_PKG_VERSION"), &offer, "", None)),
         ("16c-install", settings::install_view(t, &values, "")),
     ];
     std::fs::create_dir_all(dir)?;

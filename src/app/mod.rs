@@ -121,6 +121,12 @@ impl App {
         }
         app.relisten().await;
         app.restart_remote().await;
+        // Only the service can put a new StrCu in place: one started by a person is updated with the install line
+        if crate::ipc::as_system() {
+            let releases = app.panel.releases();
+            tokio::spawn(releases.clone().conclude(app.panel.log()));
+            tokio::spawn(releases.watch(app.panel.log()));
+        }
         Ok(app)
     }
 
