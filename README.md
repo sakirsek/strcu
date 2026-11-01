@@ -245,11 +245,13 @@ a Cloudflare account and a domain whose DNS is on Cloudflare; the tunnel and Acc
 StrCu's own child process: StrCu watches its connection, starts it again if it stops, and closes it with the
 panel. Nothing is installed for it.
 
-cloudflared is kept up to date, since its releases carry its security fixes. A couple of minutes after StrCu
-starts and every six hours, StrCu looks at Cloudflare's newest release on GitHub. A newer one is taken only if
-it matches the SHA-256 in its release notes and Windows finds it signed by Cloudflare, and it replaces the
-running one once nobody has used the tunnel for five minutes. If it does not connect within a minute, the
-version before it comes back and that release is not tried again. The log says what happened.
+cloudflared is kept up to date, since its releases carry its security fixes. Setting up remote access downloads
+Cloudflare's newest release from GitHub, and a couple of minutes after StrCu starts and every six hours, StrCu
+looks for a newer one. A release is taken only if it matches the SHA-256 in its release notes and Windows finds
+it signed by Cloudflare. A newer one replaces the running one once nobody has used the tunnel for five minutes;
+if it does not connect within a minute, the version before it comes back and that release is not tried again.
+When the newest release cannot be taken during setup, StrCu downloads the version it was tested with, checked
+against the SHA-256 built into StrCu. The log says what happened.
 
 It is set up from the terminal (in the first-start setup, or Settings → Remote access), which walks through the
 Cloudflare dashboard and checks each step:

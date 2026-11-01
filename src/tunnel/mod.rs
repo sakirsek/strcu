@@ -5,8 +5,9 @@
 //!
 //! cloudflared runs with the computer's rights, so it lives beside the program, where only administrators may
 //! write, and it is one exact file, checked whole before every start: the version pinned here, or a newer one
-//! the update took (update.rs: signed by Cloudflare and written down by size and SHA-256 when it came). One
-//! that is missing or does not pass is fetched again. The token and the log stay in the settings folder.
+//! taken from Cloudflare's releases (update.rs: signed by Cloudflare and written down by size and SHA-256 when
+//! it came). Setting up takes the newest release; the pinned one when that cannot be taken. One that is missing
+//! or does not pass is fetched again the same way. The token and the log stay in the settings folder.
 
 mod update;
 
@@ -21,13 +22,15 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use windows::Win32::Storage::FileSystem::FILE_SHARE_READ;
 
-use crate::i18n::Msg;
+use crate::download::Progress;
+use crate::i18n::{self, Msg};
 use crate::{config, download, sys};
 
 pub use update::Updater;
 
-/// The cloudflared version StrCu is tested with: downloaded when remote access is set up.
-pub const CLOUDFLARED_TAG: &str = "2026.9.3";
+/// The cloudflared version StrCu is tested with: always allowed to run, and downloaded when the newest release
+/// cannot be taken (GitHub not answering, a release without its SHA-256, a file not signed by Cloudflare).
+const CLOUDFLARED_TAG: &str = "2026.9.3";
 /// `cloudflared-windows-amd64.exe` of that release; size and SHA-256 as GitHub and the release notes give them.
 const CLOUDFLARED_SIZE: u64 = 55_366_080;
 const CLOUDFLARED_SHA256: &str = "f096265ec2fcbe9bb6e2d64268db167ced3fcbb83d894bdb9e2fcdb26f2ea7e2";
@@ -122,11 +125,18 @@ pub enum Ensured {
     Here,
     /// Taken over from where 2.0.0 to 2.0.3 kept it
     Moved,
-    Fetched,
+    Fetched(Fetched),
+}
+
+/// A cloudflared downloaded: its version, and why it is not the newest release when it is the pinned one
+/// because the newest could not be taken.
+pub struct Fetched {
+    pub version: String,
+    pub newest_failed: Option<Msg>,
 }
 
 /// Makes sure a cloudflared that may run is beside the program: taken over from the settings folder after an
-/// update from 2.0.3 or older if it passes, the pinned one downloaded otherwise.
+/// update from 2.0.3 or older if it passes, downloaded otherwise.
 pub async fn ensure() -> Result<Ensured> {
     if installed_version().is_some() {
         return Ok(Ensured::Here);
@@ -134,8 +144,7 @@ pub async fn ensure() -> Result<Ensured> {
     if adopt(&old_dir(), &dir(), &pinned())? {
         return Ok(Ensured::Moved);
     }
-    install(&|_| {}).await?;
-    Ok(Ensured::Fetched)
+    Ok(install(&|_| {}).await?.map_or(Ensured::Here, Ensured::Fetched))
 }
 
 /// Takes cloudflared over from `old` if it is the pinned one: copied, so it takes the new folder's rules, and
@@ -155,11 +164,21 @@ fn adopt(old: &Path, new: &Path, pin: &Known) -> Result<bool> {
     Ok(passes)
 }
 
-/// Downloads the pinned version and checks it against what is pinned here, not what the download says.
-pub async fn install(report: download::Report<'_>) -> Result<()> {
+/// Downloads cloudflared unless one that may run is there: Cloudflare's newest release, checked as an update is
+/// (update.rs), or else the pinned version, checked against what is pinned here and not what the download says.
+pub async fn install(report: download::Report<'_>) -> Result<Option<Fetched>> {
     if installed_version().is_some() {
-        return Ok(());
+        return Ok(None);
     }
+    let newest_failed = match update::install_newest(report).await {
+        Ok(Some(k)) => return Ok(Some(Fetched { version: k.version, newest_failed: None })),
+        Ok(None) => None,
+        Err(e) => {
+            let why = Msg::new("dl.newest_failed").with("reason", i18n::from_error(&e)).with("version", CLOUDFLARED_TAG);
+            report(Progress::Note(why.clone()));
+            Some(why)
+        }
+    };
     let remote = download::Remote {
         url: format!("https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_TAG}/{ASSET}"),
         size: CLOUDFLARED_SIZE,
@@ -168,7 +187,7 @@ pub async fn install(report: download::Report<'_>) -> Result<()> {
     // What is there did not pass; a file of the right size would otherwise be taken as already downloaded
     let _ = std::fs::remove_file(exe());
     download::fetch(&remote, &exe(), ASSET, report).await?;
-    Ok(())
+    Ok(Some(Fetched { version: CLOUDFLARED_TAG.into(), newest_failed }))
 }
 
 /// The tunnel id inside the token. The token is base64-encoded JSON: {"a": account, "t": tunnel, "s": secret}.

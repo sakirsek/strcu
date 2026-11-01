@@ -273,7 +273,7 @@ async fn intro(io: &mut impl Io) -> Step<()> {
 
 pub fn download_view(t: &Lang, d: Option<&ipc::Downloading>, error: Option<&str>, typed: &str) -> Frame {
     let mut f = setup_frame(t, 1);
-    f.text(Tone::Strong, t.render(&Msg::new("remote.downloading").with("version", tunnel::CLOUDFLARED_TAG)));
+    f.text(Tone::Strong, t.t("remote.downloading"));
     f.blank();
     f.text(Tone::Plain, t.t("remote.download_text"));
     f.blank();

@@ -261,6 +261,7 @@ impl App {
         let shared = Arc::new(Mutex::new(Downloading::default()));
         self.setup.failed = None;
         self.setup.downloading = Some(shared.clone());
+        let log = self.panel.log();
         tokio::spawn(async move {
             let report = |p: Progress| {
                 let mut d = shared.lock().unwrap();
@@ -272,7 +273,11 @@ impl App {
             let r = tunnel::install(&report).await;
             let mut d = shared.lock().unwrap();
             d.done = true;
-            d.failed = r.err().map(|e| i18n::from_error(&e));
+            match r {
+                Ok(Some(f)) => fetched(&log, f),
+                Ok(None) => {}
+                Err(e) => d.failed = Some(i18n::from_error(&e)),
+            }
         });
     }
 
@@ -374,6 +379,14 @@ impl App {
     }
 }
 
+/// Writes down which cloudflared was downloaded, and why it is not the newest release when it could not be.
+fn fetched(log: &ActionLog, f: tunnel::Fetched) {
+    if let Some(why) = f.newest_failed {
+        log.add(why, false);
+    }
+    log.add(Msg::new("ev.cloudflared_fetched").with("version", f.version), true);
+}
+
 /// Keeps cloudflared running and reports its state; a stopped one is started again after a pause. The log
 /// hears when the connection comes or goes, and once per run of failures. On the way, newer versions of
 /// cloudflared are taken in (tunnel/update.rs).
@@ -388,9 +401,7 @@ async fn keep_tunnel(state: watch::Sender<Remote>, log: Arc<ActionLog>, pid: Arc
                 match how {
                     tunnel::Ensured::Here => {}
                     tunnel::Ensured::Moved => log.add(Msg::new("ev.cloudflared_moved"), true),
-                    tunnel::Ensured::Fetched => {
-                        log.add(Msg::new("ev.cloudflared_fetched").with("version", tunnel::CLOUDFLARED_TAG), true)
-                    }
+                    tunnel::Ensured::Fetched(f) => fetched(&log, f),
                 }
                 tunnel::start().await
             }

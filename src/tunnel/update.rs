@@ -6,6 +6,9 @@
 //! and nobody has used it for five minutes. If it does not connect within a minute, the one before comes back
 //! and that version is not tried again.
 //!
+//! Setting up remote access takes the newest release the same way (`install_newest`): downloaded, checked and
+//! written down alike, and put in place at once, since nothing runs yet.
+//!
 //! What was taken is written down in the settings folder (`cloudflared.json`), where only the computer and the
 //! administrators may write, and every start is checked against it (mod.rs `accepted`).
 
@@ -147,27 +150,74 @@ fn offered(r: &Release) -> Result<(Known, String)> {
     Ok((Known { version: version.into(), size: asset.size, sha256 }, url))
 }
 
-/// Looks at the newest release and, if it is newer than `installed` and has not failed before, brings it beside
-/// the running one and checks it. Returns what is waiting there.
-async fn fetch_newer(place: &Place, installed: &str) -> Result<Option<Known>> {
+/// Cloudflare's newest release: the Windows program in it, and where it is downloaded from.
+async fn newest() -> Result<(Known, String)> {
     let http = reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
         .user_agent(concat!("StrCu/", env!("CARGO_PKG_VERSION")))
         .build()?;
     let release: Release =
         http.get(LATEST).header("accept", "application/vnd.github+json").send().await?.error_for_status()?.json().await?;
-    let (k, url) = offered(&release)?;
-    if !newer(&k.version, installed) || place.read().failed.as_deref() == Some(k.version.as_str()) {
-        return Ok(None);
-    }
+    offered(&release)
+}
+
+/// Worth taking over `than`: newer, and not a version that failed here before.
+fn worth_taking(place: &Place, k: &Known, than: &str) -> bool {
+    newer(&k.version, than) && place.read().failed.as_deref() != Some(k.version.as_str())
+}
+
+/// Brings `k` to the waiting place and checks it.
+async fn bring(place: &Place, k: &Known, url: String, report: download::Report<'_>) -> Result<()> {
     // A file left from an earlier look is kept only if it is this one; anything else is downloaded afresh
-    if verify(&place.waiting(), std::slice::from_ref(&k)).is_err() {
+    if verify(&place.waiting(), std::slice::from_ref(k)).is_err() {
         let _ = std::fs::remove_file(place.waiting());
     }
-    download::fetch(&download::Remote { url, size: k.size, sha256: Some(k.sha256.clone()) }, &place.waiting(), ASSET, &|_| {}).await?;
+    download::fetch(&download::Remote { url, size: k.size, sha256: Some(k.sha256.clone()) }, &place.waiting(), ASSET, report).await?;
     let (path, want) = (place.waiting(), k.clone());
     tokio::task::spawn_blocking(move || check_new(&path, &want)).await??;
+    Ok(())
+}
+
+/// Looks at the newest release and, if it is worth taking over `installed`, brings it beside the running one and
+/// checks it. Returns what is waiting there.
+async fn fetch_newer(place: &Place, installed: &str) -> Result<Option<Known>> {
+    let (k, url) = newest().await?;
+    if !worth_taking(place, &k, installed) {
+        return Ok(None);
+    }
+    bring(place, &k, url, &|_| {}).await?;
     Ok(Some(k))
+}
+
+/// Setting up remote access, with no cloudflared in place: brings the newest release, checks it as an update is
+/// checked and puts it in place. None when it is not newer than the pinned version (or failed here before); then
+/// the pinned one is taken, as it is when this fails.
+pub(super) async fn install_newest(report: download::Report<'_>) -> Result<Option<Known>> {
+    install_newest_at(&Place::here(), report).await
+}
+
+async fn install_newest_at(place: &Place, report: download::Report<'_>) -> Result<Option<Known>> {
+    let (k, url) = newest().await?;
+    if !worth_taking(place, &k, super::CLOUDFLARED_TAG) {
+        return Ok(None);
+    }
+    bring(place, &k, url, report).await?;
+    put_in_place(place, &k)?;
+    Ok(Some(k))
+}
+
+/// Puts a checked new version where none runs and writes it down, first, so it is accepted the moment it is
+/// there. Whatever was in its place did not pass (mod.rs `install` comes here only then) and goes.
+fn put_in_place(place: &Place, new: &Known) -> Result<()> {
+    drop(verify(&place.waiting(), std::slice::from_ref(new))?);
+    let before = place.read();
+    place.write(&Record { current: Some(new.clone()), previous: None, failed: before.failed.clone() })?;
+    let _ = std::fs::remove_file(place.exe());
+    if let Err(e) = std::fs::rename(place.waiting(), place.exe()) {
+        place.write(&before)?;
+        return Err(e).context(place.exe().display().to_string());
+    }
+    Ok(())
 }
 
 /// The downloaded file is the one the release names, and Cloudflare signed it.
@@ -460,6 +510,52 @@ mod tests {
         assert!(swap(&place, &new, std::slice::from_ref(&old)).is_err());
         assert_eq!(std::fs::read(place.exe()).unwrap(), b"something else in its place");
         assert_eq!(place.read(), Record::default());
+        std::fs::remove_dir_all(&place.dir).unwrap();
+    }
+
+    #[test]
+    fn setting_up_puts_the_newest_in_place_written_down() {
+        let place = temp("first");
+        let new = program(&place.waiting(), "2026.10.7", b"the newest, checked");
+        // Something that did not pass is where it goes
+        std::fs::write(place.exe(), b"a copy that did not pass").unwrap();
+        place.write(&Record { current: None, previous: None, failed: Some("2026.10.5".into()) }).unwrap();
+        put_in_place(&place, &new).unwrap();
+        assert_eq!(std::fs::read(place.exe()).unwrap(), b"the newest, checked");
+        assert!(!place.waiting().exists());
+        // Taken with nothing to go back to, so it is not on trial; a version that failed stays failed
+        let r = place.read();
+        assert_eq!(r, Record { current: Some(new.clone()), previous: None, failed: Some("2026.10.5".into()) });
+        assert_eq!(verify(&place.exe(), std::slice::from_ref(&new)).unwrap().1, new);
+
+        // Not taken again once it failed, nor when it is not newer than what it would replace
+        assert!(!worth_taking(&place, &Known { version: "2026.10.5".into(), ..new.clone() }, "2026.9.3"));
+        assert!(!worth_taking(&place, &new, "2026.10.7"));
+        assert!(worth_taking(&place, &new, "2026.9.3"));
+        std::fs::remove_dir_all(&place.dir).unwrap();
+    }
+
+    #[test]
+    fn a_changed_download_is_not_put_in_place() {
+        let place = temp("first-tampered");
+        let new = program(&place.waiting(), "2026.10.7", b"the newest, checked");
+        std::fs::write(place.waiting(), b"the newest, changed").unwrap();
+        assert!(put_in_place(&place, &new).is_err());
+        assert!(!place.exe().exists());
+        assert_eq!(place.read(), Record::default());
+        std::fs::remove_dir_all(&place.dir).unwrap();
+    }
+
+    /// Run by hand (`cargo test -- --ignored`): sets cloudflared up in a folder of its own as remote access
+    /// does, with the newest release (about 55 MB).
+    #[tokio::test]
+    #[ignore]
+    async fn setting_up_brings_the_newest_release_checked() {
+        let place = temp("network-first");
+        let k = install_newest_at(&place, &|_| {}).await.unwrap().expect("a release newer than the pinned one");
+        assert_eq!(verify(&place.exe(), std::slice::from_ref(&k)).unwrap().1, k);
+        assert_eq!(sys::sign::signer(&place.exe()).unwrap(), SIGNER);
+        assert_eq!(place.read().current, Some(k));
         std::fs::remove_dir_all(&place.dir).unwrap();
     }
 
