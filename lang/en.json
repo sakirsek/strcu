@@ -806,7 +806,7 @@
   "dl.done": "{label}: done",
   "dl.verified": "{label}: done, SHA-256 verified",
   "dl.newest_failed": "The newest cloudflared could not be taken ({reason}); the tested {version} is downloaded instead",
-  "upd.title": "StrCu version",
+  "upd.title": "Version",
   "upd.running": "StrCu {version}",
   "upd.bar": "StrCu {version} is out",
   "upd.card_new": "{version} is out",

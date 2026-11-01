@@ -168,10 +168,12 @@ fn whole(script: &[u8]) -> bool {
 }
 
 /// Why the installer stopped: its last red line, written in the language it found, or else the first line of an
-/// error PowerShell wrote before the installer could say anything.
+/// error PowerShell wrote before the installer could say anything. The line's own "Failed:" is left out: the
+/// panel and the log say that already.
 fn why_it_failed(dir: &Path) -> Option<String> {
     let said = std::fs::read_to_string(dir.join(SAID)).unwrap_or_default();
     let red = said.lines().rev().find_map(|l| l.trim_start_matches('\u{feff}').strip_prefix("Red\t"));
+    let red = red.map(|l| ["Failed: ", "Olmad\u{131}: "].iter().find_map(|p| l.strip_prefix(p)).unwrap_or(l));
     let errors = std::fs::read(dir.join(ERRORS)).unwrap_or_default();
     let errors = String::from_utf8_lossy(&errors);
     let first_error = || errors.lines().map(str::trim).find(|l| !l.is_empty());
@@ -454,7 +456,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         assert_eq!(why_it_failed(&dir), None);
         std::fs::write(dir.join(SAID), "\u{feff}Gray\tDownloading...\nRed\tFailed: the port is taken\nGray\tdone\n").unwrap();
-        assert_eq!(why_it_failed(&dir).as_deref(), Some("Failed: the port is taken"));
+        assert_eq!(why_it_failed(&dir).as_deref(), Some("the port is taken"));
         std::fs::write(dir.join(SAID), "Green\tStrCu 2.3.0, SHA-256 verified.\n").unwrap();
         assert_eq!(why_it_failed(&dir), None);
         // Nothing red, but PowerShell had something to say: its first line
@@ -462,7 +464,10 @@ mod tests {
         assert_eq!(why_it_failed(&dir).as_deref(), Some("Join-Path : Cannot bind argument to parameter 'Path'."));
         // A red line is the installer's own word, and comes first
         std::fs::write(dir.join(SAID), "Red\tOlmad\u{131}: port dolu\n").unwrap();
-        assert_eq!(why_it_failed(&dir).as_deref(), Some("Olmad\u{131}: port dolu"));
+        assert_eq!(why_it_failed(&dir).as_deref(), Some("port dolu"));
+        // A red line that is not the failure line is kept whole
+        std::fs::write(dir.join(SAID), "Red\tC:\\Program Files\\StrCu can be changed by another account\n").unwrap();
+        assert_eq!(why_it_failed(&dir).as_deref(), Some("C:\\Program Files\\StrCu can be changed by another account"));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

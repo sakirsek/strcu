@@ -764,7 +764,7 @@
   "dl.done": "{label}: tamam",
   "dl.verified": "{label}: tamam, SHA-256 doğrulandı",
   "dl.newest_failed": "En yeni cloudflared alınamadı ({reason}); yerine denenmiş {version} indiriliyor",
-  "upd.title": "StrCu sürümü",
+  "upd.title": "Sürüm",
   "upd.running": "StrCu {version}",
   "upd.bar": "StrCu {version} çıktı",
   "upd.card_new": "{version} çıktı",
